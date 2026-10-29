@@ -1,6 +1,6 @@
 [project]
 name = "ticketctl"
-version = "0.0.0"
+version = "0.0.1"
 description = "Normalized ticket access (Jira first)"
 readme = "README.md"
 requires-python = ">=3.12"
