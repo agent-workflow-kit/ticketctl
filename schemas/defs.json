@@ -35,8 +35,8 @@
     },
     "ts": {
       "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$",
-      "description": "UTC ISO 8601 with Z."
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "UTC ISO 8601 with Z, to the second."
     },
     "date": {
       "type": "string",
@@ -64,9 +64,32 @@
     },
     "dedupe_key": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "description": "Caller-chosen, up to 128 bytes, never secret."
+      "pattern": "^[A-Za-z0-9._:@/-]{1,128}$",
+      "description": "Caller-chosen, never secret."
+    },
+    "numeric_id": {
+      "type": "string",
+      "pattern": "^[0-9]{1,18}$",
+      "description": "Transition, sprint and board ids."
+    },
+    "warning_code": {
+      "enum": [
+        "closed_ticket",
+        "assign_added",
+        "other_sprints_dropped",
+        "sprint_moved",
+        "body_near_limit",
+        "duplicate_dedupe_matches",
+        "labels_after_create",
+        "audit_incomplete"
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/warning_code"
+      },
+      "uniqueItems": true
     },
     "status_category": {
       "enum": [
@@ -134,11 +157,13 @@
         "outcome_unknown",
         "rate_limited",
         "provider_changed",
+        "partial",
+        "lookup_incomplete",
         "confirmation_required",
         "escalated",
         "stale_ticket",
+        "precondition_failed",
         "no_such_transition",
-        "needs_assignee",
         "sprint_closed",
         "already_exists",
         "ambiguous_site",
@@ -150,6 +175,15 @@
     },
     "error_reason": {
       "enum": [
+        "human_only",
+        "yes_requires_expect_plan",
+        "dedupe_key_required",
+        "stdin_conflict",
+        "invalid_combination",
+        "missing_option",
+        "config_invalid",
+        "no_sites",
+        "account_mismatch",
         "invalid_query",
         "unknown_field",
         "not_editable",
@@ -161,8 +195,16 @@
         "empty_body",
         "unknown_site",
         "invalid_key",
-        "confirmation_required",
-        "escalated"
+        "mixed_sites",
+        "invalid_file",
+        "secret_in_body",
+        "stale_ticket",
+        "precondition_failed",
+        "no_such_transition",
+        "sprint_closed",
+        "already_exists",
+        "locked",
+        "audit_failed"
       ]
     },
     "incomplete": {
@@ -172,7 +214,7 @@
         "pattern": "^[a-z][a-z0-9_.]{0,63}$"
       },
       "uniqueItems": true,
-      "description": "Parts cut off or unavailable (links, comments, attachments, ...), also truncated fields."
+      "description": "Parts cut off or unavailable: links, comments, attachments, links.unreadable, <part>.truncated, <part>.invalid_id, fields.<name>."
     },
     "status": {
       "type": "object",
@@ -195,7 +237,14 @@
       "type": "object",
       "properties": {
         "account_id": {
-          "$ref": "#/$defs/account_id"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/account_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "display_name": {
           "type": "string",
@@ -345,7 +394,8 @@
           "enum": [
             "inward",
             "outward"
-          ]
+          ],
+          "description": "Relative to this ticket: inward means this ticket is the target of the link type's inward phrase (for Blocks, is blocked by); outward means it is the source."
         },
         "key": {
           "$ref": "#/$defs/key"
@@ -405,6 +455,9 @@
           "maxLength": 1000000,
           "x-untrusted": true
         },
+        "truncated": {
+          "type": "boolean"
+        },
         "dedupe_key_sha256": {
           "oneOf": [
             {
@@ -413,6 +466,26 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "body_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "authored_by_ticketctl": {
+          "type": "boolean"
+        },
+        "actor_kind": {
+          "enum": [
+            "auto",
+            "human",
+            null
           ]
         }
       },
@@ -424,14 +497,18 @@
         "created",
         "updated",
         "body",
-        "dedupe_key_sha256"
+        "truncated",
+        "dedupe_key_sha256",
+        "body_sha256",
+        "authored_by_ticketctl",
+        "actor_kind"
       ]
     },
     "transition": {
       "type": "object",
       "properties": {
         "id": {
-          "$ref": "#/$defs/provider_id"
+          "$ref": "#/$defs/numeric_id"
         },
         "name": {
           "type": "string",
@@ -493,7 +570,7 @@
           "description": "assign: me, none or an account id."
         },
         "transition_id": {
-          "$ref": "#/$defs/provider_id"
+          "$ref": "#/$defs/numeric_id"
         },
         "to": {
           "type": "string",
@@ -589,16 +666,24 @@
           }
         },
         "warnings": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 512
-          }
+          "$ref": "#/$defs/warnings"
         },
         "dedupe_key": {
           "oneOf": [
             {
               "$ref": "#/$defs/dedupe_key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dedupe_match": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 128,
+              "description": "Provider id or key of the object a dedupe lookup found."
             },
             {
               "type": "null"
@@ -619,9 +704,10 @@
         "changes",
         "warnings",
         "dedupe_key",
+        "dedupe_match",
         "plan_sha256"
       ],
-      "description": "The plan of a write; key is null for create."
+      "description": "The plan of a write; key is null for create. plan_sha256 covers the canonical JSON of v, action, site, key, actor_class, intent and only the facts the plan reads (see Plan object)."
     },
     "result": {
       "type": "object",
@@ -634,6 +720,11 @@
         },
         "key": {
           "$ref": "#/$defs/key"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
         },
         "changed": {
           "type": "boolean"
@@ -659,6 +750,9 @@
                   "skipped",
                   "failed"
                 ]
+              },
+              "code": {
+                "$ref": "#/$defs/error_code"
               }
             },
             "additionalProperties": false,
@@ -685,10 +779,20 @@
           ]
         },
         "attempt_id": {
-          "$ref": "#/$defs/attempt_id"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/attempt_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "decision_ids": {
           "$ref": "#/$defs/decision_ids"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
         }
       },
       "additionalProperties": false,
@@ -696,13 +800,18 @@
         "action",
         "site",
         "key",
+        "url",
         "changed",
         "result",
         "steps",
+        "already_posted",
+        "reused",
+        "comment_id",
         "attempt_id",
-        "decision_ids"
+        "decision_ids",
+        "warnings"
       ],
-      "description": "The outcome of a write. partial: an earlier step was applied and a later one failed; nothing is rolled back."
+      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. Nothing is rolled back."
     },
     "error_body": {
       "type": "object",
@@ -785,13 +894,68 @@
         "key",
         "details"
       ],
-      "description": "reason is set for exit 22 (invalid_request) and exit 13, null otherwise.",
+      "description": "reason is required for exits 2 (usage, invalid_config), 20 (equal to the code) and 22 (invalid_request); null otherwise, except locked (unavailable) and audit_failed (internal).",
       "allOf": [
         {
           "if": {
             "properties": {
               "code": {
-                "const": "invalid_request"
+                "enum": [
+                  "usage"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "human_only",
+                  "yes_requires_expect_plan",
+                  "dedupe_key_required",
+                  "stdin_conflict",
+                  "invalid_combination",
+                  "missing_option"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_config"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "config_invalid",
+                  "no_sites",
+                  "account_mismatch"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_request"
+                ]
               }
             },
             "required": [
@@ -812,7 +976,10 @@
                   "body_too_large",
                   "empty_body",
                   "unknown_site",
-                  "invalid_key"
+                  "invalid_key",
+                  "mixed_sites",
+                  "invalid_file",
+                  "secret_in_body"
                 ]
               }
             }
@@ -823,8 +990,7 @@
             "properties": {
               "code": {
                 "enum": [
-                  "confirmation_required",
-                  "escalated"
+                  "unavailable"
                 ]
               }
             },
@@ -836,8 +1002,8 @@
             "properties": {
               "reason": {
                 "enum": [
-                  "confirmation_required",
-                  "escalated"
+                  null,
+                  "locked"
                 ]
               }
             }
@@ -848,9 +1014,145 @@
             "properties": {
               "code": {
                 "enum": [
+                  "internal"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  null,
+                  "audit_failed"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "stale_ticket"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "stale_ticket"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "precondition_failed"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "precondition_failed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "no_such_transition"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "no_such_transition"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "sprint_closed"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "sprint_closed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "already_exists"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "already_exists"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "usage",
+                  "invalid_config",
                   "invalid_request",
-                  "confirmation_required",
-                  "escalated"
+                  "unavailable",
+                  "internal",
+                  "stale_ticket",
+                  "precondition_failed",
+                  "no_such_transition",
+                  "sprint_closed",
+                  "already_exists"
                 ]
               }
             },
@@ -913,8 +1215,76 @@
         "plan": {
           "$ref": "#/$defs/plan"
         },
+        "result": {
+          "$ref": "#/$defs/result"
+        },
         "hook": {
           "$ref": "#/$defs/hook_name"
+        },
+        "escalated_hooks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hook_name"
+          },
+          "uniqueItems": true
+        },
+        "hook_stderr": {
+          "type": "string",
+          "maxLength": 4096,
+          "x-untrusted": true
+        },
+        "decision_ids": {
+          "$ref": "#/$defs/decision_ids"
+        },
+        "existing_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+        },
+        "existing_key": {
+          "$ref": "#/$defs/key"
+        },
+        "current_status": {
+          "type": "string",
+          "maxLength": 256,
+          "x-untrusted": true
+        },
+        "expected_status": {
+          "type": "string",
+          "maxLength": 256,
+          "x-untrusted": true
+        },
+        "reason_hint": {
+          "enum": [
+            "needs_assignee"
+          ]
+        },
+        "required_fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "kind": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "allowed_values": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 256
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "kind"
+            ]
+          }
         },
         "token_env": {
           "type": "string",
@@ -929,13 +1299,64 @@
           }
         },
         "errors": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "maxLength": 4096,
-            "x-untrusted": true
-          },
-          "x-untrusted": true
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 4096,
+                "x-untrusted": true
+              },
+              "x-untrusted": true,
+              "description": "The provider's field errors, keyed by field."
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "$ref": "#/$defs/key"
+                  },
+                  "error": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "$ref": "#/$defs/error_code"
+                      },
+                      "message": {
+                        "type": "string",
+                        "maxLength": 4096,
+                        "x-untrusted": true
+                      },
+                      "reason": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/$defs/error_reason"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "code",
+                      "message",
+                      "reason"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "key",
+                  "error"
+                ]
+              },
+              "description": "get with several keys, none readable: the per-key errors."
+            }
+          ]
         },
         "rate_limit": {
           "type": "object",
@@ -990,6 +1411,9 @@
         },
         "id": {
           "$ref": "#/$defs/provider_id"
+        },
+        "requested_key": {
+          "$ref": "#/$defs/key"
         },
         "type": {
           "type": "object",
@@ -1075,8 +1499,15 @@
                   "maxLength": 256
                 },
                 "rank": {
-                  "type": "integer",
-                  "minimum": 0
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "additionalProperties": false,

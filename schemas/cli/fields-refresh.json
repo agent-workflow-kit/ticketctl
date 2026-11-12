@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/fields-refresh.json",
+  "title": "fields refresh --json",
+  "description": "The cache was replaced.",
+  "type": "object",
+  "properties": {
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "refreshed": {
+      "const": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "site",
+    "refreshed"
+  ]
+}

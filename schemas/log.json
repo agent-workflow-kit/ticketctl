@@ -5,6 +5,9 @@
   "description": "Public request log, one line per provider call. No headers, no bodies, no values.",
   "type": "object",
   "properties": {
+    "v": {
+      "const": 1
+    },
     "ts": {
       "$ref": "defs.json#/$defs/ts"
     },
@@ -23,7 +26,7 @@
       "type": "string",
       "pattern": "^(?:/(?:[A-Za-z0-9._~-]+|\\{[a-z_]+\\}))+$",
       "maxLength": 256,
-      "description": "A path template: placeholders such as {key}, never values."
+      "description": "The full path template, for example /rest/api/3/issue/{key}; placeholders, never values."
     },
     "status": {
       "type": [
@@ -56,6 +59,7 @@
   },
   "additionalProperties": false,
   "required": [
+    "v",
     "ts",
     "site",
     "method",

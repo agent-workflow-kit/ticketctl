@@ -1,27 +1,38 @@
 # Example config for ticketctl.
 # Location: ~/.config/ticketctl/config.yaml (drop-ins: ~/.config/ticketctl/config.d/*.yaml; --config overrides).
 # Every key is shown with its default or a neutral example value. Schema: schemas/config.json.
-# Top-level scalar keys also accept TICKETCTL_<KEY> from the environment (TICKETCTL_TIMEOUT,
-# TICKETCTL_DEFAULT_SITE); structured keys (sites, hooks) cannot be set from the environment.
+# Only the top-level scalars timeout and default_site accept TICKETCTL_<KEY> from the environment
+# (TICKETCTL_TIMEOUT, TICKETCTL_DEFAULT_SITE); nested keys cannot be set from the environment.
+# Durations everywhere (config, flags, hook timeouts): an integer with a unit (ms, s, m, h, d), or a bare
+# integer meaning seconds. 0 is allowed only for cache_ttl (no cache) and retry_after_max (never wait).
+# With --config <file> only that file is loaded; the default location reads config.yaml then config.d/*.yaml
+# (maps merge, hooks lists append, other lists replace).
 
-# Sites. The name is yours; selection order is --site, the site whose `projects` holds the key's
-# project prefix, default_site, the only site.
+# Sites. The name is yours; selection order is --site, a browse URL's host, the site whose `projects` holds
+# the key's project prefix, default_site, the only site.
 sites:
   main:
     # The only provider in 0.x.
     provider: jira
-    # Required. https site URL. Set allow_http: true only for a local test server.
+    # Required. https site URL: non-empty host, no userinfo, query or fragment, optional context path.
     url: https://example.atlassian.net
+    # Accepts an http URL, and only for loopback hosts (127.0.0.1, ::1, localhost). Default: false.
     allow_http: false
     # Required: exactly one of email (not a secret) and email_env.
     email: me@example.com
     # email_env: JIRA_EMAIL
     # Required. Name of the environment variable holding the API token. The token itself never goes here.
     token_env: JIRA_API_TOKEN
+    # Optional. The account id this site's `me` is expected to be (overrides me.jira for this site).
+    # A mismatch with the live /myself account fails a write before anything is sent. Default: none.
+    # account_id: 5b10ac8d82e05b22cc7d4ef5
     # Project keys this site owns (used by site selection). Default: [].
     projects: [ABC]
-    # Board id or name for the sprint commands. Default: none (the project's one scrum board).
+    # Board for the sprint commands: an integer is an id, a string a name (names can repeat and then
+    # fail as ambiguous). Default: none (the scrum boards the ticket's project is on).
     board: 12
+    # Link type names (case-insensitive) that make a ticket blocked. Default: [Blocks].
+    blocking_link_types: [Blocks]
     # Logical field mappings, each by exactly one of name, id or schema. Default: {} (discovered).
     # Logical names: estimate, acceptance_criteria, sprint, parent, epic, labels, priority,
     # assignee, resolution, due_date.
@@ -42,7 +53,7 @@ sites:
     transitions:
       # Resolution used for a done target when --resolution is not given. Default: none.
       default_resolution: Done
-      # `me` adds an assign step when a transition needs an assignee. Default: none.
+      # `me` assigns me when an unassigned ticket moves to a target that is not done. Default: none.
       assign_on_start: me
     # Lifetime of the field-list and identity cache. Default: 24h.
     cache_ttl: 24h
@@ -54,27 +65,29 @@ sites:
 # Used when no other rule selects a site. Default: none.
 default_site: main
 
-# Whole-command timeout (a bare number means seconds). Default: 120 seconds.
+# Whole-command timeout for provider work (a bare number means seconds). Default: 120s.
 timeout: 120s
 
-# Who you are. name defaults to the OS user; jira is your account id.
+# Who you are. name defaults to the OS user; jira is an expectation of your account id only (the live
+# /myself account is always the one used for `me`, `own`, --assign me and dedupe).
 me:
   name: me
   jira: 5b10ac8d82e05b22cc7d4ef5
 
-# Footer on comments and created tickets. For an auto: actor the footer is mandatory.
+# Attribution line: the first paragraph of comments and created tickets' descriptions. Plain text, 1 to 300
+# characters, no control characters; one template for both actor kinds. For an auto: actor it is mandatory.
 attribution:
   enabled: true
   template: Drafted with AI assistance and posted via ticketctl.
 
 limits:
-  # Body size cap in characters of Markdown source. Default: 30000.
+  # Body size cap in characters of the final document's text (maximum 32767). Default: 30000.
   body_chars: 30000
   # Longest Retry-After honored. Default: 60s.
   retry_after_max: 60s
 
 # Hooks per kind of write: pre-/post- for transition, comment, create, update and sprint.
-# Each is an ordered list of {cmd, timeout, async}; timeout defaults to 30 s; async is for post- hooks only.
+# Each is an ordered list of {cmd, timeout, async}; timeout is 1 to 600 s (default 30 s); async is for post- hooks only.
 # Default: {}.
 hooks: {}
 # hooks:

@@ -17,7 +17,8 @@
     },
     "default_site": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "description": "Must name a configured site (loader check). Also TICKETCTL_DEFAULT_SITE."
     },
     "timeout": {
       "oneOf": [
@@ -31,7 +32,7 @@
         }
       ],
       "default": 120,
-      "description": "Whole-command timeout; a bare integer means seconds. Default 120 s."
+      "description": "Whole-command timeout; a bare integer means seconds. Default 120 s. Also TICKETCTL_TIMEOUT."
     },
     "me": {
       "type": "object",
@@ -45,7 +46,7 @@
         "jira": {
           "type": "string",
           "pattern": "^[A-Za-z0-9:_.-]{1,128}$",
-          "description": "The account id."
+          "description": "The account id; an expectation only: the /myself account is always used."
         }
       },
       "additionalProperties": false
@@ -78,7 +79,7 @@
           "default": 30000
         },
         "retry_after_max": {
-          "$ref": "#/$defs/duration",
+          "$ref": "#/$defs/duration_or_zero",
           "default": "60s"
         }
       },
@@ -109,7 +110,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "const": false
@@ -143,7 +144,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "type": "boolean",
@@ -179,7 +180,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "const": false
@@ -213,7 +214,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "type": "boolean",
@@ -249,7 +250,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "const": false
@@ -283,7 +284,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "type": "boolean",
@@ -319,7 +320,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "const": false
@@ -353,7 +354,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "type": "boolean",
@@ -389,7 +390,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "const": false
@@ -423,7 +424,7 @@
                   }
                 ],
                 "default": 30,
-                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
               },
               "async": {
                 "type": "boolean",
@@ -449,8 +450,13 @@
   "$defs": {
     "duration": {
       "type": "string",
-      "pattern": "^(?:0|[0-9]+(?:ms|s|m|h|d))$",
-      "description": "0 or an integer and a unit (ms, s, m, h, d)."
+      "pattern": "^[1-9][0-9]{0,8}(?:ms|s|m|h|d)?$",
+      "description": "An integer with a unit (ms, s, m, h, d), or a bare integer meaning seconds; positive."
+    },
+    "duration_or_zero": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,8})(?:ms|s|m|h|d)?$",
+      "description": "As duration, and 0 (cache_ttl: no cache; retry_after_max: never wait)."
     },
     "field_mapping": {
       "oneOf": [
@@ -510,13 +516,32 @@
         "url": {
           "type": "string",
           "format": "uri",
-          "pattern": "^https?://[^\\s/?#]+(?:/[^\\s?#]*)?$",
+          "pattern": "^https?://[^\\s/?#@]+(?:/[^\\s?#]*)?$",
           "maxLength": 2048,
-          "description": "https site URL; http only with allow_http (a local test server)."
+          "description": "https site URL with a non-empty host, no userinfo, query or fragment; the loader lower-cases the host."
         },
         "allow_http": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Accept an http URL; only for loopback hosts (127.0.0.1, ::1, localhost)."
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9:_.-]{1,128}$",
+          "description": "The account id this site's me is expected to be; overrides me.jira for the site."
+        },
+        "blocking_link_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true,
+          "default": [
+            "Blocks"
+          ],
+          "description": "Link type names (case-insensitive) that make a ticket blocked."
         },
         "email": {
           "type": "string",
@@ -647,7 +672,7 @@
           "additionalProperties": false
         },
         "cache_ttl": {
-          "$ref": "#/$defs/duration",
+          "$ref": "#/$defs/duration_or_zero",
           "default": "24h"
         },
         "timeouts": {
@@ -709,6 +734,13 @@
             "properties": {
               "url": {
                 "pattern": "^https://"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "url": {
+                "pattern": "^(?:https://|http://(?:127\\.0\\.0\\.1|\\[::1\\]|localhost)(?::[0-9]+)?(?:/|$))"
               }
             }
           }

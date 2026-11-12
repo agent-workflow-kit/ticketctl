@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/hooks/post-create.json",
   "title": "post-create hook payload (stdin)",
-  "description": "post- hook: runs once after the outcome is known; best-effort, never fatal. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). No repo, no labels, no ticket text.",
+  "description": "post- hook: runs once after the outcome is known, only when an attempted record was written; best-effort, never fatal. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). No repo, no labels, no ticket text.",
   "type": "object",
   "properties": {
     "tool": {
@@ -33,6 +33,9 @@
     "actor": {
       "$ref": "../defs.json#/$defs/actor"
     },
+    "attempt_id": {
+      "$ref": "../defs.json#/$defs/attempt_id"
+    },
     "decision_ids": {
       "$ref": "../defs.json#/$defs/decision_ids"
     },
@@ -40,29 +43,13 @@
       "type": "object",
       "properties": {
         "action": {
-          "enum": [
-            "create"
-          ]
+          "const": "create"
         },
-        "current_status": {
-          "oneOf": [
-            {
-              "$ref": "../defs.json#/$defs/status"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "target_status": {
-          "oneOf": [
-            {
-              "$ref": "../defs.json#/$defs/status"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "../defs.json#/$defs/step_kind"
+          }
         },
         "fields_changed": {
           "type": "array",
@@ -71,20 +58,6 @@
             "maxLength": 256
           },
           "uniqueItems": true
-        },
-        "resolution": {
-          "oneOf": [
-            {
-              "type": "string",
-              "maxLength": 256
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "assign_step": {
-          "type": "boolean"
         },
         "plan_sha256": {
           "$ref": "../defs.json#/$defs/sha256"
@@ -103,15 +76,11 @@
       "additionalProperties": false,
       "required": [
         "action",
-        "current_status",
-        "target_status",
+        "steps",
         "fields_changed",
-        "resolution",
-        "assign_step",
         "plan_sha256",
         "dedupe_key"
-      ],
-      "description": "Names of fields only, never values; no ticket text."
+      ]
     },
     "body": {
       "type": "array",
@@ -134,12 +103,114 @@
       },
       "description": "Size and sha256 of each body; never text."
     },
+    "create": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "parent": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assign": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sprint": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "parent",
+        "assign",
+        "sprint"
+      ]
+    },
     "result": {
       "enum": [
         "ok",
         "failed",
-        "partial"
+        "partial",
+        "unknown"
       ]
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "../defs.json#/$defs/error_code"
+            },
+            "reason": {
+              "oneOf": [
+                {
+                  "$ref": "../defs.json#/$defs/error_reason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "reason"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "../defs.json#/$defs/step_kind"
+          },
+          "status": {
+            "enum": [
+              "done",
+              "skipped",
+              "failed"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "status"
+        ]
+      }
     },
     "provider_ids": {
       "type": "array",
@@ -160,10 +231,14 @@
     "site",
     "project",
     "actor",
+    "attempt_id",
     "decision_ids",
     "plan",
     "body",
+    "create",
     "result",
+    "error",
+    "steps",
     "provider_ids",
     "changed"
   ]

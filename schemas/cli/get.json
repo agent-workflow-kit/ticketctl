@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/get.json",
   "title": "get --json",
-  "description": "One entry per key read. A single missing ticket exits 10 with the error envelope; in a multi-key call the failures are listed under errors (exit 0 unless every key was missing).",
+  "description": "Tickets in input order and per-key errors (the full envelope body). Exit 0 when at least one key was read: a consumer must read errors. None readable exits with the first error's code and the envelope alone (details.errors holds the per-key list); a single missing ticket exits 10 with the envelope.",
   "type": "object",
   "properties": {
     "tickets": {
@@ -29,15 +29,11 @@
           "error"
         ]
       }
-    },
-    "incomplete": {
-      "$ref": "../defs.json#/$defs/incomplete"
     }
   },
   "additionalProperties": false,
   "required": [
     "tickets",
-    "errors",
-    "incomplete"
+    "errors"
   ]
 }

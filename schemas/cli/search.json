@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/search.json",
   "title": "search --json",
-  "description": "count is present only with --count; next is a resumable cursor or null.",
+  "description": "count is approximate and present only with --count; next is the opaque cursor that --cursor accepts, or null; truncated is true whenever more matches exist than were returned.",
   "type": "object",
   "properties": {
     "tickets": {

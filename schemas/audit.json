@@ -2,9 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/audit.json",
   "title": "ticketctl audit.jsonl record",
-  "description": "Public, append-only. One record pair (attempted, then the outcome) per provider call, sharing attempt_id and numbered by step. No body text, no titles, no secrets. reason is optional (the error code of a failed or partial outcome).",
+  "description": "Public, append-only. One record pair (attempted, then the outcome) per provider write call, sharing attempt_id and numbered by step. partial: the call failed after an earlier step of the command landed; unknown: the request may have been sent with no answer. No body text, no titles, no secrets. reason is optional (the error code of a failed, partial or unknown outcome). Closed for the producer; a consumer tolerates unknown properties.",
   "type": "object",
   "properties": {
+    "v": {
+      "const": 1
+    },
     "seq": {
       "type": "integer",
       "minimum": 1
@@ -18,6 +21,9 @@
     "step": {
       "type": "integer",
       "minimum": 1
+    },
+    "step_kind": {
+      "$ref": "defs.json#/$defs/step_kind"
     },
     "actor": {
       "$ref": "defs.json#/$defs/actor"
@@ -97,22 +103,82 @@
             }
           ]
         },
-        "config_sha256": {
+        "override_escalation": {
+          "oneOf": [
+            {
+              "enum": [
+                "ticketctl"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "files_sha256": {
+              "type": "array",
+              "items": {
+                "$ref": "defs.json#/$defs/sha256"
+              }
+            },
+            "sha256": {
+              "$ref": "defs.json#/$defs/sha256"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "files_sha256",
+            "sha256"
+          ]
+        },
+        "hooks_sha256": {
           "$ref": "defs.json#/$defs/sha256"
+        },
+        "cli_hooks": {
+          "type": "array",
+          "items": {
+            "$ref": "defs.json#/$defs/hook_name"
+          },
+          "uniqueItems": true
+        },
+        "token_env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+          "description": "The variable name, never a value."
         }
       },
       "additionalProperties": false,
       "required": [
         "plan_sha256",
-        "config_sha256"
+        "override_escalation",
+        "config",
+        "hooks_sha256",
+        "cli_hooks",
+        "token_env"
       ]
     },
     "result": {
       "enum": [
+        "attempted",
         "ok",
         "failed",
         "partial",
-        "attempted"
+        "unknown"
       ]
     },
     "provider_ids": {
@@ -140,10 +206,12 @@
   },
   "additionalProperties": false,
   "required": [
+    "v",
     "seq",
     "ts",
     "attempt_id",
     "step",
+    "step_kind",
     "actor",
     "actor_source",
     "stdin_tty",
@@ -174,6 +242,28 @@
           },
           "provider_ids": {
             "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "enum": [
+              "attempted",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "changed": {
+            "type": "null"
           }
         }
       },

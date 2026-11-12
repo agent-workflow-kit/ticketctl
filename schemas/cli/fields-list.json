@@ -1,17 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ticketctl/cli/fields.json",
-  "title": "fields --json",
-  "description": "fields list prints fields and mapping; fields check prints problems (exit 22 when any); fields refresh prints refreshed.",
+  "$id": "ticketctl/cli/fields-list.json",
+  "title": "fields list --json",
+  "description": "The only command that prints provider field ids.",
   "type": "object",
   "properties": {
-    "action": {
-      "enum": [
-        "list",
-        "check",
-        "refresh"
-      ]
-    },
     "site": {
       "$ref": "../defs.json#/$defs/site_name"
     },
@@ -128,46 +121,12 @@
           }
         ]
       }
-    },
-    "problems": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "logical": {
-            "type": "string",
-            "maxLength": 64
-          },
-          "problem": {
-            "enum": [
-              "missing",
-              "ambiguous",
-              "type_mismatch"
-            ]
-          },
-          "candidates": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "maxLength": 256,
-              "x-untrusted": true
-            }
-          }
-        },
-        "additionalProperties": false,
-        "required": [
-          "logical",
-          "problem"
-        ]
-      }
-    },
-    "refreshed": {
-      "type": "boolean"
     }
   },
   "additionalProperties": false,
   "required": [
-    "action",
-    "site"
+    "site",
+    "fields",
+    "mapping"
   ]
 }

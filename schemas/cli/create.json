@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/create.json",
   "title": "create --json",
-  "description": "The result object, or the plan object with --dry-run.",
+  "description": "Exit 0 only: the result object (ok or unchanged), or the plan object with --dry-run. A failure, partial included, prints the error envelope.",
   "oneOf": [
     {
       "$ref": "../defs.json#/$defs/result"
