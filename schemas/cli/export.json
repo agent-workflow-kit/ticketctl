@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/export.json",
+  "title": "export (one audit record per line)",
+  "description": "Each line of export is one audit record; the file is JSON lines, not an array.",
+  "$ref": "../audit.json"
+}

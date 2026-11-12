@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/adf.json",
+  "title": "ticketctl ADF allowlist",
+  "description": "The only document shapes ticketctl sends: nodes doc, paragraph, text, heading, bulletList, orderedList, listItem, codeBlock, blockquote and hardBreak; marks strong, em, code and link (http or https, no userinfo). Every other node, mark or attribute is refused, never repaired. Depth 10 (list nesting 5) and 5000 nodes are enforced by validate_adf(), not by this schema.",
+  "$ref": "#/$defs/doc",
+  "$defs": {
+    "mark": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "strong",
+                "em",
+                "code"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "link"
+            },
+            "attrs": {
+              "type": "object",
+              "properties": {
+                "href": {
+                  "type": "string",
+                  "pattern": "^(?!https?://[^/?#]*@)https?://[\\x21-\\x7e]{1,2000}$"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "href"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "attrs"
+          ]
+        }
+      ]
+    },
+    "text": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "marks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mark"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "text"
+      ]
+    },
+    "hardBreak": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "hardBreak"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "inline": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/text"
+        },
+        {
+          "$ref": "#/$defs/hardBreak"
+        }
+      ]
+    },
+    "paragraph": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "paragraph"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inline"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "heading": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "heading"
+        },
+        "attrs": {
+          "type": "object",
+          "properties": {
+            "level": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "level"
+          ]
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inline"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "attrs"
+      ]
+    },
+    "codeBlock": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "codeBlock"
+        },
+        "attrs": {
+          "type": "object",
+          "properties": {
+            "language": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9+#._-]{1,32}$"
+            }
+          },
+          "additionalProperties": false,
+          "required": []
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "listItem": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "listItem"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/block"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "content"
+      ]
+    },
+    "bulletList": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "bulletList"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/listItem"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "content"
+      ]
+    },
+    "orderedList": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "orderedList"
+        },
+        "attrs": {
+          "type": "object",
+          "properties": {
+            "order": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9999
+            }
+          },
+          "additionalProperties": false,
+          "required": []
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/listItem"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "content"
+      ]
+    },
+    "blockquote": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "blockquote"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/block"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "content"
+      ]
+    },
+    "block": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/paragraph"
+        },
+        {
+          "$ref": "#/$defs/heading"
+        },
+        {
+          "$ref": "#/$defs/codeBlock"
+        },
+        {
+          "$ref": "#/$defs/bulletList"
+        },
+        {
+          "$ref": "#/$defs/orderedList"
+        },
+        {
+          "$ref": "#/$defs/blockquote"
+        }
+      ]
+    },
+    "doc": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "doc"
+        },
+        "version": {
+          "const": 1
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/block"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "version",
+        "content"
+      ]
+    }
+  }
+}

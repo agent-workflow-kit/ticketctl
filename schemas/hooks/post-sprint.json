@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/hooks/post-sprint.json",
+  "title": "post-sprint hook payload (stdin)",
+  "description": "post- hook: runs once after the outcome is known, only when an attempted record was written; best-effort, never fatal. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). changed is null for an unknown outcome. No repo, no labels, no ticket text.",
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "ticketctl"
+    },
+    "hook": {
+      "const": "post-sprint"
+    },
+    "object_type": {
+      "const": "ticket"
+    },
+    "object_id": {
+      "$ref": "../defs.json#/$defs/key"
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "project": {
+      "$ref": "../defs.json#/$defs/project_key"
+    },
+    "actor": {
+      "$ref": "../defs.json#/$defs/actor"
+    },
+    "attempt_id": {
+      "$ref": "../defs.json#/$defs/attempt_id"
+    },
+    "decision_ids": {
+      "$ref": "../defs.json#/$defs/decision_ids"
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "enum": [
+            "sprint_add",
+            "sprint_remove"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "../defs.json#/$defs/step_kind"
+          }
+        },
+        "current_status": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_sha256": {
+          "$ref": "../defs.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "steps",
+        "current_status",
+        "plan_sha256"
+      ]
+    },
+    "body": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sha256": {
+            "$ref": "../defs.json#/$defs/sha256"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "bytes"
+        ]
+      },
+      "description": "Size and sha256 of each body; never text."
+    },
+    "ticket": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "subtask": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "priority": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignee_account_id": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/account_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignee_is_me": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "subtask",
+        "status",
+        "priority",
+        "assignee_account_id",
+        "assignee_is_me"
+      ],
+      "description": "Names and ids only; no title, description or label text."
+    },
+    "sprints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "../defs.json#/$defs/sprint_state"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "state"
+        ]
+      },
+      "minItems": 1,
+      "description": "The target sprint for add, the dropped open and future sprints for remove; no sprint name."
+    },
+    "result": {
+      "enum": [
+        "ok",
+        "failed",
+        "partial",
+        "unknown"
+      ]
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "../defs.json#/$defs/error_code"
+            },
+            "reason": {
+              "oneOf": [
+                {
+                  "$ref": "../defs.json#/$defs/error_reason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "reason"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "../defs.json#/$defs/step_kind"
+          },
+          "status": {
+            "enum": [
+              "done",
+              "skipped",
+              "failed"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "status"
+        ]
+      }
+    },
+    "provider_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "../defs.json#/$defs/provider_id"
+      }
+    },
+    "changed": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tool",
+    "hook",
+    "object_type",
+    "object_id",
+    "site",
+    "project",
+    "actor",
+    "attempt_id",
+    "decision_ids",
+    "plan",
+    "body",
+    "ticket",
+    "sprints",
+    "result",
+    "error",
+    "steps",
+    "provider_ids",
+    "changed"
+  ]
+}

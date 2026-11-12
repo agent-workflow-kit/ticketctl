@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/result.json",
+  "title": "write --json",
+  "description": "The result of any write command on exit 0.",
+  "$ref": "../defs.json#/$defs/result"
+}

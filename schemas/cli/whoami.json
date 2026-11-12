@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/whoami.json",
+  "title": "whoami --json",
+  "description": "The selected site and the resolved /myself account. source: the cache or a fresh /myself (--refresh).",
+  "type": "object",
+  "properties": {
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "account_id": {
+      "$ref": "../defs.json#/$defs/account_id"
+    },
+    "display_name": {
+      "oneOf": [
+        {
+          "type": "string",
+          "maxLength": 256,
+          "x-untrusted": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "enum": [
+        "cache",
+        "provider"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "site",
+    "account_id",
+    "display_name",
+    "source"
+  ]
+}

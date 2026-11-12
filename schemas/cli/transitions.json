@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/transitions.json",
+  "title": "transitions --json",
+  "description": "The transitions available now for the ticket.",
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "../defs.json#/$defs/key"
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "$ref": "../defs.json#/$defs/transition"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "key",
+    "site",
+    "transitions"
+  ]
+}

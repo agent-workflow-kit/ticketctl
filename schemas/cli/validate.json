@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/validate.json",
+  "title": "validate --json",
+  "description": "Printed only when the configuration is valid (invalid config exits 2 with the error envelope). The per-site probe results (the same problems as fields check, an account mismatch, the named queries) are present only with --probe and are data: a probe that ran exits 0 whatever it found, and valid means only that the configuration is valid.",
+  "type": "object",
+  "properties": {
+    "valid": {
+      "const": true
+    },
+    "probe": {
+      "type": "boolean"
+    },
+    "sites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "site": {
+            "$ref": "../defs.json#/$defs/site_name"
+          },
+          "account_id": {
+            "oneOf": [
+              {
+                "$ref": "../defs.json#/$defs/account_id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "logical": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "problem": {
+                  "enum": [
+                    "missing",
+                    "ambiguous",
+                    "type_mismatch",
+                    "account_mismatch"
+                  ]
+                },
+                "candidates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "x-untrusted": true
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "problem"
+              ]
+            }
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                },
+                "valid": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 1024,
+                      "x-untrusted": true
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "valid",
+                "error"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "site"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "valid",
+    "probe"
+  ]
+}

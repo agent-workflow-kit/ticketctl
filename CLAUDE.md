@@ -31,9 +31,9 @@ standalone: no harness, bus, shared library or shared contracts package is requi
 
 ## Workflow
 
-1. Start with a design session that resolves the open topics in `docs/design.md`.
-2. Write `docs/interface.md` and `schemas/`.
-3. Implement test-first.
+1. `docs/interface.md` is the single normative source; `docs/design.md` records decisions and live verification; `docs/plan.md` holds the staged plan.
+2. Change the interface and `schemas/` first, then implement test-first.
+3. Never put a real Jira response, site name, project key, field id or account in a test fixture: fixtures are synthetic.
 
 ## Repository workflow
 

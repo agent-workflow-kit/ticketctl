@@ -1,59 +1,180 @@
 # ticketctl: design
 
-Status: Seeded from awkit architecture v1.4; not yet designed.
+Status: designed 2026-11-12 (interface 0.1.0-design). The normative rules are in [interface.md](interface.md); this document records the decisions, the live verification behind them and the internal structure, and links to interface headings instead of restating them.
 
 ## Role and layer
 
-Normalized ticket access (Jira first; other providers later). Layer 1 (primitive). Must work fully standalone (architecture §2, C2).
-
-## Responsibilities
-
-From architecture §5.1:
-
-Normalized ticket access. Jira first; other providers later.
-
-- Commands: `get`, `search`, `transition`, `comment --body-file`, `create --body-file`, `update`, `sprint` helpers.
-- Uses: Jira REST API.
-- Notes: Writes support `--dry-run` and are confirm-by-default. ticketctl has no pending-confirmation store: a non-interactive write without `--yes` exits 13 without acting, and the calling tool records the pending confirmation (section 12.4). Field mappings (story points, acceptance criteria, sprint field and so on) are config, never code (C1).
+Normalized ticket access (Jira Cloud first; other providers later). Layer 1 (primitive). Works fully standalone (architecture §2, C2): no harness, bus, shared library or other awkit tool is needed.
 
 ## Uses
 
-- Jira REST API: binding: TBD (A/B/C), decided in this tool's design session
+| Dependency | Binding | Notes |
+|---|---|---|
+| Jira Cloud REST API v3 and the agile API | none (direct, stdlib HTTP client in `gateway.py`) | the only external boundary; see [Invoking the provider](interface.md#invoking-the-provider) |
 
-## Architecture sections to read
-
-Section numbers refer to `../awkit-docs/architecture.md` (v1.4).
-
-- §2: hard constraints, especially C1 (no project keys, custom-field IDs or hostnames in code).
-- §6: conventions summary.
-- §12.1: public defaults (ticket transitions: show and confirm; ticket creation: always confirm).
-- §12.4: confirmations, holds and `--yes` (ticketctl writes are confirm-by-default primitives without a pending store).
-- §13.2: prompt injection: transport of bodies via `--body-file`; trust tiers (rule 7).
-- §13.3: credentials (`token_env`).
-- §14: audit (transition, comment, create, update are external actions).
-- §20: this tool's constraints and open topics.
-
-## Constraints (decided)
-
-From architecture §20: none.
-
-## Open topics
-
-From architecture §20:
-
-- provider interface for future sources
-- JQL/filter config
-- write safety flow details
-- own client vs invoking user-installed tools
+ticketctl calls no other awkit tool. Its known consumers are ticket-queue, ticket-create and ticket-work (interface registry).
 
 ## Decisions
 
-| Decision | Rationale | Date |
+| # | Decision | Rationale |
 |---|---|---|
+| D-1 | Own client over the Python standard library (`http.client`), behind `gateway.py`. No wrapped Jira CLI and no dependence on any user-installed script. | No dependency, no Node or PATH problem under cron, and full control of the provider's quirks (silent semantic JQL errors, the 100-per-page cap with all fields, three error body shapes, ambiguous custom fields) and of the connect-versus-send distinction that write safety needs. See [Invoking the provider](interface.md#invoking-the-provider). |
+| D-2 | One internal provider boundary, no plugin system: operations return ticketctl's normalized objects; Jira is the only implementation; `sites.<name>.provider` names it. A later provider is new code behind the same objects. | Keeps the `--json` contract provider-neutral (see [Ticket object](interface.md#ticket-object)) without building a framework for a non-goal (architecture §19.2). |
+| D-3 | Three ways to select tickets (named queries in config, structured flags compiled to JQL by ticketctl, raw JQL from a file or stdin), every search validated through the provider's parse endpoint first. Only a named query combines with the structured flags: its trailing `ORDER BY` is split off and replaced by `--order-by`, the rest is parenthesized, only after it is proven balanced, and combined by `AND`; a raw query stands alone (D-34). | Spike A: a semantic JQL error returns an empty success; callers never build JQL from text they did not write. The combination rule exists because a named query with an `ORDER BY` (the documented example has one) otherwise yields a syntax error, an `OR` inside it would change precedence, and an unbalanced where-part such as `a) OR (b` would escape the `AND`-ed flags. See [`search`](interface.md#search) and [Search compilation](interface.md#search-compilation). |
+| D-4 | One write flow: prepare, resolve, reduce and check (idempotency first: a plan with no remaining step is `unchanged` before any prompt, hook, audit record or hash comparison), `--dry-run`, confirm, `pre-` hooks, lock and fresh check, audit-and-send. See [Write flow](interface.md#write-flow). | Jira has no dry-run and no idempotency; the plan hash makes the confirmation specific and the stale check refuses a ticket that changed in something the plan reads. The order is fixed by the roadmap hook row and forgectl's merge order: the fresh check sits after the hooks because it is the one nearest the write (`--expect-plan` is also compared early, when the plan is built), and the `pre-` hook runs after the confirmation so an expensive gate does not run before every prompt or for confirmations that are later rejected. A hook placed before the confirmation is a hook feature candidate. |
+| D-5 | Transitions are selected by target status, not id; a done target always sends a resolution; the assignee step is in the plan by rule (the ticket is unassigned and `--assign` is given, or `assign_on_start: me` is set and the target is not done), never guessed (a skipped assign is a plan warning); a provider 400 without such a step is exit 12 `rejected` with `details.reason_hint`. See [Transition order](interface.md#transition-order). | Spike B: transitions are global, a done transition without a resolution succeeds silently, and leaving the backlog fails with a validator that neither the transitions list nor the edit metadata reveals and that the transition call cannot satisfy. The requirement is only discoverable by attempting, so the plan assigns by rule and the provider's refusal is reported with a hint decided from plan facts, never from message text (which is locale and workflow dependent). |
+| D-6 | Logical field names mapped per site by name, id or schema, discovered by schema when unmapped (the legacy points field has the generic `float` schema and is found only by its exact name), ambiguity refused lazily (only when the requested output or a write needs the field). See [Field mapping](interface.md#field-mapping). | Spike A: two story-point fields exist and only one carries data; acceptance criteria are findable only by name; refusing ambiguity on every read would break `get --fields key,title`. |
+| D-7 | v3 and ADF only; own Markdown-to-ADF converter that never creates mention, card or media nodes; one `validate_adf()` allowlist ends both input forms (Markdown and `--format adf`); the wiki-markup string API is never used. See [Text conversion](interface.md#text-conversion) and [ADF allowlist](interface.md#adf-allowlist). | Spike B: a v2 string is parsed as wiki markup (`*x*`, `h2.`, `#` lists, `{code}`, `[~accountid:...]`). Spike C: Jira stores a `javascript:` link as sent, so ticketctl is the only filter. |
+| D-8 | `sites` map, basic authentication with `token_env`, one total site-selection table (flag, browse URL, project prefix, default, the only site), only configured hosts are contacted; the account for `me` is the `/myself` account, fresh for a write and cached for a read, and `me.jira` and `sites.<name>.account_id` are only expectations. See [Site selection](interface.md#site-selection) and [Credentials](interface.md#credentials). | Several sites are plausible; a key is never sent to a site that was not selected; account ids are per organization, so a global id cannot be trusted. |
+| D-9 | Per-kind `pre-` and `post-` hooks with payloads that carry no ticket text but do carry ids, names and the assignee (and the assign target), type, priority and sprint facts. See [Hooks](interface.md#hooks). | Lets gate policies and notifications attach to each write kind; gate policies match on names and ids, so those facts are in the payload. |
+| D-10 | Command surface as in [Commands](interface.md#commands); links and attachments are read (metadata) in 0.x; creating or deleting links, attachment download and upload, comment edit and delete, watchers, bulk writes (including several keys for `sprint`) and a TUI are left to 1.x. | Smallest surface that serves the three consumers. |
+| D-11 | Reads retry; a write retries only when the request provably was not processed; an ambiguous write exits 12 `outcome_unknown` and the caller re-runs (with a dedupe key for `comment` and `create`). See [Reliability](interface.md#reliability). | Jira has no write idempotency. |
+| D-12 | Stateless: a small cache plus `audit.jsonl` and `log.jsonl`; no `state.db`, no cron, no reconcile. See [Files](interface.md#files). | Jira holds the truth; pending confirmations belong to the caller. |
+| D-13 | A provider-neutral ticket object with `null` meaning unknown, `blocked` computed from the same read (direction relative to the ticket, link types configurable), done-ness from the status category only, and a `--fields` vocabulary so that unrequested properties are neither fetched nor printed. See [Ticket object](interface.md#ticket-object). | The contract three consumers pin. |
+| D-14 | Tests through the gateway with a fake provider and synthetic fixtures; an opt-in `live` suite that closes its own test tickets. See Test strategy below. | Nothing private may enter the repo. |
+| D-15 | Dedupe keys are required for non-interactive writes and bound to little: a comment key to the stored body hash, a create key to type and title only (the label rides the create call); a reused key with other bound content is `already_exists`, with other unbound content (description, parent, labels) a create is `reused`; `comment` and `create` with `--yes` require `--dedupe-key` (exit 2, `dedupe_key_required`). See [Dedupe](interface.md#dedupe). | A replayed `--yes --expect-plan` of a comment or create has no ticket state in its hash, so a confirmation confirmed twice, a cron overlap, a dashboard double click or an `outcome_unknown` re-run would post twice. A key is cheap and makes a re-run always safe. The lookup also guards against planted labels, comment floods and concurrent runs (own-author filter, bounded scan, a bucket lock around the fresh check and send; see D-28). |
+| D-16 | A failure after an earlier step landed is the error envelope with exit 12 `partial` and the full result under `details.result`; there is no second result path and no automatic rollback. See [Result object](interface.md#result-object) and [Error envelope](interface.md#error-envelope). | A caller must be able to see that the assignee changed although the transition failed; one printed shape for every failure keeps consumers simple. |
+| D-17 | The plan hash covers the caller's intent (which includes the effective assign target) plus only the facts the plan reads, and an own assign step never invalidates it. See [Plan object](interface.md#plan-object) and D-26. | A hash of the whole pre-write state would make a retry after a partial look stale; a hash of nothing would miss a human takeover during a confirmation that can wait days. `--if-status` is the one explicit precondition (restore flows). |
+| D-18 | `sprint add|remove` takes exactly one key; `remove` moves the ticket to the backlog and so drops its open and future sprints; only those count as membership. See [`sprint add|remove KEY`](interface.md#sprint-addremove-key). | One plan, one result, one audit pair and one hook pair per command; spike B7 showed one active sprint removed by the backlog call; closed-sprint behavior is not verified, so closed sprints are ignored as history. |
+| D-19 | The confirmation reads `/dev/tty`, not stdin, and a run is interactive only with a TTY, a `human:` actor and no `--yes`; `--override-escalation` is human-only by actor claim and works with `--yes`. See [Human actions](interface.md#human-actions). | Bodies arrive on stdin, so a stdin-based definition would make a person non-interactive; the dashboard needs `--yes --actor human:<user>`, so "human-only" cannot mean "no `--yes`". The dialog shows every outbound text in full with link targets and answers only to a typed `y` or `yes`; a decline is exit 20 `declined` (D-29). |
+| D-20 | The trust boundary is the user's credentials: ticketctl does not restrict `--config`, `--hook`, `--actor` or the environment; the audit and log record the config, hook and host facts as evidence for a cooperative caller, not as a tamper-evident record (D-30). See [Trust boundary](interface.md#trust-boundary). | The caller controls arguments and environment, so no in-process flag is a boundary (a `read_only` mode was declined for the same reason). Guide 5 defines `--config` and tests need it. A constrained deployment is reads only or runs writes outside the session. |
+| D-21 | One sanitizer rule (Unicode categories plus a short list) applied at the output layer to every string that leaves the process, whatever its origin; the body-class fields (description, comment bodies, acceptance criteria, rendered rich text) are a closed list and everything else is single-line. See [Sanitizing](interface.md#sanitizing). | Errors echo caller and file strings, so sanitizing only provider text leaves escape sequences reachable. No normalization is applied, because consumers compare provider names by equality. |
+| D-22 | Gateway invariants: URLs are built only from the site URL and path templates, every redirect fails, no `Accept-Encoding`, a hard response cap, a string-aware JSON depth guard at 400, `--verbose` never enables protocol debug output, proxies (`HTTPS_PROXY`, `NO_PROXY`) are honored through a CONNECT tunnel. See [Invoking the provider](interface.md#invoking-the-provider). | Credentials are never re-sent to another host; TLS stays end to end; ignoring proxies would break users behind one, and proxy and CA variables fall inside the trust boundary of D-20. |
+| D-23 | The attribution line is the first paragraph of the body, mandatory for an `auto:` actor (one rich-text rule: an automatic actor's only rich-text paths are a comment body and a created description, both with the line), and ticketctl's marker is a comment property (`ticketctl.meta`) instead of hidden text. See [Attribution](interface.md#attribution). | ADF has no hidden text; architecture §14 places the line first so no untrusted text can hide it, and Jira collapses long comments. A property lets an awkit-authored comment be told from a human one on the same account. |
+| D-24 | A gate's decision lives in the gate's own log: ticketctl audits only writes that reached the provider boundary; a veto, escalation, stale or precondition refusal and `confirmation_required` write no audit record and return `decision_ids`, `hook` and `plan` in the envelope. See [Audit and log](interface.md#audit-and-log). | gatectl records every decision; duplicating refusals in the audit would blur "what ticketctl did" with "what was stopped". The caller records what it needs from the envelope. |
+| D-25 | Idempotency before validation: after the reads, a plan with no remaining step is `unchanged` before `no_such_transition`, `needs_resolution`, `--if-status`, the confirmation, hooks and hash comparison; only the checks that matter for a step that remains run afterwards. See [Write flow](interface.md#write-flow). | Without it, the documented re-run after a lost transition response exited 20 (no outgoing Done transition) or 22 (no resolution given) instead of `unchanged`. |
+| D-26 | No actor class in the plan hash; the hash covers the effective assign target and the resolved transition id. See [Plan object](interface.md#plan-object). | The body hash already contains the attribution paragraph, so an actor field only broke the flow where a cron run plans as `auto:` and a human confirms with `--actor human:`. Hashing the step list was declined: after an own assign landed the step is gone and the held hash would look stale. |
+| D-27 | `create` is one provider call: the dedupe label and the user's labels go in `fields.labels` of the create body, there is no `--sprint` on `create`, and no created-ticket property or summary lookup exists. See [Dedupe](interface.md#dedupe) and [`create`](interface.md#create). | Spike D (V-26 to V-28): labels are accepted in the create body and a sprint there is silently ignored, so one call is atomic and `partial` cannot occur on create; a sprint is the separate `sprint add`. |
+| D-28 | The dedupe lock is one of 256 fixed bucket files, taken after the hooks, held only around the fresh check and send and released before the `post-` hook runs; the lag guard is D-36. See [Dedupe](interface.md#dedupe). | A lock spanning the prompt or a 600 s hook would make the second run wait the command timeout, and a `post-` hook under the lock would let a slow or hung hook deny every writer in its bucket; per-key files accumulate. |
+| D-29 | A human's decline of the prompt is exit 20 `declined`: a refusal, not exit 13, with no audit record, hook or pending record; exit 13 stays "a human must still decide". See [Human actions](interface.md#human-actions). | A caller that stores a pending confirmation on exit 13 must never store a human's no. |
+| D-30 | The trust boundary is stated as it is: the redirected state directory (`XDG_STATE_HOME`, `HOME`), `--body-file` and `@file` (any readable file) and a caller that can allocate a pty are inside it; the audit is evidence for a cooperative caller; every log line carries `host` and `config_sha256`; the "reject `--yes`" wrapper recipe is withdrawn. See [Trust boundary](interface.md#trust-boundary). | The confirmation cannot constrain a caller with a pty, and a read under a foreign `--config` is not audited. Only reads with a fixed config and a scrubbed environment, or writes outside the session, are constrained. |
+| D-31 | The sanitizer rule stays category based with an explicit list (it adds the Mongolian free variation selectors and U+16FE4); joiners and variation selectors are replaced on read and on write, and the loss for emoji sequences and joiner-dependent scripts is a residual risk (user decision, option A of the pass-2 question). See [Sanitizing](interface.md#sanitizing). | One rule with no exceptions keeps hidden payload carriers out; the team writes English. |
+| D-32 | One exit-2 reason `invalid_argument` for plain usage errors; values that feed site selection or the provider path exit 22, every other grammar exits 2; `fields check` and `validate --probe` exit 0 with problems as data. See [Exit codes](interface.md#exit-codes). | A closed reason set must cover every usage failure so the `--json` envelope validates, and a diagnostic whose output is the problem list is not a failure. |
+| D-33 | Names that have a dedicated flag or command are refused in `--set` and `--field`; `--set` and `--field` share one value grammar. The refusal is judged on the resolved field (D-35). See [Field mapping](interface.md#field-mapping). | The generic path would bypass the flows, hooks and attribution of the dedicated ones. |
+| D-34 | A raw query (`--jql-file`, `--jql`) is never combined with anything: it cannot be given with structured filter flags, `--query` or `--order-by` (exit 2 `invalid_combination`), is validated by the parse endpoint and runs alone; any JQL over 4096 characters is `invalid_query`. The balance scanner stays only for named queries, as defense in depth. See [Search compilation](interface.md#search-compilation). | The scanner is a copy of Jira's lexer, and a fuzz against two lexer models found payloads it calls balanced that close the wrapper early (an unverified difference in how Jira reads a backslash or mid-word quote outside a string); not wrapping untrusted text removes the question. A named query is the user's own config. The length cap bounds the scanner's cost. |
+| D-35 | The dedicated-field refusal in `--set` and `--field` is applied to the resolved provider field (after name, id and schema resolution and case-insensitive display-name matching), not to the typed token; `reporter` is settable nowhere; a field given twice is detected on the resolved field. See [Field mapping](interface.md#field-mapping). | Display names (`Labels`, `Summary`, `Assignee`, `Sprint`, `Resolution`, `Parent`, `Reporter`) resolve through the metadata and otherwise bypass the flows, hooks, `tc-` label reservation and sprint checks that the refusal exists to force. |
+| D-36 | The create lag guard keys on the audit tail as well as the lock mtime: a create record with the same site and dedupe key, `attempted` with no outcome or with outcome `unknown` or `ok`, within 120 s makes the lookup under the lock poll every 5 s for up to 60 s (bounded by `--timeout`) before concluding "not found"; the quick-rerun rule (lock modified within 5 s, one repeat after 2 s) stays. See [Dedupe](interface.md#dedupe). | The retry that dedupe exists for (a re-run after `outcome_unknown`, typically 10 to 30 s later) falls outside a 5 s mtime window, and the create-to-search lag was never measured; the guard is a bound, not a guarantee (a residual risk). |
+| D-37 | The confirmation dialog caps what it displays (200 lines and 20000 characters of body, 500 characters per value, folded long lines, collapsed blank runs, a visible marker with the hash), always shows the full body hash, and states when `--override-escalation` is on and which hooks it covers. See [Human actions](interface.md#human-actions). | A flood of blank lines or a huge `--set` value scrolls the part the human confirms off the screen, and one `y` that also waives an escalation the human has not seen is a hidden decision. Only the display is capped; the hash and the sent text are not. |
+| D-38 | An output-wide scrub is the last step of the one output path: a configured token value and the Basic header value are replaced by `<redacted>` before anything is printed, logged or relayed. A malformed or hostile `--cursor` is exit 22 `cursor_invalid`, never exit 1, and the cursor is bound to the site. See [Sanitizing](interface.md#sanitizing) and [`search`](interface.md#search). | "Never in output" becomes a tested property instead of a code-review one (a proxy or provider error body can echo a header). A cursor is caller-supplied input and must not crash the parser or cross to another site. |
 
-## Questions for the design session
+## Deviations from the guide
 
-1. What provider interface lets future ticket sources plug in after Jira?
-2. How are JQL and other filters expressed in config?
-3. What are the details of the write safety flow (dry-run output, confirmation prompt, exit 13 without a TTY)?
-4. Does ticketctl ship its own HTTP client, or invoke user-installed tools?
+- The confirmation reads `/dev/tty` (forgectl reads stdin), so a stdin body does not remove the human (D-19).
+- The marker for awkit-authored ticket comments is a comment property, not the fixed HTML marker, because ADF has no hidden text (D-23).
+- One attribution template serves both actor kinds (architecture §14 names two); `attribution.enabled` applies to `human:` actors only.
+- A refusal's `reason` equals its `code` for exit 20 (guide 4.2 asks for a reason; the code is the reason).
+- The audit `result` vocabulary includes `unknown` for an ambiguous outcome.
+- The default actor needs stderr to be a TTY and `/dev/tty` (guide 6).
+- A contended dedupe lock exits 12 `unavailable` with `reason: locked` (guide 4.3 says exit 0).
+- A declined confirmation is exit 20 `declined` (guide 4.4's prompt wording gains this).
+- The one attribution template, "Drafted with AI assistance", does not state that a human accepted the post; the audit `actor` and `actor_source` do.
+- Environment overrides are limited to top-level scalars (`TICKETCTL_TIMEOUT`, `TICKETCTL_DEFAULT_SITE`), a narrowing of guide 5.
+- `--field` (transition) and `--set` (create, update) keep their names and share one grammar; `assign_on_start` keeps its name.
+
+## Resolved open topics
+
+Architecture §20 listed four open topics for ticketctl. Provider interface: D-2. JQL and filter config: D-3. Write safety flow details: D-4, D-5 and [Dedupe](interface.md#dedupe). Own client versus invoking user-installed tools: D-1. The seeded text in this file's earlier version (status "not yet designed") is superseded.
+
+## Live verification
+
+Spikes ran against a real Jira Cloud site on 2026-11-11 and 2026-11-12 (private records: A read-only, B writes on three throwaway tickets that were closed as done with a "won't do" resolution, C targeted checks, D create-body and search checks on two more throwaway tickets, closed the same way). The results below are the facts the design relies on; every one becomes a regression test or a `live` test in the plan.
+
+| # | Fact | Where it bites |
+|---|---|---|
+| V-1 | Basic authentication (email and token) works on the site URL; a bearer header with an API token is refused (403); a wrong token is a 401 with a plain-text body. | Credentials |
+| V-2 | The old `POST /search` returns 410; `/search/jql` pages with `nextPageToken`, has no total (a separate approximate-count call exists), and with all fields silently returns 100 per page. The cursor is therefore the only way past one page; it is exposed as `search --cursor`. | `search` |
+| V-3 | A semantic JQL error (unknown field, status value or function) returns 200 with no issues; a syntax error is a 400. The parse endpoint reports them. | `search` validation |
+| V-4 | A default issue read is about 31 KB with 555 field keys; with `fields=` about 1.7 KB. | `get --fields` |
+| V-5 | v3 descriptions and comments are ADF; v2 returns wiki-markup strings and a v2 write parses wiki markup. | Text conversion |
+| V-6 | Two story-point fields exist (a legacy float field with data, a newer estimate field without); the legacy one has the generic `float` schema (many other fields do too), so only its exact name `Story Points` identifies it; the sprint field is identifiable by schema; acceptance criteria only by name and must be written as ADF. | Field mapping |
+| V-7 | Transitions are the same ids from every status; a done target needs a resolution (five allowed values); a sub-task transition also needs a parent; the API accepts a done transition without a resolution. | Transition order |
+| V-8 | Every transition out of the backlog failed with a 400 until the ticket had an assignee, and the transition body cannot set one. The validator appears in neither the transitions list nor the edit metadata; only the 400 reveals it, with locale-dependent text. | Transition order |
+| V-9 | There is no write idempotency: an identical create made a duplicate ticket; identical comments are not deduplicated. | Dedupe |
+| V-10 | Updates return 204 with no body; re-sending an unchanged value is a no-op; a failed multi-field update applies nothing; an unknown or non-screen field is a 400 with `errors.<field>`. | `update` |
+| V-11 | There is no optimistic locking: a stale write of a different field keeps the other writer's change (last write wins per field). | Residual risks |
+| V-12 | Comment properties and issue properties can be written and fetched but not searched. | Dedupe |
+| V-13 | Timestamps carry the user's time zone with an offset that has no colon (`-0600`); sprint dates are UTC with `Z`. | Normalization |
+| V-14 | `statusCategory` is `new`, `indeterminate` or `done`; some done-category tickets have no resolution; "blocked" can be computed from the links embedded in one read, where blocked-by is the inward side of the `Blocks` link type. | `blocked`, done-ness |
+| V-15 | Every response carries rate-limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Ratelimit`, `Ratelimit-Policy`); no `Retry-After` and no 429 were seen. | Reliability |
+| V-16 | Errors come in three body shapes: `errorMessages` with `errors`, `{"error": ...}` and plain text; a missing, malformed or hidden key is the same 404 with the same text, so no `gone` or `hidden` distinction exists. | Error envelope |
+| V-17 | The agile API works with the same token; sprint membership can be added and removed (204 both ways); the sprint field is an array of objects; remove goes through the backlog endpoint, which moved a ticket from its one active sprint to the backlog (closed-sprint membership is unverified, so only open and future sprints count). | `sprint` |
+| V-18 | `notifyUsers=false` returns 403 for a non-admin; a label containing a space is a 400; a label can be up to 255 characters; adding an existing label or removing an absent one is a 204 no-op. | Update |
+| V-19 | A comment create body accepts `properties`, written with the comment; they read back by `/comment/{id}/properties/{key}` and `expand=properties`. A property value can be up to 32,768 bytes and a key 255 bytes; the provider does not check key characters. | Dedupe |
+| V-20 | A label is searchable about one second after it is set, with or without a project clause; issue and comment properties are silently unsearchable. | Dedupe |
+| V-21 | Written ADF is stored as given: `javascript:` links, a 2000-character href, control and bidirectional characters are all accepted and not rewritten; a comment of 32,768 or more characters of text is a 400 `CONTENT_LIMIT_EXCEEDED`. | Text conversion |
+| V-22 | The parse endpoint always answers 200; with strict or warn validation a syntax error, an unknown field, status value or function appear as strings in `errors`; with validation none only syntax errors do. | `search` validation |
+| V-23 | Closed (done) tickets accept label, comment and property writes; no editable restriction appeared. | Writes |
+| V-24 | `labels` is accepted in the create body although the create metadata does not list it (spike D, V-26); labels are writable by edit but absent from the edit metadata. A site whose create screen answers 400 with a `labels` error would make `create` exit 12 `rejected`. | `create`, dedupe labels |
+| V-25 | A search embeds only the first 20 comments of each ticket, so comments are read with their own endpoint. | `get --comments` |
+| V-26 | Spike D: `fields.labels` in a create body is accepted (201) and present afterwards. | `create` |
+| V-27 | Spike D: `update.labels` and `properties` are also accepted in a create body. | `create` |
+| V-28 | Spike D: the sprint custom field in a create body is silently ignored; a sprint is set afterwards by the agile call. | `create`, `sprint add` |
+| V-29 | Spike D: a Task under a Task parent is a 400 with `errors.parent`; a Sub-task without a parent is a 400. | `create` |
+| V-30 | Spike D: a Sub-task's done transition needed an assignee. | Transition order |
+| V-31 | Spike D: `summary ~` is a tokenized phrase match, so punctuation is ignored and near matches are returned; an unquoted phrase with reserved characters answers 200 with no results. | `search --text` |
+| V-32 | Spike D: absolute dates in JQL are read in the searching user's time zone. | `--updated-since` |
+| V-33 | Spike D: a label added by update was JQL-visible about 0.6 s after the 1.1 s write call. | Dedupe lag guard (D-36) |
+
+Still to verify (conservative defaults apply): closed-sprint membership under the backlog call and moving out of a closed sprint, the label index lag after a create with the label in the body (the dedupe lag guard of D-36 is a bound until then), an explicit unassigned value in a create body, the phrase compile of `--text` against live JQL, the `statusCategory` names, per-user transition filtering, 429 behavior, scoped API tokens, moved or archived tickets (a moved key can differ from the requested one) and the order of the provider's priority list, the 404-versus-403 behavior for a hidden ticket, comment visibility on a customer-facing (service management) project, the text limits of descriptions and rich-text custom fields, an empty text node, a total text limit across nodes, and the order of add and remove within one update. Spike C (V-19 to V-23) settled the dedupe mechanisms, the body cap (verified for a single text node; the total across nodes is assumed) and the parse endpoint's use; spike D (V-26 to V-33) settled the create body. Not tested: a 300 KB body.
+
+## Modules
+
+| Module | Responsibility |
+|---|---|
+| `cli` | argparse subcommands, global flags, exit codes, human and `--json` output; the sanitizer runs here, at the output layer |
+| `config` | load and validate config (Pydantic), drop-ins, env overrides for top-level scalars; the loader checks (`default_site` names a site, `email` xor `email_env`, `queries` and `extra` names collide with no logical name, url, duration and board shapes, `me` and `account_id` shapes) that JSON Schema cannot express, all failing as `invalid_config` naming the key |
+| `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
+| `provider` | the internal provider interface and normalized objects |
+| `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
+| `adf` | ADF to Markdown renderer (with budgets) and Markdown to ADF converter; the one `validate_adf()` allowlist |
+| `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
+| `plan` | plan building, canonical hash, idempotency reduction, stale check |
+| `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
+| `hooks` | hook execution (process groups, timeouts, payloads) |
+| `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
+| `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
+
+Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway.
+
+## Data model
+
+There is no database. State is the cache, the audit log, the request log and the 256 dedupe bucket lock files ([Files](interface.md#files)). All durable truth is in the provider; ticketctl derives everything else per call.
+
+## Concurrency
+
+ticketctl takes `flock` around appends to `audit.jsonl` and `log.jsonl` (rotation included) and, for a write that has a dedupe key, a bucket lock around the fresh check and send (not the prompt or the hooks); the cache is replaced by rename. Two simultaneous writes to the same ticket from two processes are two independent plans: the plan hash narrows the window (an own assign step never invalidates it), and the provider's last-write-wins per field is a documented residual risk. The dedupe lock covers one host only, and two overlapping keyless `--yes` runs of an idempotent `transition` or `update` can both send; both are residual risks.
+
+## Error handling
+
+Every provider failure maps to the error envelope with a stable `code`, `reason` and the `retryable`, `outcome_unknown` and `retry_after_s` fields; the exit codes, codes and reasons are one table ([Exit codes](interface.md#exit-codes), [Error envelope](interface.md#error-envelope)). A failure after a successful earlier step is exit 12 `partial` with the applied steps in `details.result`, never an automatic rollback (D-16). Every failure after an `attempted` record carries `details.attempt_id`, so the caller can find the record with `export`. A failed `attempted` audit append before sending refuses the write; a failed outcome append after a send only warns. HTTP statuses map per endpoint kind ([Reliability](interface.md#reliability)).
+
+## Consumer flows (non-normative)
+
+How ticket-work uses the primitives; ticketctl itself knows nothing about its callers.
+
+- Start: `transition KEY --to <status> --assign me` first (the guarded step), then `sprint add KEY --sprint open`. Two commands, two hashes; because a hash covers only what its plan reads, applying one does not stale the other. Before applying, the consumer records `changes` from the dry-run (the status `from` and the open and future sprint ids) for the restore.
+- Restore after a failed launch: `transition KEY --to <previous status> --if-status <started status>`, then `update KEY --assign none|<previous>`, then `sprint add <id>` for a previous open or future sprint or `sprint remove` when there was none. A closed previous sprint cannot be restored and is reported. A human's newer move refuses with `precondition_failed`. Reopening a done ticket is not restored.
+
+## Test strategy
+
+- Unit and integration tests run through `gateway.py` against a fake provider server (in `tests/`), with synthetic fixtures that follow the verified shapes and never copy a real response. The fake has switches for the verified quirks (silent-empty semantic JQL, the page cap with all fields, a done transition without a resolution, the assignee requirement, the 410 on the old search, `-0600` offsets, ADF node variety, errors in all three body shapes, a 429 with `Retry-After`, a connection dropped after the headers).
+- Golden files for every `--json` output (one schema per command) and hook payload, validated against `schemas/`.
+- Spike regression tests: no wiki markup is ever sent; a done transition always carries a resolution; a semantic JQL error is caught before the search; `[~accountid:x]` in a body stays literal; a changed ticket gives `stale_ticket`; a write is never retried after an ambiguous failure.
+- Write-flow tests: a re-run after a landed transition with the old hash gives `unchanged`; a re-run after the assign landed and the transition failed sends only the transition with the same hash; an assign then a transition 400 gives exit 12 `partial` with `details.result.steps` `[done, failed]`, and a takeover by another assignee gives `stale_ticket`; a plan made under `auto:` and confirmed with `--actor human:` and the same body is not stale, while a human apply with attribution disabled is stale (the body hash differs); a repeated rich-text `--set` of the same Markdown is `unchanged`; a re-run after a landed `Done` transition without `--resolution` is `unchanged`, not exit 22, and with `--to Done` and no outgoing Done transition is `unchanged`, not exit 20; `assign_skipped` and the update step order (`set_fields` succeeds, `assign` fails: exit 12 `partial`); an `--if-status` mismatch exits 20; a reused dedupe key with other content gives `already_exists`; `--yes` without `--dedupe-key` on `comment` and `create` exits 2; `create` with a dedupe key is one POST with `fields.labels`; two concurrent same-key creates (the second sees the first through the lag guard), a quick re-run after a dropped connection finds the ticket, and a re-run 30 s after an `unknown` create record polls until the index shows it; a `post-` hook runs after the dedupe lock is released (a hook that calls ticketctl with the same key does not deadlock); a title with surrounding whitespace matches its own ticket on re-run; a keyless `outcome_unknown` is not retryable; declined by `n`, by EOF and by Ctrl-C all exit 20 with no audit record and no hook, and a type-ahead `y` before the prompt does not answer it; an `auto:` actor with `--field Comment=@f` or `--set description=@f` on create and update exits 22, `--set sprint=1` and `--set resolution=Done` exit 2, as do the display names `Labels`, `Summary`, `Assignee`, `Sprint`, `Resolution`, `Parent` (create) and `Reporter` in any case, and one field spelled twice, and an empty `auto:` comment is `empty_body`; unknown outcome, a failed outcome append and a failed `attempted` append at step 2 are covered.
+- Search tests: the `ORDER BY` scanner for named queries (quotes, escapes, `order by` inside a string literal), precedence with `OR`, a raw query with any structured flag, `--query` or `--order-by` exits 2 `invalid_combination`, JQL over 4096 characters exits 22 `invalid_query`, a cursor over 4096 bytes, nested 100000 deep, with another site or compiled query, or with a non-ASCII token exits 22 `cursor_invalid` and never 1, the time zone conversion of `--updated-since`, a property test that every structured flag value yields exactly one clause or an error, the payload `status = Open) OR (project = SECRET` exits 22, a title with `[`, `(`, `:` and `*` yields one phrase clause, an argparse failure with `--json` prints a valid envelope, `--dry-run --yes` prints the plan, a `Retry-After` above the cap ends at once, the shared-host and `?focusedCommentId` URL cases, and a failing mapping check exits 0 with a problem.
+- Property tests: the Markdown converter never emits a mention, card or media node and never raises; link schemes (`javascript:`, `data:`, userinfo), depth, node count and mark attributes are refused by `validate_adf()`; the ADF renderer never raises on unknown nodes and respects its depth, node and size budgets.
+- Sanitizer test: the whole code space is enumerated against the explicit list plus category membership computed from the running Unicode table, and every grammar is sent `"ABC-1\n"`. Leak tests: a sentinel token in `token_env`, a proxy URL and a malformed YAML line are searched for in all output; a FIFO as `--body-file` is refused without blocking; a torn audit tail is repaired by the next append. Token test: every command runs with `--verbose` against the fake with a sentinel token (also echoed back in a provider error body and a debug traceback), and stdout, stderr, log and audit are searched for the token and its base64 form. Dialog tests: a body with thousands of blank lines or a 1 MiB `--set` value is capped with the marker and the body hash, and `--override-escalation` adds the warning line with the hook names.
+- `live` tests (deselected by default, never in CI): read-only checks against any ticket, and a write suite that creates at most three titled test tickets in a project the user's config names and closes each as done with a "won't do" resolution in a `finally`, about 60 requests. The live suite never touches a ticket it did not create; live comments cannot be deleted, so it posts at most one comment per test ticket. Opt-in through `TICKETCTL_LIVE=1`.
+- `make verify` (ruff, pyright, pytest, markdown lint) runs before every commit.
+
+## Residual risks
+
+The user-facing list is [Residual risks](interface.md#residual-risks); the design-level points are these. The human claim (`human:`) is advisory: a same-user process can state it, and the audit records `actor_source`, `stdin_tty` and the override scope so the claim is checkable. A driven caller can create new files with `export --to`. The dedupe lock is per host, and a re-run from another host inside the index lag can duplicate; the lag guard is a bound, the create-to-search lag being unmeasured. The balance scanner is a copy of Jira's lexer and Jira's own lexing is not verified, so a raw query stands alone (D-34). The plan hash has no expiry or host binding, comment dedupe can be denied by third parties and comment-property fields are advisory (all listed in the interface's residual risks). The audit is evidence for a cooperative caller, not a tamper-evident record, and the confirmation is no boundary against a caller with a pty (D-30). An assign step that appears between plan and apply runs as the plan said; it was in the confirmed intent. Emoji sequences and joiner-dependent scripts are shown and written with visible markers (D-31), homograph hosts are not detected, and a page nested beyond 400 levels is `provider_changed` for the whole page. Plan and error text carry provider text and are untrusted for consumers.
+
+## Platforms
+
+Pure standard library; Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
+
+## Architecture constraints this design adds
+
+See `awkit-docs/architecture.md` §5.1 and §20 (v1.19): stateless; per-kind hooks; ticket-text-free payloads; every provider write audited with an attempted and an outcome record; idempotency first with an exit 12 `partial` for partial failures; no pending store; allowing ticketctl allows everything it can do with the user's credentials (§13.1).

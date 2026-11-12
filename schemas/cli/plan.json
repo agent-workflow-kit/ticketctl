@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/plan.json",
+  "title": "write --dry-run --json",
+  "description": "The plan printed by --dry-run of any write command.",
+  "$ref": "../defs.json#/$defs/plan"
+}

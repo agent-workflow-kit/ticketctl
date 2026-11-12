@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/hooks/pre-transition.json",
+  "title": "pre-transition hook payload (stdin)",
+  "description": "pre- hook: runs after the confirmation and before the first provider write; exit 13 escalates, any other non-zero exit vetoes. The attempt_id is provisional: no audit record follows a veto, a stale refusal or a decline. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). changed is null for an unknown outcome. No repo, no labels, no ticket text.",
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "ticketctl"
+    },
+    "hook": {
+      "const": "pre-transition"
+    },
+    "object_type": {
+      "const": "ticket"
+    },
+    "object_id": {
+      "$ref": "../defs.json#/$defs/key"
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "project": {
+      "$ref": "../defs.json#/$defs/project_key"
+    },
+    "actor": {
+      "$ref": "../defs.json#/$defs/actor"
+    },
+    "attempt_id": {
+      "$ref": "../defs.json#/$defs/attempt_id"
+    },
+    "decision_ids": {
+      "$ref": "../defs.json#/$defs/decision_ids"
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "const": "transition"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "../defs.json#/$defs/step_kind"
+          }
+        },
+        "current_status": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_status": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields_changed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        },
+        "resolution": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assign": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 128,
+              "description": "The assign step target: me, none or an account id; null when the plan has no assign step."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_sha256": {
+          "$ref": "../defs.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "steps",
+        "current_status",
+        "target_status",
+        "fields_changed",
+        "resolution",
+        "assign",
+        "plan_sha256"
+      ]
+    },
+    "body": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sha256": {
+            "$ref": "../defs.json#/$defs/sha256"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "bytes"
+        ]
+      },
+      "description": "Size and sha256 of each body; never text."
+    },
+    "ticket": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "subtask": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "priority": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignee_account_id": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/account_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assignee_is_me": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "subtask",
+        "status",
+        "priority",
+        "assignee_account_id",
+        "assignee_is_me"
+      ],
+      "description": "Names and ids only; no title, description or label text."
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tool",
+    "hook",
+    "object_type",
+    "object_id",
+    "site",
+    "project",
+    "actor",
+    "attempt_id",
+    "decision_ids",
+    "plan",
+    "body",
+    "ticket"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/sites-resolve.json",
+  "title": "sites resolve --json",
+  "description": "The site the key resolves to and the selection rule used. An ambiguity prints the exit 21 envelope instead.",
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "../defs.json#/$defs/key"
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "rule": {
+      "enum": [
+        "site_flag",
+        "url",
+        "project",
+        "default_site",
+        "only_site"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "key",
+    "site",
+    "rule"
+  ]
+}

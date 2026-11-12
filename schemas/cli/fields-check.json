@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/fields-check.json",
+  "title": "fields check --json",
+  "description": "Problems per logical field. Exit 0 whenever the command ran: the problems are the output, and the list is empty when the mappings are sound.",
+  "type": "object",
+  "properties": {
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "logical": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "problem": {
+            "enum": [
+              "missing",
+              "ambiguous",
+              "type_mismatch"
+            ]
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256,
+              "x-untrusted": true
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "logical",
+          "problem"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "site",
+    "problems"
+  ]
+}
