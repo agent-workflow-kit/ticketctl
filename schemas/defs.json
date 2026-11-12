@@ -200,6 +200,7 @@
         "mixed_sites",
         "invalid_file",
         "secret_in_body",
+        "cursor_invalid",
         "cursor_expired",
         "stale_ticket",
         "precondition_failed",
@@ -985,6 +986,7 @@
                   "mixed_sites",
                   "invalid_file",
                   "secret_in_body",
+                  "cursor_invalid",
                   "cursor_expired"
                 ]
               }

@@ -47,7 +47,7 @@ sites:
       extra:
         team:
           name: Team
-    # Named JQL queries for `search --query <name>`. Default: {}.
+    # Named JQL queries for `search --query <name>`, each at most 4096 characters. The only query form that combines with structured filter flags. Default: {}.
     queries:
       my_open: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
     transitions:

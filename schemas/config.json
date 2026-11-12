@@ -653,7 +653,7 @@
           "additionalProperties": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 8192
+            "maxLength": 4096
           },
           "default": {}
         },

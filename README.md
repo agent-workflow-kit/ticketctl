@@ -12,7 +12,7 @@ L1 (primitive). Works fully standalone.
 
 ## What it does
 
-- Reads tickets as a provider-neutral object (status with category, estimate, sprints, parent, links, a computed `blocked` flag, Markdown text) and searches them with named queries, structured filters or JQL, validating every query first so a typo is an error rather than an empty list.
+- Reads tickets as a provider-neutral object (status with category, estimate, sprints, parent, links, a computed `blocked` flag, Markdown text) and searches them with named queries, structured filters or a raw JQL query that stands alone, validating every query first so a typo is an error rather than an empty list.
 - Writes (`transition`, `comment`, `create`, `update`, `sprint add|remove`) share one flow: an idempotency check first, a plan with a hash, `--dry-run`, one confirmation (a decline is exit 20), per-kind hooks, a lock and stale-ticket check and an audit record pair. There is no pending-confirmation store: a non-interactive write without `--yes` exits 13 and the calling tool records the pending confirmation.
 - Text goes in as Markdown from a file or stdin and is converted to Atlassian's rich-text format; no wiki markup, mention or card is ever created from text.
 - Field mappings (story points, acceptance criteria, sprint and so on), named queries and organization rules are config, never code.
@@ -75,7 +75,7 @@ One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the 
 
 ## Exit codes
 
-Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `invalid_request`. The full table is in [docs/interface.md](docs/interface.md#exit-codes). Reasons: exit 2 `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument`, `config_invalid`, `no_sites`, `account_mismatch`; exit 20 equal to the code (`stale_ticket`, `precondition_failed`, `no_such_transition`, `sprint_closed`, `already_exists`, `declined`); exit 22 `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_expired`. A failure after an earlier step landed is exit 12 `partial` with the applied steps in `details.result`.
+Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `invalid_request`. The full table is in [docs/interface.md](docs/interface.md#exit-codes). Reasons: exit 2 `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument`, `config_invalid`, `no_sites`, `account_mismatch`; exit 20 equal to the code (`stale_ticket`, `precondition_failed`, `no_such_transition`, `sprint_closed`, `already_exists`, `declined`); exit 22 `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_invalid`, `cursor_expired`. A failure after an earlier step landed is exit 12 `partial` with the applied steps in `details.result`.
 
 ## Documentation
 
