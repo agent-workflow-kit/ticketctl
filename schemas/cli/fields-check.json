@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/fields-check.json",
   "title": "fields check --json",
-  "description": "Problems per logical field. This command prints its own problem list as normal output and exits 22 for missing or type_mismatch and 21 for ambiguous; the list is empty (exit 0) when the mappings are sound.",
+  "description": "Problems per logical field. Exit 0 whenever the command ran: the problems are the output, and the list is empty when the mappings are sound.",
   "type": "object",
   "properties": {
     "site": {

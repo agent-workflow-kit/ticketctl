@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/hooks/pre-comment.json",
   "title": "pre-comment hook payload (stdin)",
-  "description": "pre- hook: runs after the confirmation and before the first provider write; exit 13 escalates, any other non-zero exit vetoes. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). No repo, no labels, no ticket text.",
+  "description": "pre- hook: runs after the confirmation and before the first provider write; exit 13 escalates, any other non-zero exit vetoes. The attempt_id is provisional: no audit record follows a veto, a stale refusal or a decline. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). changed is null for an unknown outcome. No repo, no labels, no ticket text.",
   "type": "object",
   "properties": {
     "tool": {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/sprints-list.json",
   "title": "sprints list --json",
-  "description": "The newest sprints first; a future sprint has null start and end; board is the origin board id.",
+  "description": "Sprints in the provider order by ascending id within the pages read; a future sprint has null start and end; board is the origin board id.",
   "type": "object",
   "properties": {
     "site": {

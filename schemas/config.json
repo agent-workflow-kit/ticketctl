@@ -32,7 +32,7 @@
         }
       ],
       "default": 120,
-      "description": "Whole-command timeout; a bare integer means seconds. Default 120 s. Also TICKETCTL_TIMEOUT."
+      "description": "Whole-command timeout, 1 s to 24 h; a bare integer means seconds. Default 120 s. Also TICKETCTL_TIMEOUT."
     },
     "me": {
       "type": "object",
@@ -76,11 +76,13 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 32767,
-          "default": 30000
+          "default": 30000,
+          "description": "Body size cap in characters of the final document's text; verified for a single text node, the total across nodes is assumed."
         },
         "retry_after_max": {
           "$ref": "#/$defs/duration_or_zero",
-          "default": "60s"
+          "default": "60s",
+          "description": "Longest Retry-After honored; also bounded by the remaining command time."
         }
       },
       "additionalProperties": false

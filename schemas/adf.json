@@ -34,7 +34,7 @@
               "properties": {
                 "href": {
                   "type": "string",
-                  "pattern": "^https?://(?![^/?#]*@)[^\\s\\x00-\\x1f\\x7f]{1,2000}$"
+                  "pattern": "^(?!https?://[^/?#]*@)https?://[\\x21-\\x7e]{1,2000}$"
                 }
               },
               "additionalProperties": false,

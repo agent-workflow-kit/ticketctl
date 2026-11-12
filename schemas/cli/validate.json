@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/validate.json",
   "title": "validate --json",
-  "description": "Printed only when the configuration is valid (invalid config exits 2 with the error envelope). The per-site probe results (the same problems as fields check, an account mismatch, the named queries) are present only with --probe.",
+  "description": "Printed only when the configuration is valid (invalid config exits 2 with the error envelope). The per-site probe results (the same problems as fields check, an account mismatch, the named queries) are present only with --probe and are data: a probe that ran exits 0 whatever it found, and valid means only that the configuration is valid.",
   "type": "object",
   "properties": {
     "valid": {

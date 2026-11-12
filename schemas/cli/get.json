@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/get.json",
   "title": "get --json",
-  "description": "Tickets in input order and per-key errors (the full envelope body). Exit 0 when at least one key was read: a consumer must read errors. None readable exits with the first error's code and the envelope alone (details.errors holds the per-key list); a single missing ticket exits 10 with the envelope.",
+  "description": "Tickets in input order and per-key errors (the full envelope body, never invalid_key: a bad key grammar is a whole-command exit 22). Exit 0 when at least one key was read: a consumer must read errors. None readable exits with the first error's code and the envelope alone (details.errors holds the per-key list); a single missing ticket exits 10 with the envelope.",
   "type": "object",
   "properties": {
     "tickets": {

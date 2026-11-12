@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/audit.json",
   "title": "ticketctl audit.jsonl record",
-  "description": "Public, append-only. One record pair (attempted, then the outcome) per provider write call, sharing attempt_id and numbered by step. partial: the call failed after an earlier step of the command landed; unknown: the request may have been sent with no answer. No body text, no titles, no secrets. reason is optional (the error code of a failed, partial or unknown outcome). Closed for the producer; a consumer tolerates unknown properties.",
+  "description": "Public, append-only. One record pair (attempted, then the outcome) per provider write call, sharing attempt_id and numbered by step. failed: a definite refusal or error (changed false); partial: a definite failure after an earlier step of the command landed (changed false); unknown: a request that may have been sent with no answer (changed null, whether or not an earlier step landed). No body text, no titles, no secrets. reason is optional (the error code of a failed, partial or unknown outcome). Closed for the producer; a consumer tolerates unknown properties.",
   "type": "object",
   "properties": {
     "v": {
@@ -149,6 +149,12 @@
         "hooks_sha256": {
           "$ref": "defs.json#/$defs/sha256"
         },
+        "site_host": {
+          "type": "string",
+          "pattern": "^(?:[a-z0-9.-]{1,253}|\\[[0-9a-f:]{2,45}\\])(?::[0-9]{1,5})?$",
+          "maxLength": 300,
+          "description": "The host and optional port requested."
+        },
         "cli_hooks": {
           "type": "array",
           "items": {
@@ -168,6 +174,7 @@
         "override_escalation",
         "config",
         "hooks_sha256",
+        "site_host",
         "cli_hooks",
         "token_env"
       ]

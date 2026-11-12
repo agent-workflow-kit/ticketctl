@@ -80,7 +80,7 @@
         "sprint_moved",
         "body_near_limit",
         "duplicate_dedupe_matches",
-        "labels_after_create",
+        "assign_skipped",
         "audit_incomplete"
       ]
     },
@@ -166,6 +166,7 @@
         "no_such_transition",
         "sprint_closed",
         "already_exists",
+        "declined",
         "ambiguous_site",
         "ambiguous_field",
         "ambiguous_transition",
@@ -181,6 +182,7 @@
         "stdin_conflict",
         "invalid_combination",
         "missing_option",
+        "invalid_argument",
         "config_invalid",
         "no_sites",
         "account_mismatch",
@@ -198,11 +200,13 @@
         "mixed_sites",
         "invalid_file",
         "secret_in_body",
+        "cursor_expired",
         "stale_ticket",
         "precondition_failed",
         "no_such_transition",
         "sprint_closed",
         "already_exists",
+        "declined",
         "locked",
         "audit_failed"
       ]
@@ -707,7 +711,7 @@
         "dedupe_match",
         "plan_sha256"
       ],
-      "description": "The plan of a write; key is null for create. plan_sha256 covers the canonical JSON of v, action, site, key, actor_class, intent and only the facts the plan reads (see Plan object)."
+      "description": "The plan of a write; key is null for create. plan_sha256 covers the canonical JSON of v, action, site, key, intent and only the facts the plan reads (see Plan object). An empty steps array is the plan of an unchanged run."
     },
     "result": {
       "type": "object",
@@ -811,7 +815,7 @@
         "decision_ids",
         "warnings"
       ],
-      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. Nothing is rolled back."
+      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back."
     },
     "error_body": {
       "type": "object",
@@ -918,7 +922,8 @@
                   "dedupe_key_required",
                   "stdin_conflict",
                   "invalid_combination",
-                  "missing_option"
+                  "missing_option",
+                  "invalid_argument"
                 ]
               }
             }
@@ -979,7 +984,8 @@
                   "invalid_key",
                   "mixed_sites",
                   "invalid_file",
-                  "secret_in_body"
+                  "secret_in_body",
+                  "cursor_expired"
                 ]
               }
             }
@@ -1143,6 +1149,27 @@
             "properties": {
               "code": {
                 "enum": [
+                  "declined"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "declined"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
                   "usage",
                   "invalid_config",
                   "invalid_request",
@@ -1152,7 +1179,8 @@
                   "precondition_failed",
                   "no_such_transition",
                   "sprint_closed",
-                  "already_exists"
+                  "already_exists",
+                  "declined"
                 ]
               }
             },
@@ -1179,7 +1207,8 @@
             "type": "string",
             "maxLength": 256,
             "x-untrusted": true
-          }
+          },
+          "description": "Candidate names; for an unknown issue type on create, the valid types."
         },
         "available_targets": {
           "type": "array",
@@ -1188,6 +1217,9 @@
             "maxLength": 256,
             "x-untrusted": true
           }
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/attempt_id"
         },
         "field": {
           "type": "string",
@@ -1298,65 +1330,35 @@
             "x-untrusted": true
           }
         },
+        "field_errors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4096,
+            "x-untrusted": true
+          },
+          "x-untrusted": true,
+          "description": "The provider's field errors, keyed by field."
+        },
         "errors": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string",
-                "maxLength": 4096,
-                "x-untrusted": true
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/key"
               },
-              "x-untrusted": true,
-              "description": "The provider's field errors, keyed by field."
+              "error": {
+                "$ref": "#/$defs/error_body"
+              }
             },
-            {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "key": {
-                    "$ref": "#/$defs/key"
-                  },
-                  "error": {
-                    "type": "object",
-                    "properties": {
-                      "code": {
-                        "$ref": "#/$defs/error_code"
-                      },
-                      "message": {
-                        "type": "string",
-                        "maxLength": 4096,
-                        "x-untrusted": true
-                      },
-                      "reason": {
-                        "oneOf": [
-                          {
-                            "$ref": "#/$defs/error_reason"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
-                    },
-                    "additionalProperties": false,
-                    "required": [
-                      "code",
-                      "message",
-                      "reason"
-                    ]
-                  }
-                },
-                "additionalProperties": false,
-                "required": [
-                  "key",
-                  "error"
-                ]
-              },
-              "description": "get with several keys, none readable: the per-key errors."
-            }
-          ]
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "error"
+            ]
+          },
+          "description": "get with several keys, none readable: the per-key errors, the same shape as get.json."
         },
         "rate_limit": {
           "type": "object",

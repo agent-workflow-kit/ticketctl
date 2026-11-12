@@ -65,11 +65,12 @@ sites:
 # Used when no other rule selects a site. Default: none.
 default_site: main
 
-# Whole-command timeout for provider work (a bare number means seconds). Default: 120s.
+# Whole-command timeout for provider work, 1 s to 24 h (a bare number means seconds). Default: 120s.
 timeout: 120s
 
 # Who you are. name defaults to the OS user; jira is an expectation of your account id only (the live
-# /myself account is always the one used for `me`, `own`, --assign me and dedupe).
+# /myself account, fetched fresh for a write and cached for reads, is the one used for `me`, `own`, --assign me
+# and dedupe).
 me:
   name: me
   jira: 5b10ac8d82e05b22cc7d4ef5
@@ -81,13 +82,14 @@ attribution:
   template: Drafted with AI assistance and posted via ticketctl.
 
 limits:
-  # Body size cap in characters of the final document's text (maximum 32767). Default: 30000.
+  # Body size cap in characters of the final document's text (maximum 32767; verified for a single text
+  # node, the total across nodes is assumed). Default: 30000.
   body_chars: 30000
-  # Longest Retry-After honored. Default: 60s.
+  # Longest Retry-After honored; also bounded by the remaining command time. Default: 60s.
   retry_after_max: 60s
 
 # Hooks per kind of write: pre-/post- for transition, comment, create, update and sprint.
-# Each is an ordered list of {cmd, timeout, async}; timeout is 1 to 600 s (default 30 s); async is for post- hooks only.
+# Each is an ordered list of {cmd, timeout, async}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only.
 # Default: {}.
 hooks: {}
 # hooks:

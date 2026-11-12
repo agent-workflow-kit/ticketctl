@@ -55,6 +55,15 @@
           "type": "null"
         }
       ]
+    },
+    "host": {
+      "type": "string",
+      "pattern": "^(?:[a-z0-9.-]{1,253}|\\[[0-9a-f:]{2,45}\\])(?::[0-9]{1,5})?$",
+      "maxLength": 300,
+      "description": "The host and optional port requested."
+    },
+    "config_sha256": {
+      "$ref": "defs.json#/$defs/sha256"
     }
   },
   "additionalProperties": false,
@@ -67,6 +76,8 @@
     "status",
     "duration_ms",
     "retries",
-    "rate_limit_remaining"
+    "rate_limit_remaining",
+    "host",
+    "config_sha256"
   ]
 }
