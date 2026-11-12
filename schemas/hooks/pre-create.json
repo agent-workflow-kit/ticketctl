@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/hooks/pre-create.json",
+  "title": "pre-create hook payload (stdin)",
+  "description": "pre- hook: runs before the first provider write; exit 13 escalates, any other non-zero exit vetoes. object_id is the ticket key (create only: null for pre-create, and for a post-create that created nothing). No repo, no labels, no ticket text.",
+  "type": "object",
+  "properties": {
+    "tool": {
+      "const": "ticketctl"
+    },
+    "hook": {
+      "const": "pre-create"
+    },
+    "object_type": {
+      "const": "ticket"
+    },
+    "object_id": {
+      "oneOf": [
+        {
+          "$ref": "../defs.json#/$defs/key"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "project": {
+      "$ref": "../defs.json#/$defs/project_key"
+    },
+    "actor": {
+      "$ref": "../defs.json#/$defs/actor"
+    },
+    "decision_ids": {
+      "$ref": "../defs.json#/$defs/decision_ids"
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "enum": [
+            "create"
+          ]
+        },
+        "current_status": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_status": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields_changed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        },
+        "resolution": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assign_step": {
+          "type": "boolean"
+        },
+        "plan_sha256": {
+          "$ref": "../defs.json#/$defs/sha256"
+        },
+        "dedupe_key": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/dedupe_key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "current_status",
+        "target_status",
+        "fields_changed",
+        "resolution",
+        "assign_step",
+        "plan_sha256",
+        "dedupe_key"
+      ],
+      "description": "Names of fields only, never values; no ticket text."
+    },
+    "body": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sha256": {
+            "$ref": "../defs.json#/$defs/sha256"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "bytes"
+        ]
+      },
+      "description": "Size and sha256 of each body; never text."
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tool",
+    "hook",
+    "object_type",
+    "object_id",
+    "site",
+    "project",
+    "actor",
+    "decision_ids",
+    "plan",
+    "body"
+  ]
+}

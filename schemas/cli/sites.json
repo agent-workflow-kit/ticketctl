@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/sites.json",
+  "title": "sites --json",
+  "description": "sites prints the configured sites; sites resolve KEY prints the site the key resolves to and the selection rule used.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "$ref": "../defs.json#/$defs/site_name"
+              },
+              "provider": {
+                "enum": [
+                  "jira"
+                ]
+              },
+              "url": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "projects": {
+                "type": "array",
+                "items": {
+                  "$ref": "../defs.json#/$defs/project_key"
+                },
+                "uniqueItems": true
+              },
+              "default": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "provider",
+              "url",
+              "projects",
+              "default"
+            ]
+          }
+        },
+        "default_site": {
+          "oneOf": [
+            {
+              "$ref": "../defs.json#/$defs/site_name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sites",
+        "default_site"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "../defs.json#/$defs/key"
+        },
+        "site": {
+          "$ref": "../defs.json#/$defs/site_name"
+        },
+        "rule": {
+          "enum": [
+            "site_flag",
+            "project",
+            "default_site",
+            "only_site"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "site",
+        "rule"
+      ]
+    }
+  ]
+}

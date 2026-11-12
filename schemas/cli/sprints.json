@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/sprints.json",
+  "title": "sprints --json",
+  "description": "sprints list prints sprints; sprints show prints sprint.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "site": {
+          "$ref": "../defs.json#/$defs/site_name"
+        },
+        "sprints": {
+          "type": "array",
+          "items": {
+            "$ref": "../defs.json#/$defs/sprint"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "site",
+        "sprints"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "site": {
+          "$ref": "../defs.json#/$defs/site_name"
+        },
+        "sprint": {
+          "$ref": "../defs.json#/$defs/sprint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "site",
+        "sprint"
+      ]
+    }
+  ]
+}

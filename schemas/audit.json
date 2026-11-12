@@ -1,47 +1,189 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ticketctl/audit",
+  "$id": "ticketctl/audit.json",
   "title": "ticketctl audit.jsonl record",
-  "description": "Audit record for ticketctl. Whether this tool writes audit records is decided in its design session (architecture §14).",
+  "description": "Public, append-only. One record pair (attempted, then the outcome) per provider call, sharing attempt_id and numbered by step. No body text, no titles, no secrets. reason is optional (the error code of a failed or partial outcome).",
   "type": "object",
   "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
     "ts": {
-      "type": "string",
-      "format": "date-time"
+      "$ref": "defs.json#/$defs/ts"
+    },
+    "attempt_id": {
+      "$ref": "defs.json#/$defs/attempt_id"
+    },
+    "step": {
+      "type": "integer",
+      "minimum": 1
     },
     "actor": {
-      "type": "string"
+      "$ref": "defs.json#/$defs/actor"
     },
-    "decision_id": {
-      "oneOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
+    "actor_source": {
+      "enum": [
+        "flag",
+        "tty",
+        "default"
       ]
     },
+    "stdin_tty": {
+      "type": "boolean"
+    },
+    "decision_id": {
+      "$ref": "defs.json#/$defs/decision_ids"
+    },
     "target": {
-      "type": "string"
+      "type": "object",
+      "properties": {
+        "site": {
+          "$ref": "defs.json#/$defs/site_name"
+        },
+        "key": {
+          "oneOf": [
+            {
+              "$ref": "defs.json#/$defs/key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "site",
+        "key"
+      ]
     },
     "action": {
-      "type": "string"
+      "$ref": "defs.json#/$defs/action"
     },
     "inputs": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "plan_sha256": {
+          "$ref": "defs.json#/$defs/sha256"
+        },
+        "bodies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sha256": {
+                "$ref": "defs.json#/$defs/sha256"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "sha256",
+              "bytes"
+            ]
+          }
+        },
+        "dedupe_key": {
+          "oneOf": [
+            {
+              "$ref": "defs.json#/$defs/dedupe_key"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_sha256": {
+          "$ref": "defs.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "plan_sha256",
+        "config_sha256"
+      ]
     },
-    "result": {}
+    "result": {
+      "enum": [
+        "ok",
+        "failed",
+        "partial",
+        "attempted"
+      ]
+    },
+    "provider_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "defs.json#/$defs/provider_id"
+      }
+    },
+    "changed": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "reason": {
+      "oneOf": [
+        {
+          "$ref": "defs.json#/$defs/error_code"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
   },
+  "additionalProperties": false,
   "required": [
+    "seq",
     "ts",
+    "attempt_id",
+    "step",
     "actor",
+    "actor_source",
+    "stdin_tty",
+    "decision_id",
     "target",
     "action",
-    "result"
+    "inputs",
+    "result",
+    "provider_ids",
+    "changed"
   ],
-  "additionalProperties": true
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "attempted"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "changed": {
+            "type": "null"
+          },
+          "provider_ids": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  ]
 }

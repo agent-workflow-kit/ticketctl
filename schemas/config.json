@@ -1,13 +1,720 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ticketctl/config",
+  "$id": "ticketctl/config.json",
   "title": "ticketctl config",
+  "description": "Self-contained (no external $ref). Unknown keys are refused. Structured keys (sites, hooks) cannot come from the environment (loader check). A site needs exactly one of email and email_env. Defaults are those of docs/interface.md, Config.",
   "type": "object",
   "properties": {
+    "sites": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/site"
+      },
+      "minProperties": 1
+    },
+    "default_site": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    },
+    "timeout": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        {
+          "$ref": "#/$defs/duration"
+        }
+      ],
+      "default": 120,
+      "description": "Whole-command timeout; a bare integer means seconds. Default 120 s."
+    },
+    "me": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Defaults to the OS user."
+        },
+        "jira": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9:_.-]{1,128}$",
+          "description": "The account id."
+        }
+      },
+      "additionalProperties": false
+    },
+    "attribution": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "default": "Drafted with AI assistance and posted via ticketctl.",
+          "description": "Plain text footer; no mentions or links."
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "body_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32767,
+          "default": 30000
+        },
+        "retry_after_max": {
+          "$ref": "#/$defs/duration",
+          "default": "60s"
+        }
+      },
+      "additionalProperties": false
+    },
     "hooks": {
       "type": "object",
-      "description": "Hook name to list of hook entries."
+      "properties": {
+        "pre-transition": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-transition": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-comment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-comment": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-create": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-create": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-update": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-update": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-sprint": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-sprint": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration; a bare integer means seconds (1 to 600). Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
     }
   },
-  "additionalProperties": true
+  "required": [
+    "sites"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^(?:0|[0-9]+(?:ms|s|m|h|d))$",
+      "description": "0 or an integer and a unit (ms, s, m, h, d)."
+    },
+    "field_mapping": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "schema"
+          ]
+        }
+      ],
+      "description": "Select a provider field by exactly one of name, id or schema."
+    },
+    "site": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "enum": [
+            "jira"
+          ],
+          "default": "jira"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://[^\\s/?#]+(?:/[^\\s?#]*)?$",
+          "maxLength": 2048,
+          "description": "https site URL; http only with allow_http (a local test server)."
+        },
+        "allow_http": {
+          "type": "boolean",
+          "default": false
+        },
+        "email": {
+          "type": "string",
+          "pattern": "^[^@\\s]+@[^@\\s]+$",
+          "maxLength": 320,
+          "description": "The account email; not a secret."
+        },
+        "email_env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+        },
+        "token_env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+          "description": "Name of the environment variable holding the API token."
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "maxLength": 64
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "board": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          ]
+        },
+        "fields": {
+          "type": "object",
+          "properties": {
+            "estimate": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "acceptance_criteria": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "sprint": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "parent": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "epic": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "labels": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "priority": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "assignee": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "resolution": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "due_date": {
+              "$ref": "#/$defs/field_mapping"
+            },
+            "extra": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "not": {
+                  "enum": [
+                    "estimate",
+                    "acceptance_criteria",
+                    "sprint",
+                    "parent",
+                    "epic",
+                    "labels",
+                    "priority",
+                    "assignee",
+                    "resolution",
+                    "due_date"
+                  ]
+                }
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/field_mapping"
+              },
+              "default": {},
+              "description": "Extra fields added to the output under fields.<name>."
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "queries": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "default": {}
+        },
+        "transitions": {
+          "type": "object",
+          "properties": {
+            "default_resolution": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "assign_on_start": {
+              "enum": [
+                "me"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "cache_ttl": {
+          "$ref": "#/$defs/duration",
+          "default": "24h"
+        },
+        "timeouts": {
+          "type": "object",
+          "properties": {
+            "connect": {
+              "$ref": "#/$defs/duration",
+              "default": "10s"
+            },
+            "read": {
+              "$ref": "#/$defs/duration",
+              "default": "30s"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "url",
+        "token_env"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "email"
+          ],
+          "not": {
+            "required": [
+              "email_env"
+            ]
+          }
+        },
+        {
+          "required": [
+            "email_env"
+          ],
+          "not": {
+            "required": [
+              "email"
+            ]
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "allow_http": {
+                  "const": true
+                }
+              },
+              "required": [
+                "allow_http"
+              ]
+            }
+          },
+          "then": {
+            "properties": {
+              "url": {
+                "pattern": "^https://"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
 }

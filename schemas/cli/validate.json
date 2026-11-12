@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/validate.json",
+  "title": "validate --json",
+  "description": "Printed only when the configuration is valid (invalid config exits 2 with the error envelope). The per-site probe results are present only with --probe.",
+  "type": "object",
+  "properties": {
+    "valid": {
+      "const": true
+    },
+    "probe": {
+      "type": "boolean"
+    },
+    "sites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "site": {
+            "$ref": "../defs.json#/$defs/site_name"
+          },
+          "account_id": {
+            "oneOf": [
+              {
+                "$ref": "../defs.json#/$defs/account_id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "propertyNames": {
+              "enum": [
+                "estimate",
+                "acceptance_criteria",
+                "sprint",
+                "parent",
+                "epic",
+                "labels",
+                "priority",
+                "assignee",
+                "resolution",
+                "due_date"
+              ]
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                },
+                "valid": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 1024,
+                      "x-untrusted": true
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "valid",
+                "error"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "site"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "valid",
+    "probe"
+  ]
+}

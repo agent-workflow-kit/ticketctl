@@ -1,33 +1,68 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ticketctl/log",
+  "$id": "ticketctl/log.json",
   "title": "ticketctl log.jsonl record",
+  "description": "Public request log, one line per provider call. No headers, no bodies, no values.",
   "type": "object",
   "properties": {
     "ts": {
-      "type": "string",
-      "format": "date-time"
+      "$ref": "defs.json#/$defs/ts"
     },
-    "level": {
-      "type": "string",
+    "site": {
+      "$ref": "defs.json#/$defs/site_name"
+    },
+    "method": {
       "enum": [
-        "debug",
-        "info",
-        "warn",
-        "error"
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
       ]
     },
-    "event": {
-      "type": "string"
+    "path": {
+      "type": "string",
+      "pattern": "^(?:/(?:[A-Za-z0-9._~-]+|\\{[a-z_]+\\}))+$",
+      "maxLength": 256,
+      "description": "A path template: placeholders such as {key}, never values."
     },
-    "message": {
-      "type": "string"
+    "status": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 100,
+      "maximum": 599,
+      "description": "null when no response arrived."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "retries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rate_limit_remaining": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
+  "additionalProperties": false,
   "required": [
     "ts",
-    "level",
-    "event"
-  ],
-  "additionalProperties": true
+    "site",
+    "method",
+    "path",
+    "status",
+    "duration_ms",
+    "retries",
+    "rate_limit_remaining"
+  ]
 }

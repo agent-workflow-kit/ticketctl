@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/search.json",
+  "title": "search --json",
+  "description": "count is present only with --count; next is a resumable cursor or null.",
+  "type": "object",
+  "properties": {
+    "tickets": {
+      "type": "array",
+      "items": {
+        "$ref": "../defs.json#/$defs/ticket"
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "next": {
+      "oneOf": [
+        {
+          "type": "string",
+          "maxLength": 4096
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tickets",
+    "truncated",
+    "next"
+  ]
+}

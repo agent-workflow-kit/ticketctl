@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/sprint-remove.json",
+  "title": "sprint remove --json",
+  "description": "The result object, or the plan object with --dry-run.",
+  "oneOf": [
+    {
+      "$ref": "../defs.json#/$defs/result"
+    },
+    {
+      "$ref": "../defs.json#/$defs/plan"
+    }
+  ]
+}

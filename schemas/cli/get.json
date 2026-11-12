@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/get.json",
+  "title": "get --json",
+  "description": "One entry per key read. A single missing ticket exits 10 with the error envelope; in a multi-key call the failures are listed under errors (exit 0 unless every key was missing).",
+  "type": "object",
+  "properties": {
+    "tickets": {
+      "type": "array",
+      "items": {
+        "$ref": "../defs.json#/$defs/ticket"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "../defs.json#/$defs/key"
+          },
+          "error": {
+            "$ref": "../defs.json#/$defs/error_body"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "error"
+        ]
+      }
+    },
+    "incomplete": {
+      "$ref": "../defs.json#/$defs/incomplete"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tickets",
+    "errors",
+    "incomplete"
+  ]
+}
