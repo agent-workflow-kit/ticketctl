@@ -12,6 +12,7 @@ from ticketctl.adf_validate import canonical_json, validate_adf
 from ticketctl.attribution import (
     META_PROPERTY,
     RichText,
+    actor_kind,
     attribution_text,
     comment_meta,
     default_actor,
@@ -172,6 +173,17 @@ def test_invisible_template_is_refused() -> None:
         refused(exc, 2, "config_invalid")
 
 
+@pytest.mark.parametrize("template", ["\u200b", "\x00\x01", "\u200b \x00 \u202e", " \u2060 "])
+def test_template_of_only_markers_is_refused(template: str) -> None:
+    with pytest.raises(InputError) as exc:
+        attribution_text(template)
+    refused(exc, 2, "config_invalid")
+
+
+def test_template_with_text_and_markers_is_valid() -> None:
+    assert attribution_text("hi\u200b") == "hi<U+200B>"
+
+
 def test_template_is_stripped() -> None:
     assert attribution_text("  hi  ") == "hi"
 
@@ -199,12 +211,68 @@ def test_attribution_counts_against_the_node_limit() -> None:
 
 
 def test_marker_expanded_template_counts_by_its_real_length() -> None:
-    template = "‮" * 100  # 100 markers of 8 chars
+    template = "a" + "‮" * 100  # one letter and 100 markers of 8 chars
     out = prep("a" * 10, template=template, body_chars=1000)
-    assert text_chars(D(out)) == 810
+    assert text_chars(D(out)) == 811
     with pytest.raises(InputError) as exc:
-        prep("a" * 201, template=template, body_chars=1000)
+        prep("a" * 200, template=template, body_chars=1000)
     refused(exc, 22, "body_too_large")
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "adf"])
+def test_body_chars_is_forwarded_above_the_default(fmt: str) -> None:
+    n = 30500
+    body = "a" * n if fmt == "markdown" else adf("a" * n)
+    out = prep(body, fmt=fmt, body_chars=32767)
+    assert text_chars(D(out)) == n + len(TEMPLATE)
+    with pytest.raises(InputError) as exc:
+        prep("a" * n if fmt == "markdown" else adf("a" * n), fmt=fmt)
+    refused(exc, 22, "body_too_large")
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "adf"])
+def test_body_over_the_raised_limit_is_too_large(fmt: str) -> None:
+    n = 32767 - len(TEMPLATE) + 1
+    body = "a" * n if fmt == "markdown" else adf("a" * n)
+    with pytest.raises(InputError) as exc:
+        prep(body, fmt=fmt, body_chars=32767)
+    refused(exc, 22, "body_too_large")
+
+
+def test_reserve_is_forwarded_to_both_converters(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ticketctl.attribution as mod
+
+    seen: list[tuple[str, int, int]] = []
+    real_md, real_adf = mod.markdown_to_adf, mod.parse_adf_json
+
+    def spy_md(text: str, **kw: int) -> dict:
+        seen.append(("md", kw["reserve"], kw["reserve_nodes"]))
+        return real_md(text, **kw)
+
+    def spy_adf(text: str, **kw: int) -> dict:
+        seen.append(("adf", kw["reserve"], kw["reserve_nodes"]))
+        return real_adf(text, **kw)
+
+    monkeypatch.setattr(mod, "markdown_to_adf", spy_md)
+    monkeypatch.setattr(mod, "parse_adf_json", spy_adf)
+    prep("x")
+    prep(adf(), fmt="adf")
+    assert seen == [("md", len(TEMPLATE), 2), ("adf", len(TEMPLATE), 2)]
+
+
+def test_no_reserve_without_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ticketctl.attribution as mod
+
+    seen: list[tuple[int, int]] = []
+    real = mod.markdown_to_adf
+
+    def spy(text: str, **kw: int) -> dict:
+        seen.append((kw["reserve"], kw["reserve_nodes"]))
+        return real(text, **kw)
+
+    monkeypatch.setattr(mod, "markdown_to_adf", spy)
+    prep("x", actor=HUMAN, enabled=False)
+    assert seen == [(0, 0)]
 
 
 def test_description_only_attribution_over_a_tiny_limit_is_too_large() -> None:
@@ -300,6 +368,12 @@ def test_human_empty_field_is_empty_body() -> None:
 # --- argument errors ---------------------------------------------------------------------
 
 
+def test_actor_kind_refuses_non_strings() -> None:
+    for actor in (None, 5):
+        with pytest.raises(ValueError):
+            actor_kind(actor)  # type: ignore[arg-type]
+
+
 def test_bad_arguments_are_type_or_value_errors() -> None:
     with pytest.raises(ValueError):
         prep("x", kind="title")
@@ -318,7 +392,7 @@ def test_bad_arguments_are_type_or_value_errors() -> None:
 
 def test_meta_shape_without_a_key() -> None:
     out = prep("hello")
-    meta = comment_meta(AUTO, D(out))
+    meta = comment_meta(AUTO, out)
     assert META_PROPERTY == "ticketctl.meta"
     assert meta == {"v": 1, "actor_kind": "auto", "body_sha256": out.sha256}
     assert "key_sha256" not in meta
@@ -326,7 +400,7 @@ def test_meta_shape_without_a_key() -> None:
 
 def test_meta_with_a_key_hashes_the_key_alone() -> None:
     out = prep("hello", actor=HUMAN)
-    meta = comment_meta(HUMAN, D(out), dedupe_key="run-1:step/2")
+    meta = comment_meta(HUMAN, out, dedupe_key="run-1:step/2")
     assert meta["actor_kind"] == "human"
     assert meta["key_sha256"] == hashlib.sha256(b"run-1:step/2").hexdigest()
     assert meta["body_sha256"] == out.sha256
@@ -335,21 +409,47 @@ def test_meta_with_a_key_hashes_the_key_alone() -> None:
 def test_meta_refuses_a_key_outside_the_grammar() -> None:
     out = prep("hello")
     for key in ("", "a b", "x" * 129, "k\n", "é"):
-        with pytest.raises(InputError):
-            comment_meta(AUTO, D(out), dedupe_key=key)
+        with pytest.raises(InputError) as exc:
+            comment_meta(AUTO, out, dedupe_key=key)
+        refused(exc, 2, "invalid_argument")
 
 
-def test_meta_hash_is_checked_against_the_document() -> None:
+def test_meta_refuses_a_bad_actor() -> None:
     out = prep("hello")
-    D(out)["content"][0]["content"][0]["marks"] = [{"type": "nope"}]
-    with pytest.raises(InputError):
-        comment_meta(AUTO, D(out))
+    for actor in ("root", "auto:", None, 5):
+        with pytest.raises(ValueError):
+            comment_meta(actor, out)  # type: ignore[arg-type]
+
+
+def test_meta_auto_actor_needs_an_attributed_document() -> None:
+    plain = prep("hello", actor=HUMAN, enabled=False)
+    assert plain.attributed is False
+    with pytest.raises(ValueError):
+        comment_meta(AUTO, plain)
+
+
+def test_meta_needs_a_document() -> None:
+    empty = prep(None, kind="description", actor=HUMAN)
+    assert empty.doc is None
+    for actor in (HUMAN, AUTO):
+        with pytest.raises(ValueError):
+            comment_meta(actor, empty)
+
+
+def test_meta_human_actor_with_unattributed_text_is_fine() -> None:
+    plain = prep("hello", actor=HUMAN, enabled=False)
+    assert comment_meta(HUMAN, plain)["body_sha256"] == plain.sha256
+
+
+def test_meta_does_not_apply_the_default_size_limit() -> None:
+    out = prep("a" * 31000, actor=HUMAN, body_chars=32767)
+    assert comment_meta(HUMAN, out)["body_sha256"] == out.sha256
 
 
 def test_meta_serializes_to_plain_json() -> None:
     out = prep("hello")
-    assert json.loads(json.dumps(comment_meta(AUTO, D(out), dedupe_key="k"))) == comment_meta(
-        AUTO, D(out), dedupe_key="k"
+    assert json.loads(json.dumps(comment_meta(AUTO, out, dedupe_key="k"))) == comment_meta(
+        AUTO, out, dedupe_key="k"
     )
 
 
@@ -380,9 +480,14 @@ def test_no_terminal_is_auto_unknown(stderr_tty: bool, tty_openable: bool) -> No
     assert got == ("auto:unknown", "default")
 
 
-@pytest.mark.parametrize("name", [None, "", "a b", "x" * 65, "‮"])
-def test_unusable_me_name_falls_back_to_auto(name: str | None) -> None:
-    got = default_actor(None, me_name=name, stderr_tty=True, tty_openable=True)
+@pytest.mark.parametrize("name", [None, 5, "", "a b", "x" * 65, "‮"])
+def test_unusable_me_name_falls_back_to_auto(name: object) -> None:
+    got = default_actor(
+        None,
+        me_name=name,  # type: ignore[arg-type]
+        stderr_tty=True,
+        tty_openable=True,
+    )
     assert got == ("auto:unknown", "default")
 
 

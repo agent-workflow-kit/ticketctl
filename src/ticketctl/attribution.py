@@ -4,7 +4,7 @@ Attribution and Human actions).
 Public API:
     prepare_rich_text(body, actor=..., kind=..., template=..., enabled=..., fmt=..., body_chars=...)
                                    Markdown (or ``--format adf`` text) -> the final ADF and its hash
-    comment_meta(actor, doc, dedupe_key=None)
+    comment_meta(actor, rich, dedupe_key=None)
                                    the ``ticketctl.meta`` comment property value
     default_actor(flag, me_name=..., stderr_tty=..., tty_openable=...)
                                    the actor string and its ``actor_source``
@@ -34,8 +34,9 @@ template stays literal.
 ``ticketctl.meta`` is written in the create request of the comment itself (the write flow owns
 that); a comment through a transition ``Comment`` field is a ``field`` path and has no property.
 
-TODO(#23): the write flow calls ``prepare_rich_text`` in its prepare step, sends ``comment_meta``
-in the create request, and hands the same ``RichText.sha256`` to the plan, hooks and audit.
+TODO(#23): the write flow calls ``prepare_rich_text`` in its prepare step, sends
+``comment_meta(actor, rich)`` (the same ``RichText``) in the create request, and hands the same
+``RichText.sha256`` to the plan, hooks and audit.
 TODO(#29): ``comment`` calls this with ``kind="comment"`` and the dedupe lookup reads the property.
 TODO(#30): ``create`` calls this with ``kind="description"``; ``update`` and ``transition`` call it
 with ``kind="field"`` for each rich-text value.
@@ -44,6 +45,7 @@ with ``kind="field"`` for each rich-text value.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -59,6 +61,7 @@ Kind = Literal["comment", "description", "field"]
 Format = Literal["markdown", "adf"]
 Node = dict[str, Any]
 
+_MARKER = re.compile(r"<U\+[0-9A-F]{4,6}>")
 _KINDS = ("comment", "description", "field")
 _FORMATS = ("markdown", "adf")
 
@@ -79,7 +82,8 @@ class RichText:
 def attribution_text(template: str) -> str:
     """The sanitized, stripped template. A template with no visible text is a config error."""
     text = sanitize_line(template).strip()
-    if not text:
+    # A template of only sanitizer markers (zero-width, control characters) shows nothing.
+    if not _MARKER.sub("", text).strip():
         raise InputError(
             2, "invalid_config", "config_invalid", "attribution.template has no visible text"
         )
@@ -155,22 +159,25 @@ def prepare_rich_text(
 
 def comment_meta(
     actor: str,
-    doc: Node,
+    rich: RichText,
     *,
     dedupe_key: str | None = None,
-    body_chars: int = DEFAULT_BODY_CHARS,
 ) -> dict[str, Any]:
-    """The value of the ``ticketctl.meta`` property for a comment whose final ADF is ``doc``.
+    """The value of the ``ticketctl.meta`` property for the comment ``rich`` was prepared for.
 
+    ``rich`` is the result of ``prepare_rich_text`` for that comment; its ``sha256`` is the body
+    hash (no re-validation, so no size limit is applied here). A ``ValueError`` (caller bug) if
+    ``rich.doc`` is ``None`` or if an ``auto`` actor's text lacks the attribution paragraph.
     ``key_sha256`` (the sha256 of the key string alone, UTF-8) is present only for a dedupe key,
-    which must match the dedupe-key grammar (else ``InputError`` 22). ``doc`` is validated again
-    before it is hashed.
+    which must match the dedupe-key grammar (else ``InputError`` exit 2, code ``usage``, reason
+    ``invalid_argument``).
     """
-    meta: dict[str, Any] = {
-        "v": META_VERSION,
-        "actor_kind": actor_kind(actor),
-        "body_sha256": body_sha256(doc, body_chars=body_chars),
-    }
+    kind = actor_kind(actor)
+    if rich.doc is None or rich.sha256 is None:
+        raise ValueError("comment_meta needs a prepared document")
+    if kind == "auto" and not rich.attributed:
+        raise ValueError("an auto actor's comment must carry the attribution paragraph")
+    meta: dict[str, Any] = {"v": META_VERSION, "actor_kind": kind, "body_sha256": rich.sha256}
     if dedupe_key is not None:
         grammar = GRAMMARS["dedupe_key"]
         if not isinstance(dedupe_key, str) or not grammar.pattern.fullmatch(dedupe_key):
@@ -199,7 +206,8 @@ def default_actor(
     if flag is not None:
         actor_kind(flag)
         return flag, "flag"
-    if stderr_tty and tty_openable and me_name:
+    # Defensive: config normalization owns me.name; never trust it to be a usable string.
+    if stderr_tty and tty_openable and isinstance(me_name, str) and me_name:
         candidate = f"human:{me_name}"
         if GRAMMARS["actor"].pattern.fullmatch(candidate):
             return candidate, "tty"
