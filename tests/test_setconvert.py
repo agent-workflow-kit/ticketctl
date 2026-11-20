@@ -401,6 +401,21 @@ def test_textarea_custom_field_and_comment_are_rich_text() -> None:
     assert value("inline", "string", fid="customfield_90004", custom=f"{NS}:textfield") == "inline"
 
 
+def test_comment_schema_type_alone_makes_a_custom_field_rich_text(tmp_path: Path) -> None:
+    # not an id in RICH_IDS and not a :textarea custom type: only the schema type says rich
+    kw: dict[str, Any] = {"fid": "customfield_90001"}
+    with pytest.raises(TicketctlError) as exc:
+        setconvert.convert_assignment(resolved("text", "comment", **kw), ctx())
+    assert exc.value.code == "invalid_request" and exc.value.reason == "invalid_value"
+    p = tmp_path / "n.md"
+    p.write_text("Hello **world**\n")
+    fv = setconvert.convert_assignment(
+        with_source(resolved("", "comment", **kw), Source("file", str(p))), ctx()
+    )
+    assert fv.rich is not None and fv.payload == fv.rich.doc
+    assert fv.payload["type"] == "doc"
+
+
 def test_repeated_rich_text_is_unchanged(tmp_path: Path) -> None:
     p = tmp_path / "d.md"
     p.write_text("same **text**\n")
