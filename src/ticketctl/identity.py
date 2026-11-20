@@ -76,6 +76,10 @@ def fetch_me(gw: Gateway) -> Me:
     return me
 
 
+# Cache-read failures that only cost a refetch; any other state failure stays fatal.
+_CACHE_READ_DOWNGRADES = frozenset({"state_symlink", "state_type", "state_io"})
+
+
 def load_me(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> Me:
     """The cached account (fresh within ``cache_ttl``) or a fresh ``/myself`` that is cached."""
     site = rt.config.sites[site_name]
@@ -87,6 +91,8 @@ def load_me(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> Me:
                 rt.state_dir, site_name, "me", url=url, email=email, ttl=site.cache_ttl
             )
         except StateError as exc:
+            if exc.reason not in _CACHE_READ_DOWNGRADES:
+                raise
             rt.warn(f"warning: the account cache cannot be read ({exc.reason}); refetching")
             stored = None
         me = None if stored is None else _from_document(stored, "cache")

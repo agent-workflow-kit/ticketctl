@@ -280,6 +280,19 @@ def test_a_symlinked_me_json_is_a_warning_and_a_refetch(live: Env, argv: list[st
     assert "warning" in err and "Traceback" not in err
 
 
+def test_a_fatal_cache_read_failure_is_not_downgraded(
+    live: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ticketctl.state import StateError
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise StateError("state_owner", "the state directory is owned by someone else")
+
+    monkeypatch.setattr("ticketctl.identity.cache.read_cache", boom)
+    code, out, err = live.run("--json", "whoami")
+    assert code == 1 and err_of(out)["code"] == "internal"
+
+
 def test_quiet_drops_warnings_not_results(env: Env) -> None:
     env.write(TWO)
     env.mp.setenv("TICKETCTL_SITES__ZED__URL", "https://evil.test")  # a loader warning
@@ -788,11 +801,16 @@ def test_the_scrub_is_armed_before_any_output_is_written(
     monkeypatch.setattr("ticketctl.runtime.configure_scrubber", configure)
     real_write = output.write
 
+    armed_at_write: list[bool] = []
+
     def write(stream: Any, text: str) -> None:
         events.append("write")
+        # the scrubber must really be armed now, not merely have been called
+        armed_at_write.append(sanitize.scrub(SITE_TOKEN) == "<redacted>")
         real_write(stream, text)
 
     monkeypatch.setattr("ticketctl.output.write", write)
     monkeypatch.setattr("ticketctl.cli._write", write)
     live.run("--json", "--verbose", "whoami")
     assert "write" in events and events[0] == "armed"
+    assert armed_at_write and all(armed_at_write)
