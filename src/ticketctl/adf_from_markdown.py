@@ -24,8 +24,8 @@ reach the output only as ``<U+XXXX>`` markers.
 
 ``validate_adf()`` (``adf_validate``) re-checks this output (and ``--format adf`` input) against the
 allowlist; this module does not replace it.
-TODO(#22): the attribution paragraph is added after conversion; callers pass its text length as
-``reserve`` and its node count as ``reserve_nodes`` so the size rules count it.
+The attribution paragraph is added after conversion by ``attribution.prepare_rich_text``, which
+passes its text length as ``reserve`` and its node count as ``reserve_nodes``.
 """
 
 from __future__ import annotations
