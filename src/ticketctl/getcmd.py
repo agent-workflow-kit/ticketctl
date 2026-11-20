@@ -28,7 +28,6 @@ import argparse
 import json
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,9 +80,10 @@ def comments_arg(text: str) -> int:
     """
     if not _INTEGER.fullmatch(text):
         raise argparse.ArgumentTypeError("invalid number (an integer)")
-    if len(text.lstrip("-")) > 18:
+    try:
+        return int(text)
+    except ValueError:  # more digits than Python converts: far out of range
         return -1 if text.startswith("-") else 10**18
-    return int(text)
 
 
 def distinct_keys(rt: Runtime, g: Globals, refs: list[str]) -> tuple[list[str], list[str]]:
@@ -191,6 +191,8 @@ class _Reader:
         return _Read(ticket=ticket, warnings=out.warnings)
 
     def _comments(self, ticket: dict[str, Any]) -> None:
+        if self.stop.is_set():
+            raise TicketctlError("internal", "interrupted")
         canonical = ticket["key"]
         response = self.gw.request(
             "GET",
@@ -251,17 +253,52 @@ def _aggregate(errors: list[tuple[str, TicketctlError]]) -> TicketctlError:
 def _read_all(reader: _Reader, names: list[str]) -> list[_Read]:
     """Read every key at concurrency 4, in input order; Ctrl-C does not wait for the workers.
 
-    The workers in flight end by the command's deadline; keys not yet started return at once.
+    The workers are daemon threads, so an interrupt leaves no non-daemon thread to join at exit;
+    the ones in flight end by the command's deadline, and keys not yet started return at once.
     """
-    pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
+    results: dict[int, _Read] = {}
+    pending = iter(enumerate(names))
+    lock = threading.Lock()
+    done = threading.Condition(lock)
+
+    def work() -> None:
+        while True:
+            with lock:
+                item = next(pending, None)
+            if item is None:
+                return
+            index, key = item
+            try:
+                read = reader.one(key)
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiting caller
+                read = _Read(error=TicketctlError("internal", "interrupted", key=key))
+                with done:
+                    results[index] = read
+                    failure.append(exc)
+                    done.notify_all()
+                reader.stop.set()
+                return
+            with done:
+                results[index] = read
+                done.notify_all()
+
+    failure: list[BaseException] = []
+    threads = [
+        threading.Thread(target=work, name=f"ticketctl-get-{n}", daemon=True)
+        for n in range(min(CONCURRENCY, len(names)))
+    ]
+    for thread in threads:
+        thread.start()
     try:
-        reads = list(pool.map(reader.one, names))
+        with done:
+            while len(results) < len(names) and not failure:
+                done.wait(0.1)
+            if failure:
+                raise failure[0]
     except BaseException:
         reader.stop.set()
-        pool.shutdown(wait=False, cancel_futures=True)
         raise
-    pool.shutdown()
-    return reads
+    return [results[i] for i in range(len(names))]
 
 
 def get(g: Globals, a: argparse.Namespace) -> dict[str, Any]:

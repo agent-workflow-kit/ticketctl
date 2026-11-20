@@ -759,6 +759,42 @@ def test_a_stopped_reader_makes_no_request(env: Env, site: FakeProvider) -> None
     assert real is not counting
 
 
+def test_ctrl_c_does_not_wait_for_a_blocked_worker(env: Env, site: FakeProvider) -> None:
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocked(self: Any, key: str) -> Any:
+        if key == "DEMO-100":
+            assert started.wait(10)
+            raise KeyboardInterrupt
+        started.set()
+        release.wait(30)  # an in-flight request that outlives the interrupt
+        return getcmd._Read(error=getcmd.TicketctlError("internal", "late"))
+
+    env.mp.setattr(getcmd._Reader, "_read", blocked)
+    keys = seed_many(site, 6)
+    begun = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            getcmd._read_all(getcmd._Reader(None, None, (), 0, None), keys)  # type: ignore[arg-type]
+        elapsed = time.monotonic() - begun
+        workers = [t for t in threading.enumerate() if t.name.startswith("ticketctl-get-")]
+        assert elapsed < 5
+        assert workers and all(t.daemon for t in workers)
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("text", ["0000000000000000000005", "-0000000000000000000000"])
+def test_comments_arg_reads_leading_zeros_by_value(text: str) -> None:
+    assert getcmd.comments_arg(text) == int(text)
+
+
+def test_comments_arg_still_bounds_a_huge_value() -> None:
+    assert getcmd.comments_arg("9" * 29) > 50
+    assert getcmd.comments_arg("-" + "9" * 29) < 1
+
+
 def test_the_input_order_of_warnings_does_not_depend_on_the_threads(
     env: Env, site: FakeProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -737,6 +737,17 @@ def test_rate_limit_values_are_in_verbose_output_and_the_error(serve) -> None:
     assert any("rate_limit_limit=100" in line for line in rig.verbose)
 
 
+def test_a_hold_longer_than_the_remaining_deadline_sends_nothing(serve) -> None:
+    server = serve(json_reply())
+    rig = make_rig(server.url, budget=5.0)
+    with rig.gw._lock:
+        rig.gw._hold_until = time.monotonic() + 100  # another thread's Retry-After
+    with pytest.raises(GatewayError) as exc:
+        rig.get()
+    assert exc.value.code == "timeout"
+    assert server.requests == [] and rig.sleeps == []
+
+
 # ---------------------------------------------------------------------------------------------
 # Deadline and hostile timing
 # ---------------------------------------------------------------------------------------------

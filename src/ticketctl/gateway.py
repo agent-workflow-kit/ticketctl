@@ -970,7 +970,10 @@ class Gateway:
             self._release(until)
         elif held is not None:
             wait = held - time.monotonic()
-            if 0 < wait < remaining:
+            if wait >= remaining:
+                # Another thread's hold outlasts this command: never send during it.
+                raise GatewayError("timeout", "the command timed out while waiting for a hold")
+            if wait > 0:
                 self._sleep(wait)  # another thread is sleeping for pacing or a Retry-After
 
     def _response(self, attempt: _Attempt, call: _Call) -> Response:
