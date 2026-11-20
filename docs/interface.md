@@ -563,4 +563,4 @@ The interface version is semver; before 1.0 a breaking change is a `feat` whose 
 
 ## Platform notes
 
-Pure standard library; Linux, WSL and macOS behave the same. Python 3.12 and 3.13. Timestamps are normalized to UTC; local time is never printed. There is no sandbox or process work in ticketctl.
+Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. Linux, WSL and macOS behave the same. Python 3.12 and 3.13. Timestamps are normalized to UTC; local time is never printed. There is no sandbox or process work in ticketctl.
