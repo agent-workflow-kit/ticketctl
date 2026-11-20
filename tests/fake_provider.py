@@ -697,6 +697,12 @@ class FakeProvider:
         self.allow_internal_errors = False
         self.tickets: dict[str, Ticket] = {}
         self.moved: dict[str, str] = {}  # old key (upper case) -> current key
+        # Hostile or changing metadata lists: a non-None value replaces the whole answer body of
+        # that list endpoint (any JSON value); ``extra_fields`` are appended to the field list.
+        self.field_list_body: Any = None
+        self.priority_list_body: Any = None
+        self.resolution_list_body: Any = None
+        self.extra_fields: list[Any] = []
         self.sprints = copy.deepcopy(SPRINTS)
         self.now = datetime(2026, 3, 4, 15, 0, tzinfo=UTC)
         self._next_id = 10000
@@ -1343,15 +1349,21 @@ class FakeProvider:
                     True,
                 )
             )
-        return Out(200, sys_fields + custom)
+        if self.field_list_body is not None:
+            return Out(200, self.field_list_body)
+        return Out(200, sys_fields + custom + list(self.extra_fields))
 
     def _resolutions(self, call: Call) -> Out:
+        if self.resolution_list_body is not None:
+            return Out(200, self.resolution_list_body)
         return Out(
             200,
             [{"id": str(100 + i), "name": n, "description": ""} for i, n in enumerate(RESOLUTIONS)],
         )
 
     def _priorities(self, call: Call) -> Out:
+        if self.priority_list_body is not None:
+            return Out(200, self.priority_list_body)
         return Out(200, [{"id": str(1 + i), "name": n} for i, n in enumerate(PRIORITIES)])
 
     def _old_search(self, call: Call) -> Out:

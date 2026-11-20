@@ -1,4 +1,4 @@
-"""The cache store: ``cache/<site>/{fields,me,priorities}.json`` (docs/interface.md "Files").
+"""The cache store: ``cache/<site>/{fields,me,priorities,resolutions}.json`` (docs/interface.md "Files").
 
 Public API:
 
@@ -14,6 +14,10 @@ Public API:
     unknown ``schema_version``, for another site, url or email hash, older than ``ttl`` or
     fetched in the future. A damaged cache never raises. A symlink, a non-regular file or a
     foreign owner is a :class:`StateError`, not a silent discard. ``ttl`` of zero always misses.
+
+``discard_cache(state_dir, site, name)``
+    Delete one cache file (a reader found its content unusable although the header was valid).
+    A missing file is not an error.
 
 Readers never see a partial file: replacement is a rename.
 """
@@ -36,7 +40,7 @@ from ticketctl.sanitize import GRAMMARS, InputError
 from ticketctl.state import StateError
 
 SCHEMA_VERSION = 1
-NAMES = ("fields", "me", "priorities")
+NAMES = ("fields", "me", "priorities", "resolutions")
 HEADER = ("schema_version", "site", "url", "email_sha256", "fetched_at")
 MAX_CACHE_BYTES = 8 * 1024 * 1024
 _CLOCK_SKEW = timedelta(minutes=5)
@@ -149,6 +153,23 @@ def read_cache(
             _discard(site_fd, filename, ident)
             return None
         return doc
+    finally:
+        os.close(site_fd)
+
+
+def discard_cache(state_dir: Path, site: str, name: str) -> None:
+    filename = _check(site, name)
+    root = state.open_dir(state_dir, create=False)
+    if root is None:
+        return
+    try:
+        site_fd = _open_site_dir(root, site, create=False)
+    finally:
+        os.close(root)
+    if site_fd is None:
+        return
+    try:
+        _discard(site_fd, filename)
     finally:
         os.close(site_fd)
 

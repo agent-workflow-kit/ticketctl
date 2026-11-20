@@ -267,3 +267,21 @@ def test_unserializable_data_is_refused(sd: Path) -> None:
 def test_email_hash_helper() -> None:
     assert cache.email_sha256(EMAIL) == hashlib.sha256(EMAIL.encode()).hexdigest()
     assert cache.email_sha256(None) == hashlib.sha256(b"").hexdigest()
+
+
+def test_discard_cache_removes_one_file_and_tolerates_a_missing_one(sd: Path) -> None:
+    cache.discard_cache(sd, "main", "fields")  # no state, no cache directory: fine
+    put(sd)
+    cache.write_cache(sd, "main", "me", {"time_zone": "UTC"}, url=URL, email=EMAIL, now=NOW)
+    cache.discard_cache(sd, "main", "fields")
+    assert not file_of(sd).exists()
+    assert (sd / "cache" / "main" / "me.json").exists()
+    cache.discard_cache(sd, "main", "fields")
+    with pytest.raises(StateError):
+        cache.discard_cache(sd, "main", "../x")
+
+
+def test_resolutions_is_a_cache_name(sd: Path) -> None:
+    cache.write_cache(sd, "main", "resolutions", {"resolutions": ["Done"]}, url=URL, email=EMAIL, now=NOW)
+    got = cache.read_cache(sd, "main", "resolutions", url=URL, email=EMAIL, ttl=TTL, now=NOW)
+    assert got is not None and got["resolutions"] == ["Done"]
