@@ -540,7 +540,7 @@ def test_cache_ttl_accepts_units(home: Home) -> None:
     assert home.load().config.sites["main"].cache_ttl == timedelta(hours=1)
 
 
-@pytest.mark.parametrize("text", ["'-1'", "'x'", "1.5", "true"])
+@pytest.mark.parametrize("text", ["'-1'", "'x'", "1.5", "true", "-0"])
 def test_cache_ttl_rejects(home: Home, text: str) -> None:
     expect_error(home, site_text(cache_ttl=f"cache_ttl: {text}"), "sites.main.cache_ttl")
 
@@ -1649,3 +1649,8 @@ def test_board_name_blank_rejected(home: Home, value: str) -> None:
 def test_board_name_accepted(home: Home) -> None:
     home.main(site_text(board="board: Team Board"))
     assert home.load().config.sites["main"].board == "Team Board"
+
+
+def test_board_yaml11_numeric_form_stays_a_name(home: Home) -> None:
+    home.main(site_text(board="board: 0x10"))
+    assert home.load().config.sites["main"].board == "0x10"

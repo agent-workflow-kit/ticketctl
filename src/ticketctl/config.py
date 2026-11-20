@@ -496,14 +496,15 @@ class _StrictLoader(yaml.SafeLoader):
 
 # YAML 1.1 reads `010`, `0x10`, `0b11`, `1_0`, `1:30` and `+5` as integers; a duration or board must
 # never come from those. Only plain decimal integers (optionally negative, so a negative is a range
-# error) resolve as int on this loader; everything else stays a string and fails the grammar.
+# error; `-0` is not one) resolve as int on this loader; everything else, these forms included,
+# stays a string, so it fails the duration grammars and is read as a board name for `board`.
 _INT_TAG = "tag:yaml.org,2002:int"
 _StrictLoader.yaml_implicit_resolvers = {
     first: [(tag, rx) for tag, rx in resolvers if tag != _INT_TAG]
     for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
 }
 _StrictLoader.add_implicit_resolver(
-    _INT_TAG, re.compile(r"^-?(?:0|[1-9][0-9]*)$"), list("-0123456789")
+    _INT_TAG, re.compile(r"^(?:-?[1-9][0-9]*|0)$"), list("-0123456789")
 )
 
 
