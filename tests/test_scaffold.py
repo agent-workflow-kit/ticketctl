@@ -19,6 +19,7 @@ MODULES = [
     "gateway",
     "sanitize",
     "audit",
+    "state",
     "cache",
     "provider",
     "jira",
