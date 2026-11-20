@@ -50,7 +50,6 @@ KINDS = ("cli", "hooks")
 # the PR that adds the first golden file for it.
 PENDING: dict[str, int] = {
     "cli/get.json": 15,
-    "cli/search.json": 17,
     "cli/comments.json": 18,
     "cli/transitions.json": 18,
     "cli/sprints-list.json": 18,

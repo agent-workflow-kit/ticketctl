@@ -19,6 +19,8 @@ MODULES = [
     "gateway",
     "sanitize",
     "search_compile",
+    "search_cursor",
+    "searchcmd",
     "audit",
     "state",
     "cache",

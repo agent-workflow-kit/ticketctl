@@ -1,0 +1,100 @@
+{
+  "count": 3,
+  "next": null,
+  "tickets": [
+    {
+      "assignee": null,
+      "estimate": null,
+      "key": "DEMO-1",
+      "labels": [
+        "alpha"
+      ],
+      "parent": null,
+      "priority": {
+        "name": "Medium",
+        "rank": 2
+      },
+      "site": "main",
+      "sprints": [],
+      "status": {
+        "category": "new",
+        "name": "Backlog"
+      },
+      "title": "Seeded backlog task",
+      "type": {
+        "name": "Task",
+        "subtask": false
+      },
+      "updated": "2026-03-04T15:00:00Z"
+    },
+    {
+      "assignee": {
+        "account_id": "acct-0001",
+        "display_name": "Fake Me"
+      },
+      "estimate": null,
+      "key": "DEMO-2",
+      "labels": [],
+      "parent": null,
+      "priority": {
+        "name": "Medium",
+        "rank": 2
+      },
+      "site": "main",
+      "sprints": [
+        {
+          "end": "2026-03-02T15:00:00Z",
+          "id": 2,
+          "name": "Sprint two",
+          "start": "2026-02-16T15:00:00Z",
+          "state": "active"
+        }
+      ],
+      "status": {
+        "category": "indeterminate",
+        "name": "In Progress"
+      },
+      "title": "Seeded task in progress",
+      "type": {
+        "name": "Task",
+        "subtask": false
+      },
+      "updated": "2026-03-04T15:00:00Z"
+    },
+    {
+      "assignee": {
+        "account_id": "acct-0002",
+        "display_name": "Fake Other"
+      },
+      "estimate": null,
+      "key": "DEMO-3",
+      "labels": [],
+      "parent": null,
+      "priority": {
+        "name": "Medium",
+        "rank": 2
+      },
+      "site": "main",
+      "sprints": [
+        {
+          "end": "2026-02-16T15:00:00Z",
+          "id": 1,
+          "name": "Sprint one",
+          "start": "2026-02-02T15:00:00Z",
+          "state": "closed"
+        }
+      ],
+      "status": {
+        "category": "done",
+        "name": "Done"
+      },
+      "title": "Seeded finished bug",
+      "type": {
+        "name": "Bug",
+        "subtask": false
+      },
+      "updated": "2026-03-04T15:00:00Z"
+    }
+  ],
+  "truncated": false
+}
