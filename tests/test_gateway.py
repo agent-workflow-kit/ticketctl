@@ -160,6 +160,14 @@ def test_credentials_are_stripped_of_surrounding_whitespace(serve) -> None:
     assert server.requests[0].headers["authorization"] == [f"Basic {B64}"]
 
 
+def test_url_is_stripped_of_surrounding_whitespace_but_not_interior(serve) -> None:
+    server = serve(json_reply())
+    make_rig(server.url + "/ ").get()
+    assert len(server.requests) == 1
+    with pytest.raises(GatewayError):
+        make_target("https://x.example.test/a b")
+
+
 def test_post_sends_compact_json_body(serve) -> None:
     server = serve(json_reply("{}", status=201))
     make_rig(server.url).post(body={"fields": {"summary": "caf\u00e9"}})
@@ -504,6 +512,20 @@ def test_write_dropped_after_the_headers_is_outcome_unknown_with_no_retry(serve)
     assert rig.sleeps == []
 
 
+def test_write_409_with_a_truncated_body_is_not_outcome_unknown(serve) -> None:
+    def partial(conn: Conn) -> None:
+        conn.send(response_bytes(409, b"0123456789", content_length=100))
+
+    server = serve(partial)
+    rig = make_rig(server.url)
+    with pytest.raises(GatewayError) as exc:
+        rig.post()
+    assert exc.value.outcome_unknown is False
+    assert exc.value.code == "provider_changed"
+    assert len(server.requests) == 1
+    assert rig.sleeps == []
+
+
 def test_write_dropped_mid_body_is_outcome_unknown(serve) -> None:
     def partial(conn: Conn) -> None:
         conn.send(response_bytes(200, b"0123456789", content_length=100))
@@ -578,6 +600,13 @@ def test_retry_after_zero_is_honoured_as_no_wait(serve) -> None:
     rig = make_rig(server.url, retry_after_max=0.0)
     rig.get()
     assert rig.sleeps == [0]
+
+
+def test_zero_padded_retry_after_is_its_numeric_value(serve) -> None:
+    server = serve([reply(429, "", {"Retry-After": "00000000005"}), json_reply()])
+    rig = make_rig(server.url, retry_after_max=60.0)
+    rig.get()
+    assert rig.sleeps == [5]
 
 
 @pytest.mark.parametrize(
@@ -1695,6 +1724,23 @@ def test_a_registered_secret_equal_to_a_number_does_not_break_the_response(serve
     assert response.status == 200
     assert response.data == {"n": 12345678, "s": "a<redacted>b", "<redacted>": [12345678]}
     assert "12345678" not in response.text
+
+
+def test_the_discarded_text_of_a_parsed_2xx_is_not_scrubbed(serve, monkeypatch) -> None:
+    seen: list[str] = []
+    real = gateway.scrub
+
+    def spy(value: str) -> str:
+        seen.append(value)
+        return real(value)
+
+    monkeypatch.setattr(gateway, "scrub", spy)
+    body = '{"alpha": "beta"}'
+    server = serve(json_reply(body))
+    response = make_rig(server.url).get()
+    assert response.data == {"alpha": "beta"}
+    assert response.text == ""
+    assert body not in seen
 
 
 def test_a_secret_in_an_error_body_is_scrubbed_in_data_and_text(serve) -> None:

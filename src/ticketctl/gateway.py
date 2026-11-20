@@ -174,6 +174,7 @@ class Target:
             raise _bad_site_url("the site's email must not contain a colon")
         object.__setattr__(self, "email", self.email.strip())
         object.__setattr__(self, "token", self.token.strip())
+        object.__setattr__(self, "url", self.url.strip())
         if _URL_BLANK.search(self.url):
             raise _bad_site_url("the site url must not contain whitespace or control characters")
         try:
@@ -420,7 +421,8 @@ def _parse_retry_after(value: str | None) -> int | None:
     if re.fullmatch(r"[0-9]+", text, re.ASCII):
         # Clamped, so any value above the cap ends the command at once (and int() of a
         # 5000-digit header never runs).
-        return RETRY_AFTER_CLAMP if len(text) > 10 else min(int(text), RETRY_AFTER_CLAMP)
+        digits = text.lstrip("0") or "0"
+        return RETRY_AFTER_CLAMP if len(digits) > 10 else min(int(digits), RETRY_AFTER_CLAMP)
     return None
 
 
@@ -877,11 +879,17 @@ class Gateway:
             raise GatewayError(
                 "unavailable", f"TLS verification failed ({attempt.exc_name})", retryable=False
             )
-        if unknown:
+        if body_unknown:
             raise GatewayError(
                 "outcome_unknown",
                 f"the connection failed after the request was sent ({attempt.exc_name})",
                 outcome_unknown=True,
+            )
+        if unknown:
+            # A 4xx whose body could not be read: nothing was applied, and a sent write is never
+            # re-sent.
+            raise _provider_changed(
+                f"the provider's response could not be read ({attempt.exc_name})", status=status
             )
         where = ""
         if proxy is not None and attempt.stage == "connect":
@@ -964,10 +972,8 @@ class Gateway:
                 raise
         # Parse first, scrub after: a replacement inside the raw text could break the structure.
         data = _scrub_tree(data)
-        text = scrub(text)
-        return Response(
-            status, data, "" if ok and data is not None else text, call.rate_limit, call.retries
-        )
+        text = "" if ok and data is not None else scrub(text)
+        return Response(status, data, text, call.rate_limit, call.retries)
 
     def _record(self, call: _Call, duration_ms: int) -> None:
         target = self.target
