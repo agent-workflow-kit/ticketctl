@@ -44,9 +44,6 @@ HOSTS_OK = {
     "127.0.0.1.evil.test",
     "localhost.evil.test",
 }
-# Single-label fragments that hostile-input tests leave when a space or a non-ASCII character cuts
-# a synthetic host short ("exa mple.test"); the rest of that host is on the list above.
-FRAGMENTS_OK = {"a", "api", "exa", "pro", "ex", "exam", "bad"}
 LOOPBACK = re.compile(r"^(127\.\d+\.\d+\.\d+|0\.0\.0\.0|::\d?|10\.0\.0\.\d+)$")
 # Project key prefixes the fixtures may use. Add one here only when it is invented.
 PROJECTS = {
@@ -106,7 +103,7 @@ def files(root: Path = TESTS) -> Iterator[tuple[Path, str]]:
 
 def host_ok(host: str) -> bool:
     low = host.lower()
-    return low in HOSTS_OK or low in FRAGMENTS_OK or LOOPBACK.match(low) is not None
+    return low in HOSTS_OK or LOOPBACK.match(low) is not None
 
 
 def scan(text: str) -> list[tuple[int, str]]:
@@ -256,3 +253,9 @@ def test_the_marker_exempts_its_own_line_only() -> None:
     first = "https:" + "//acme-corp" + ".atlassian" + ".net/x"
     sample = first + "\n" + first + "  # " + MARKER + "\n"
     assert [line for line, _ in scan(sample)] == [1, 1]
+
+
+@pytest.mark.parametrize("host", ["a", "api", "ex", "exa", "exam", "pro", "bad"])
+def test_a_plain_single_label_host_is_flagged(host: str) -> None:
+    # Hostile-input fixtures that cut a host short carry the marker on their own line instead.
+    assert [what for _, what in scan(f"url = 'http://{host}/x'")] == [f"host {host}"]

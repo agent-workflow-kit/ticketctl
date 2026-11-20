@@ -207,7 +207,10 @@ class HandlerError:
 
     call: Call
     exc: BaseException
-    status: int  # 400 for client-shaped malformed input, 500 otherwise
+    status: int  # 400 or 500: what the fake answered
+    # True only for input the fake deliberately rejects as malformed; an exception that escapes a
+    # handler (even one mapped to a 400) is unexpected and fails the fixture teardown.
+    client_malformed: bool = False
 
 
 class ProviderError(Exception):
@@ -1023,7 +1026,8 @@ class FakeProvider:
         except ProviderError as err:
             return self._error_out(err)
         except Exception as exc:  # noqa: BLE001 - nothing may drop the connection
-            # Malformed input of the client is a 400; anything else is the fake's own bug (500).
+            # A ValueError or RecursionError is answered as a 400 (malformed input), anything else
+            # as a 500; either way it escaped a handler, so it is recorded as unexpected.
             status = 400 if isinstance(exc, ValueError | RecursionError) else 500
             self.errors.append(HandlerError(call, exc, status))
             message = "Malformed request." if status == 400 else "Internal Server Error"

@@ -242,7 +242,7 @@ def test_split_url_wraps_value_errors_as_invalid_value() -> None:
         s.split_url("https://[::1")
     assert (info.value.exit_code, info.value.reason) == (22, "invalid_value")
     with pytest.raises(s.InputError):
-        s.split_url("http://[bad]x/")
+        s.split_url("http://[bad]x/")  # scan: allow
 
 
 def test_split_url_returns_the_parts() -> None:

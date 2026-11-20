@@ -323,7 +323,15 @@ def test_a_uri_format_is_enforced(tmp_path: Path) -> None:
     check = golden.validator("cli/u.json", schemas)
     for good in ("https://example.test/x", "http://127.0.0.1:8/p?q=1"):
         check.validate({"url": good})
-    for bad in ("not a url", "/relative/path", "https://", "ftp:/no-host", "", "http://a b/c"):
+    bad_urls = (
+        "not a url",
+        "/relative/path",
+        "https://",
+        "ftp:/no-host",
+        "",
+        "http://a b/c",  # scan: allow
+    )
+    for bad in bad_urls:
         with pytest.raises(ValidationError):
             check.validate({"url": bad})
 

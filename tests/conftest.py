@@ -54,7 +54,7 @@ def isolated_environment(
 
 
 def _assert_no_internal_errors(provider: FakeProvider) -> None:
-    internal = [e for e in provider.errors if e.status >= 500]
+    internal = [e for e in provider.errors if not e.client_malformed]
     if internal and not provider.allow_internal_errors:
         raise AssertionError(
             "the fake hit an internal error (set fake.allow_internal_errors to expect it): "

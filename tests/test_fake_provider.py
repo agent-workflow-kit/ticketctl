@@ -1161,6 +1161,7 @@ def test_unknown_fault_and_quirk_values_are_rejected() -> None:
 
 def test_wrong_typed_input_is_a_400_and_never_a_dropped_connection(fake: FakeProvider) -> None:
     ok = {"project": {"key": "DEMO"}, "issuetype": {"name": "Task"}, "summary": "s"}
+    # Every case is client-malformed input and so a 400, except the two marked below.
     cases: list[tuple[str, str, Any]] = [
         ("POST", f"{API}/issue/DEMO-2/transitions", {"transition": "31"}),
         ("POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "41"}, "fields": 5}),
@@ -1196,20 +1197,20 @@ def test_wrong_typed_input_is_a_400_and_never_a_dropped_connection(fake: FakePro
         ("POST", f"{API}/search/jql", b'{"jql": "x", "maxResults": 1' + b"0" * 5000 + b"}"),
         ("POST", f"{API}/search/jql", b"[" * 100000 + b"]" * 100000),
         ("POST", f"{API}/search/jql", b"\xff\xfe\x00"),
+        # 200 by design: /jql/parse reports a bad query inside the body, not as an HTTP error
         ("POST", f"{API}/jql/parse", {"queries": ["(" * 5000]}),
+        # 404: sprint 3 does not exist, so the sprint is refused before the body is looked at
         ("POST", f"{AGILE}/sprint/3/issue", {"issues": [[1], {"a": 1}]}),
         ("POST", f"{AGILE}/backlog/issue", {"issues": "DEMO-1"}),
     ]
+    legit = {("POST", f"{API}/jql/parse"): 200, ("POST", f"{AGILE}/sprint/3/issue"): 404}
     for method, path, body in cases:
-        status, _, _ = fake.request(method, path, body)
-        assert status in {200, 400, 404}, (method, path[:80], status)
-        if status != 200:
-            assert status in {400, 404}, (method, path[:80])
+        want = legit.get((method, path), 400)
+        status = fake.request(method, path, body)[0]
+        assert status == want, (method, path[:80], status)
     assert fake.request("GET", f"{API}/myself")[0] == 200  # still serving
-    assert not [e for e in fake.errors if e.status >= 500]
-    # the ones that are plainly malformed are all 400
-    for method, path, body in cases[:3] + cases[5:7] + cases[11:13]:
-        assert fake.request(method, path, body)[0] == 400, (method, path[:80])
+    # none of it was an unexpected exception: the fixture teardown also checks this
+    assert fake.errors == []
 
 
 def test_a_huge_sprint_id_and_a_deep_property_are_answered(fake: FakeProvider) -> None:
@@ -1242,9 +1243,9 @@ def test_an_unexpected_exception_is_recorded_and_answered(fake: FakeProvider) ->
     fake.allow_internal_errors = True
     assert fake.json("GET", f"{API}/boom")[0] == 500
     assert fake.json("GET", f"{API}/odd")[0] == 400
-    assert [(type(e.exc), e.status, e.call.path) for e in fake.errors] == [
-        (RuntimeError, 500, f"{API}/boom"),
-        (ValueError, 400, f"{API}/odd"),
+    assert [(type(e.exc), e.status, e.client_malformed, e.call.path) for e in fake.errors] == [
+        (RuntimeError, 500, False, f"{API}/boom"),
+        (ValueError, 400, False, f"{API}/odd"),
     ]
     assert fake.request("GET", f"{API}/myself")[0] == 200
 
@@ -1266,6 +1267,23 @@ def test_the_fixture_fails_a_test_that_leaves_an_internal_error(
     provider.allow_internal_errors = True
     _assert_no_internal_errors(provider)
     provider.errors.clear()  # the factory teardown must not fail this test
+
+
+def test_the_fixture_fails_on_an_unexpected_exception_answered_as_a_400(
+    fake_factory: Factory,
+) -> None:
+    from tests.conftest import _assert_no_internal_errors
+
+    provider = fake_factory(None)
+
+    def odd(call: Any) -> Any:
+        raise ValueError("a bug that looks like malformed input")
+
+    provider._routes.insert(0, ("GET", re.compile(f"{API}/odd"), odd))
+    assert provider.request("GET", f"{API}/odd")[0] == 400
+    with pytest.raises(AssertionError, match="internal error"):
+        _assert_no_internal_errors(provider)
+    provider.errors.clear()
 
 
 # --- review round 1: lookups and routing (items 19, 20, 21) --------------------------------------

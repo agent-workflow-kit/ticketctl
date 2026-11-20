@@ -787,17 +787,17 @@ def test_https_url_accepts(home: Home, url: str) -> None:
         "https://example.test#frag",
         "https://example.test/#",
         "https://example.test/a b",
-        "https://exa mple.test",
+        "https://exa mple.test",  # scan: allow
         "https://example.test:99999",
         "https://example.test:abc",
         "https://example.test:",
-        "https://exam%70le.test",
+        "https://exam%70le.test",  # scan: allow
         "https://example.test/%2e%2e",
         "https://example.test/a/../b",
         "https://example.test/a/./b",
         "https://example.test\\\\evil.test",
         "https://example.test/a\\\\b",
-        "https://exämple.test",
+        "https://exämple.test",  # scan: allow
         "https://example.test@evil.test",
         "javascript:alert(1)",
         "https://[::1",
