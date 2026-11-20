@@ -2,16 +2,18 @@
 
 Every test talks to a loopback server of this process (tests/scripted_server.py) or to a closed
 loopback port; nothing reaches a real host. No test starts a program except the TLS fixtures,
-which run the ``openssl`` binary found by an explicit lookup with an empty PATH and a private HOME
-(skipped when it is missing). The fake provider of issue #10 is not used or built here.
+which run the ``openssl`` binary found at a fixed absolute path (never through the ambient PATH),
+with an empty PATH and a private HOME (skipped with a reason when it is missing, a failure when the
+``CI`` variable is set). The fake provider of issue #10 is not used or built here.
 """
 
 from __future__ import annotations
 
 import base64
+import http.client
 import json
+import os
 import re
-import shutil
 import socket
 import ssl
 import subprocess
@@ -191,6 +193,14 @@ def test_site_context_path_is_prefixed(serve) -> None:
         "/a#frag",
         "",
         "/a//b",
+        "/a;b",
+        "/a%2fb",
+        "/a%2Fb",
+        "/a%5cb",
+        "/a%5Cb",
+        "/..;x",
+        "/a/..x",
+        "/%2e%2e;/x",
     ],
 )
 def test_path_that_is_not_a_clean_absolute_path_is_refused(serve, path: str) -> None:
@@ -313,7 +323,7 @@ def test_every_3xx_is_provider_changed_and_nothing_is_re_sent(serve, status, met
     assert len(server.requests) == 1
     assert other.requests == [] and other.connections == 0
     assert other.url not in str(exc.value) and "stolen" not in exc.value.message
-    assert exc.value.outcome_unknown is False
+    assert exc.value.outcome_unknown is (method == "POST")  # a 303 may follow a processed POST
     assert rig.sleeps == []
 
 
@@ -571,7 +581,7 @@ def test_retry_after_zero_is_honoured_as_no_wait(serve) -> None:
 
 
 @pytest.mark.parametrize(
-    "value", ["Wed, 21 Oct 2037 07:28:00 GMT", "-1", "1e3", "abc", "", "99999999999999", "1.5"]
+    "value", ["Wed, 21 Oct 2037 07:28:00 GMT", "-1", "1e3", "abc", "", "1.5", "+5"]
 )
 def test_unusable_retry_after_falls_back_to_backoff(serve, value) -> None:
     server = serve([reply(429, "", {"Retry-After": value}), json_reply()])
@@ -645,6 +655,7 @@ def test_rate_limit_values_are_in_verbose_output_and_the_error(serve) -> None:
         rig.get()
     assert exc.value.details["rate_limit"] == {"limit": 100, "remaining": 3}
     assert any("remaining=3" in line for line in rig.verbose)
+    assert any("rate_limit_limit=100" in line for line in rig.verbose)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1004,6 +1015,15 @@ def test_ipv6_proxy_host_is_described_with_brackets() -> None:
         "http://u:SECRETPW@",
         "http://proxy.test:3128/\x00",
         "http://pro xy.test",
+        "http://proxy.test:0",
+        "http://proxy.test:",
+        "http://u:SECRETPW@proxy.test:",
+        "http://proxy.test:3128/path",
+        "http://proxy.test:3128/a/",
+        "http://proxy.test:3128?x=SECRETPW",
+        "http://proxy.test:3128/?x=1",
+        "http://proxy.test:3128#SECRETPW",
+        "http://proxy.test?",
     ],
 )
 def test_bad_proxy_setting_is_invalid_config_that_never_echoes_the_value(value) -> None:
@@ -1013,6 +1033,13 @@ def test_bad_proxy_setting_is_invalid_config_that_never_echoes_the_value(value) 
     assert exc.value.code == "invalid_config"
     assert "SECRETPW" not in exc.value.message
     assert "proxy.test" not in exc.value.message
+    assert "HTTPS_PROXY" in exc.value.message
+    assert exc.value.details == {"reason": "config_invalid"}
+
+
+def test_a_proxy_url_with_a_root_path_is_accepted() -> None:
+    proxy = _select({"HTTPS_PROXY": "http://proxy.test:3128/"})
+    assert proxy is not None and (proxy.host, proxy.port) == ("proxy.test", 3128)
 
 
 @pytest.mark.parametrize(
@@ -1036,6 +1063,12 @@ def test_bad_proxy_setting_is_invalid_config_that_never_echoes_the_value(value) 
         ("::1", "::1", 443, True),
         ("fd00::/8", "fd12::1", 443, True),
         ("notanet/zz", "api.example.test", 443, False),
+        ("[::1]", "::1", 443, True),
+        ("[::1]:443", "::1", 443, True),
+        ("[::1]:444", "::1", 443, False),
+        ("[::1]:", "::1", 443, False),
+        ("[::2]", "::1", 443, False),
+        ("[fd00::]/8", "fd12::1", 443, False),
     ],
 )
 def test_no_proxy_matching(no_proxy, host, port, bypassed) -> None:
@@ -1052,13 +1085,32 @@ def test_loopback_http_site_is_never_proxied() -> None:
 # TLS and the CONNECT tunnel (needs the openssl binary to mint a throwaway certificate)
 # ---------------------------------------------------------------------------------------------
 
-OPENSSL = shutil.which("openssl")
+_OPENSSL_PATHS = (
+    "/usr/bin/openssl",
+    "/bin/openssl",
+    "/usr/local/bin/openssl",
+    "/opt/homebrew/bin/openssl",
+)
+
+
+def _find_openssl() -> str | None:
+    """Only fixed absolute locations: the ambient PATH never decides which program runs."""
+    for candidate in _OPENSSL_PATHS:
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+OPENSSL = _find_openssl()
 
 
 @pytest.fixture(scope="module")
 def certificate(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     if OPENSSL is None:
-        pytest.skip("openssl is not available")
+        reason = "openssl was not found at " + ", ".join(_OPENSSL_PATHS)
+        if "CI" in os.environ:  # only whether it is set; the TLS tests must not vanish in CI
+            pytest.fail(reason)
+        pytest.skip(reason)
     directory = tmp_path_factory.mktemp("tls")
     home = directory / "home"
     home.mkdir()
@@ -1126,6 +1178,7 @@ def test_an_untrusted_certificate_is_refused_before_any_byte_and_not_retried(
     with pytest.raises(GatewayError) as exc:
         rig.post()
     assert exc.value.code == "unavailable"
+    assert exc.value.retryable is False  # deterministic: re-running cannot help
     assert exc.value.outcome_unknown is False
     assert server.requests == []
     assert rig.sleeps == []
@@ -1304,13 +1357,13 @@ def test_refused_tunnel_is_a_pre_send_failure_with_host_port_only(proxies, statu
 
 def test_unreachable_proxy_names_host_and_port_only() -> None:
     port = closed_port()
-    env = {"HTTPS_PROXY": f"http://secretuser:PROXYPW@127.0.0.1:{port}/path?x=PROXYQ"}
+    env = {"HTTPS_PROXY": f"http://secretuser:PROXYPW@127.0.0.1:{port}"}
     rig = make_rig("https://localhost:9", env=env)
     with pytest.raises(GatewayError) as exc:
         rig.get()
     shown = exc.value.message + json.dumps(exc.value.details) + "".join(rig.verbose)
     assert f"127.0.0.1:{port}" in shown
-    for secret in ("PROXYPW", "secretuser", "PROXYQ", "/path"):
+    for secret in ("PROXYPW", "secretuser"):
         assert secret not in shown
 
 
@@ -1460,3 +1513,384 @@ def test_invalid_header_value_error_cannot_carry_the_token(serve) -> None:
         assert SENTINEL not in str(err) + repr(err) + sanitize.format_traceback(err)
     for request in server.requests:
         assert b"X-Evil" not in request.raw
+
+
+# ---------------------------------------------------------------------------------------------
+# Review round 1
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'"\\"' * ((1 << 20) // 3),  # many quote starts, each one scanning to the end
+        b'"' + b'\\"' * ((1 << 20) // 2),  # one string of escaped quotes, never closed
+        b'"' + b"a" * (1 << 20) + b"\\",  # trailing backslash
+        b'"' * (1 << 20),
+        b'["' + b"[" * (1 << 20),
+    ],
+    ids=["quote-escape-repeat", "escaped-quotes-open", "trailing-backslash", "quotes", "brackets"],
+)
+def test_depth_guard_is_linear_on_unterminated_strings(raw: bytes) -> None:
+    started = time.monotonic()
+    with pytest.raises(GatewayError) as exc:
+        gateway.parse_json(raw)
+    assert time.monotonic() - started < 10.0  # the quadratic form needs minutes at 1 MiB
+    assert exc.value.code == "provider_changed"
+
+
+@pytest.mark.parametrize("digits", ["1000000000", "9" * 10, "9" * 30, "9" * 5000])
+def test_long_retry_after_values_are_clamped_and_end_at_once(serve, digits) -> None:
+    server = serve(reply(429, "", {"Retry-After": digits}))
+    rig = make_rig(server.url, retry_after_max=60.0)
+    with pytest.raises(GatewayError) as exc:
+        rig.get()
+    assert exc.value.code == "rate_limited"
+    assert exc.value.retry_after_s == (min(int(digits), 2**31) if len(digits) < 4000 else 2**31)
+    assert len(server.requests) == 1
+    assert rig.sleeps == []
+
+
+def _early_hints(conn: Conn) -> None:
+    conn.send(b"HTTP/1.1 103 Early Hints\r\nLink: </x>\r\n\r\n" + response_bytes(200, "{}"))
+
+
+def _switching(conn: Conn) -> None:
+    conn.send(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\n")
+
+
+@pytest.mark.parametrize("behavior", [_early_hints, _switching, reply(700, "{}")])
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_a_status_outside_200_to_599_is_malformed(serve, behavior, method) -> None:
+    server = serve(behavior)
+    rig = make_rig(server.url)
+    with pytest.raises(GatewayError) as exc:
+        rig.get() if method == "GET" else rig.post()
+    assert exc.value.code == "provider_changed"
+    assert exc.value.outcome_unknown is (method == "POST")
+    assert len(server.requests) == 1
+    assert rig.sleeps == []
+    assert rig.logs[-1]["status"] is None
+
+
+def _truncated(status: int, headers: dict[str, str] | None = None):
+    return reply(status, b"short", headers, content_length=100)
+
+
+def _bad_length(status: int):
+    def behavior(conn: Conn) -> None:
+        conn.send(f"HTTP/1.1 {status} X\r\nContent-Length: abc\r\n\r\nxx".encode())
+
+    return behavior
+
+
+@pytest.mark.parametrize("make", [_truncated, _bad_length])
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize(("status", "code"), [(401, "bad_credentials"), (403, "forbidden")])
+def test_a_body_failure_does_not_override_401_and_403(serve, make, method, status, code) -> None:
+    server = serve(make(status))
+    rig = make_rig(server.url)
+    with pytest.raises(GatewayError) as exc:
+        rig.get() if method == "GET" else rig.post()
+    assert (exc.value.code, exc.value.status, exc.value.outcome_unknown) == (code, status, False)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize("make", [_truncated, _bad_length])
+def test_a_429_with_a_broken_body_on_a_write_is_retried_then_rate_limited(serve, make) -> None:
+    server = serve([make(429), json_reply('{"id": "1"}', status=201)])
+    rig = make_rig(server.url)
+    assert rig.post().status == 201
+    assert rig.sleeps == [0.5]
+    server2 = serve(make(429))
+    rig2 = make_rig(server2.url)
+    with pytest.raises(GatewayError) as exc:
+        rig2.post()
+    assert (exc.value.code, exc.value.outcome_unknown) == ("rate_limited", False)
+    assert len(server2.requests) == 3
+
+
+def test_a_429_with_a_broken_body_honours_retry_after_above_the_cap(serve) -> None:
+    server = serve(_truncated(429, {"Retry-After": "120"}))
+    rig = make_rig(server.url, retry_after_max=60.0)
+    with pytest.raises(GatewayError) as exc:
+        rig.post()
+    assert (exc.value.code, exc.value.retry_after_s) == ("rate_limited", 120)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize("make", [_truncated, _bad_length])
+def test_a_read_503_with_a_broken_body_is_retried(serve, make) -> None:
+    server = serve([make(503), make(502), json_reply('{"ok": 1}')])
+    rig = make_rig(server.url)
+    assert rig.get().data == {"ok": 1}
+    assert len(server.requests) == 3
+    assert rig.sleeps == [0.5, 1.0]
+
+
+@pytest.mark.parametrize("make", [_truncated, _bad_length])
+def test_a_3xx_with_a_broken_body_is_still_a_redirect_error(serve, make) -> None:
+    server = serve(make(303))
+    with pytest.raises(GatewayError) as exc:
+        make_rig(server.url).post()
+    assert (exc.value.code, exc.value.status, exc.value.outcome_unknown) == (
+        "provider_changed",
+        303,
+        True,
+    )
+
+
+def test_a_4xx_with_an_unusable_body_is_not_an_unknown_outcome(serve) -> None:
+    deep = json_reply(_nested(500).decode(), status=400)
+    for behavior in (
+        _bad_length(400),
+        reply(404, b"{}", content_length=17 << 20),
+        deep,
+        reply(422, b"x" * 10, {"Content-Length": "abc"}),
+    ):
+        server = serve(behavior)
+        with pytest.raises(GatewayError) as exc:
+            make_rig(server.url).post()
+        assert exc.value.code == "provider_changed"
+        assert exc.value.outcome_unknown is False, behavior
+        assert len(server.requests) == 1
+
+
+def test_a_2xx_with_an_unusable_body_stays_an_unknown_outcome_for_a_write(serve) -> None:
+    for behavior in (
+        _bad_length(201),
+        reply(200, b"{}", content_length=17 << 20),
+        json_reply(_nested(500).decode()),
+        reply(200, b"\xff\xfe"),
+        reply(200, "not json"),
+    ):
+        server = serve(behavior)
+        with pytest.raises(GatewayError) as exc:
+            make_rig(server.url).post()
+        assert (exc.value.code, exc.value.outcome_unknown) == ("provider_changed", True)
+        with pytest.raises(GatewayError) as exc2:
+            make_rig(server.url).get()
+        assert exc2.value.outcome_unknown is False
+
+
+def test_a_write_5xx_error_carries_no_retry_after(serve) -> None:
+    server = serve(reply(503, "", {"Retry-After": "30"}))
+    with pytest.raises(GatewayError) as exc:
+        make_rig(server.url).post()
+    assert exc.value.code == "outcome_unknown"
+    assert exc.value.retry_after_s is None
+
+
+def test_a_read_5xx_error_keeps_retry_after(serve) -> None:
+    server = serve(reply(503, "", {"Retry-After": "600"}))
+    with pytest.raises(GatewayError) as exc:
+        make_rig(server.url, retry_after_max=60.0).get()
+    assert exc.value.retry_after_s == 600
+
+
+def test_a_registered_secret_equal_to_a_number_does_not_break_the_response(serve) -> None:
+    sanitize.configure_scrubber(["12345678"])
+    server = serve(json_reply('{"n": 12345678, "s": "a12345678b", "12345678": [12345678]}'))
+    response = make_rig(server.url).get()
+    assert response.status == 200
+    assert response.data == {"n": 12345678, "s": "a<redacted>b", "<redacted>": [12345678]}
+    assert "12345678" not in response.text
+
+
+def test_a_secret_in_an_error_body_is_scrubbed_in_data_and_text(serve) -> None:
+    sanitize.configure_scrubber([SENTINEL])
+    server = serve(json_reply(json.dumps({SENTINEL: [SENTINEL]}), status=400))
+    response = make_rig(server.url).get()
+    assert SENTINEL not in json.dumps(response.data) + response.text
+    assert response.data == {"<redacted>": ["<redacted>"]}
+
+
+def _release_and_wait(release: threading.Event) -> None:
+    release.set()
+    deadline = time.monotonic() + 10
+    while _alive_attempt_threads() and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+@pytest.fixture
+def slow_connect(monkeypatch: pytest.MonkeyPatch) -> Iterator[threading.Event]:
+    release = threading.Event()
+    original = http.client.HTTPConnection.connect
+
+    def slow(self: http.client.HTTPConnection) -> None:
+        release.wait(15)
+        original(self)
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", slow)
+    yield release
+    _release_and_wait(release)
+
+
+def test_the_deadline_is_not_overrun_by_a_waiting_worker(serve, slow_connect) -> None:
+    server = serve(json_reply())
+    rig = make_rig(server.url, budget=1.0, connect_timeout=30.0)
+    started = time.monotonic()
+    with pytest.raises(GatewayError) as exc:
+        rig.get()
+    assert time.monotonic() - started < 2.5  # it used to wait up to 2 s more
+    assert exc.value.code == "timeout"
+
+
+def test_cancel_during_a_slow_connect_sends_no_request_byte(serve, slow_connect) -> None:
+    server = serve(json_reply())
+    rig = make_rig(server.url, budget=0.5, connect_timeout=30.0)
+    with pytest.raises(GatewayError) as exc:
+        rig.post()
+    assert (exc.value.code, exc.value.outcome_unknown) == ("timeout", False)
+    _release_and_wait(slow_connect)  # the connect now completes after the deadline
+    assert _alive_attempt_threads() == []
+    assert server.requests == []
+
+
+_PROXY_BAD_NAMES = ("HTTPS_PROXY", "https_proxy")
+
+
+@pytest.mark.parametrize("variable", _PROXY_BAD_NAMES)
+def test_bad_proxy_error_names_the_variable_in_use(variable) -> None:
+    with pytest.raises(GatewayError) as exc:
+        _select({variable: "http://proxy.test:0"})
+    assert variable in exc.value.message
+
+
+def test_proxy_without_a_port_uses_80_and_an_explicit_port_is_kept() -> None:
+    assert _select({"HTTPS_PROXY": "http://p.test"}).port == 80  # type: ignore[union-attr]
+    assert _select({"HTTPS_PROXY": "http://p.test:65535"}).port == 65535  # type: ignore[union-attr]
+
+
+def test_the_two_target_config_errors_carry_the_config_invalid_reason() -> None:
+    for url, allow in (("ftp://api.example.test", False), ("http://api.example.test", True)):
+        with pytest.raises(GatewayError) as exc:
+            make_target(url, allow_http=allow)
+        assert exc.value.details == {"reason": "config_invalid"}
+        assert exc.value.exit_code == 2
+
+
+@pytest.mark.parametrize(
+    ("yaml_extra", "expected"),
+    [
+        ("    email_env: MAIL_VAR\n    token_env: TOK_VAR\n", "TOK_VAR"),
+        ("    email: a@a.test\n    token_env: TOK_VAR\n", "TOK_VAR"),
+    ],
+)
+def test_auth_required_from_a_site_carries_the_variable_name_only(yaml_extra, expected) -> None:
+    site = _site(f"sites:\n  main:\n    url: https://a.test\n{yaml_extra}")
+    with pytest.raises(GatewayError) as exc:
+        Target.from_site("main", site, {"MAIL_VAR": EMAIL, "TOK_VAR": ""}, retry_after_max=60)
+    assert exc.value.details == {"token_env": expected}
+
+
+def test_auth_required_for_a_missing_email_variable_carries_a_name_not_a_value() -> None:
+    site = _site(
+        "sites:\n  main:\n    url: https://a.test\n    email_env: MAIL\n    token_env: T\n"
+    )
+    with pytest.raises(GatewayError) as exc:
+        Target.from_site("main", site, {"T": SENTINEL}, retry_after_max=60)
+    assert SENTINEL not in json.dumps(exc.value.details)
+    assert set(exc.value.details) == {"token_env"}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.example.test:99999",
+        "https://api.example.test:abc",
+        "https://api.example.test:0",
+        "https://api.example.test:-1",
+        "https://api.example.test/a b",
+        "https://api.example.test/a\tb",
+        "https://api .example.test/",
+        "https://api.example.test/a\nb",
+        "https://user:HUNTER2pw@api.example.test",
+        "https://user@api.example.test",
+        "https://:HUNTER2pw@api.example.test",
+    ],
+)
+def test_a_target_url_that_is_not_a_clean_site_url_is_invalid_config(url) -> None:
+    with pytest.raises(GatewayError) as exc:
+        make_target(url)
+    assert (exc.value.code, exc.value.exit_code) == ("invalid_config", 2)
+    assert exc.value.details == {"reason": "config_invalid"}
+    assert "HUNTER2pw" not in str(exc.value) + repr(exc.value) + exc.value.message
+
+
+def test_an_email_with_a_colon_is_invalid_config() -> None:
+    with pytest.raises(GatewayError) as exc:
+        make_target("https://api.example.test", email="a:b@example.test")
+    assert (exc.value.code, exc.value.exit_code) == ("invalid_config", 2)
+    assert exc.value.details == {"reason": "config_invalid"}
+    assert "a:b" not in exc.value.message
+
+
+def test_target_repr_shows_no_url_or_credential() -> None:
+    target = make_target("https://api.example.test:8443/jira")
+    shown = repr(target)
+    assert "api.example.test" not in shown
+    assert SENTINEL not in shown and EMAIL not in shown
+    assert "main" in shown
+
+
+def test_site_url_ports_use_explicit_values_and_scheme_defaults() -> None:
+    assert make_target("https://api.example.test").port == 443
+    assert make_target("https://api.example.test:8443").port == 8443
+    assert make_target("http://127.0.0.1", allow_http=True).port == 80
+
+
+def test_a_request_that_cannot_be_built_is_internal_and_never_unknown(serve) -> None:
+    server = serve(json_reply())
+    target = make_target(server.url)
+    object.__setattr__(target, "url", server.url + "/a b")  # bypasses the Target validation
+    gw = Gateway(target, deadline=Deadline(10), env={}, sleep=lambda s: None)
+    with pytest.raises(GatewayError) as exc:
+        gw.request("POST", "/x", template="/x", body={})
+    assert (exc.value.code, exc.value.outcome_unknown) == ("internal", False)
+    assert server.requests == []
+
+
+@pytest.mark.parametrize("body", [{"a": float("nan")}, {"a": object()}, {1.5: {2}}])
+def test_a_body_that_cannot_be_encoded_is_internal_and_sends_nothing(serve, body) -> None:
+    server = serve(json_reply())
+    with pytest.raises(GatewayError) as exc:
+        make_rig(server.url).post(body=body)
+    assert (exc.value.code, exc.value.outcome_unknown) == ("internal", False)
+    assert server.connections == 0
+
+
+def _padded_document(size: int) -> bytes:
+    document = b'{"k":"' + b"v" * (size - 8) + b'"}'
+    assert len(document) == size
+    return document
+
+
+def _chunked_reply(document: bytes):
+    def behavior(conn: Conn) -> None:
+        conn.send(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+        for start in range(0, len(document), 1 << 20):
+            piece = document[start : start + (1 << 20)]
+            conn.send(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
+        conn.send(b"0\r\n\r\n")
+
+    return behavior
+
+
+@pytest.mark.parametrize("mode", ["content-length", "chunked"])
+def test_the_16_mib_cap_is_exact(serve, mode) -> None:
+    cap = gateway.MAX_RESPONSE_BYTES
+    assert cap == 16 * 1024 * 1024
+
+    def behavior(document: bytes):
+        if mode == "chunked":
+            return _chunked_reply(document)
+        return reply(200, document, {"Content-Type": "application/json"})
+
+    ok = serve(behavior(_padded_document(cap)))
+    response = make_rig(ok.url).get()
+    assert response.status == 200 and len(response.data["k"]) == cap - 8
+    over = serve(behavior(_padded_document(cap + 1)))
+    with pytest.raises(GatewayError) as exc:
+        make_rig(over.url).get()
+    assert exc.value.code == "provider_changed"

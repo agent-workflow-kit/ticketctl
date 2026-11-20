@@ -12,7 +12,8 @@ The HTTP half implements docs/interface.md, "Invoking the provider" and "Reliabi
   deadline, because a socket timeout does not bound a server that drips one byte at a time.
 * Basic authentication is the only credential and is built from the site URL's own host: URLs are
   ``<site url> + path``, an absolute URL from a response is never followed, every 3xx is
-  ``provider_changed`` and nothing is re-sent. No ``Accept-Encoding``, no protocol debug output,
+  ``provider_changed`` (``outcome_unknown`` for a write: a 303 may follow a processed POST) and
+  nothing is re-sent. No ``Accept-Encoding``, no protocol debug output,
   headers are never printed.
 * The error text never contains an exception message (only its class name), a header value, a URL
   from a response or a proxy URL (proxies are shown as ``host:port``). Errors are raised with no
@@ -54,6 +55,7 @@ MAX_JSON_DEPTH = 400
 READ_RETRIES = 3
 WRITE_RETRIES = 2
 PACING_SLEEP_S = 1.0
+RETRY_AFTER_CLAMP = 2**31
 USER_AGENT = f"ticketctl/{__version__}"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
@@ -134,6 +136,13 @@ class Deadline:
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_URL_BLANK = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+def _bad_site_url(message: str) -> GatewayError:
+    return GatewayError(
+        "invalid_config", message, exit_code=2, details={"reason": "config_invalid"}
+    )
 
 
 @dataclass(frozen=True)
@@ -145,7 +154,7 @@ class Target:
     """
 
     name: str
-    url: str
+    url: str = field(repr=False)
     email: str = field(repr=False)
     token: str = field(repr=False)
     connect_timeout: float
@@ -161,18 +170,27 @@ class Target:
                     "auth_required",
                     "the site's email or token is empty or contains control characters",
                 )
+        if ":" in self.email:
+            raise _bad_site_url("the site's email must not contain a colon")
         object.__setattr__(self, "email", self.email.strip())
         object.__setattr__(self, "token", self.token.strip())
-        parts = urlsplit(self.url)
+        if _URL_BLANK.search(self.url):
+            raise _bad_site_url("the site url must not contain whitespace or control characters")
+        try:
+            parts = urlsplit(self.url)
+            port = parts.port
+            userinfo = parts.username is not None or parts.password is not None
+        except ValueError:
+            raise _bad_site_url("the site url is not a valid http(s) url") from None
         scheme = parts.scheme
         if scheme not in {"https", "http"} or not parts.hostname:
-            raise GatewayError("invalid_config", "the site url must be an http(s) url", exit_code=2)
+            raise _bad_site_url("the site url must be an http(s) url")
+        if port == 0:
+            raise _bad_site_url("the site url port must be between 1 and 65535")
+        if userinfo or "@" in parts.netloc:
+            raise _bad_site_url("the site url must not contain user information")
         if scheme == "http" and not (self.allow_http and parts.hostname in LOOPBACK_HOSTS):
-            raise GatewayError(
-                "invalid_config",
-                "an http site url needs allow_http and a loopback host",
-                exit_code=2,
-            )
+            raise _bad_site_url("an http site url needs allow_http and a loopback host")
 
     @property
     def scheme(self) -> str:
@@ -184,7 +202,8 @@ class Target:
 
     @property
     def port(self) -> int:
-        return urlsplit(self.url).port or (443 if self.scheme == "https" else 80)
+        port = urlsplit(self.url).port
+        return port if port is not None else (443 if self.scheme == "https" else 80)
 
     @property
     def base_path(self) -> str:
@@ -208,12 +227,16 @@ class Target:
             email = env.get(var, "")
             if not email.strip():
                 raise GatewayError(
-                    "auth_required", f"the environment variable {var} is unset or empty"
+                    "auth_required",
+                    f"the environment variable {var} is unset or empty",
+                    details={"token_env": var},
                 )
         token = env.get(site.token_env, "")
         if not token.strip():
             raise GatewayError(
-                "auth_required", f"the environment variable {site.token_env} is unset or empty"
+                "auth_required",
+                f"the environment variable {site.token_env} is unset or empty",
+                details={"token_env": site.token_env},
             )
         return cls(
             name=name,
@@ -265,16 +288,27 @@ def _bypassed(no_proxy: str, host: str, port: int) -> bool:
             continue
         if entry == "*":
             return True
+        entry_port: int | None = None
+        if entry.startswith("["):  # a bracketed IPv6 address, optionally ``[addr]:port``
+            close = entry.find("]")
+            rest = entry[close + 1 :] if close > 0 else "?"
+            if rest:
+                if not (rest.startswith(":") and rest[1:].isascii() and rest[1:].isdigit()):
+                    continue
+                entry_port = int(rest[1:])
+            entry = entry[1:close]
         try:
             network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
             network = None
         if network is not None:
+            if entry_port is not None and entry_port != port:
+                continue
             if address is not None and address.version == network.version and address in network:
                 return True
             continue
-        name, entry_port = entry, None
-        if entry.count(":") == 1:
+        name = entry
+        if entry_port is None and entry.count(":") == 1:
             name, _, port_text = entry.partition(":")
             if not port_text.isascii() or not port_text.isdigit():
                 continue
@@ -311,18 +345,28 @@ def select_proxy(env: Mapping[str, str], scheme: str, host: str, port: int) -> P
         raise _bad_proxy(variable) from None
     if parts.scheme.lower() != "http" or not hostname:
         raise _bad_proxy(variable)
+    if (
+        proxy_port == 0
+        or parts.netloc.endswith(":")
+        or parts.path not in {"", "/"}
+        or "?" in value
+        or "#" in value
+    ):
+        raise _bad_proxy(variable)
     auth = None
     if user is not None:
         raw = f"{unquote(user)}:{unquote(password or '')}".encode()
         auth = "Basic " + base64.b64encode(raw).decode("ascii")
-    return Proxy(hostname.lower(), proxy_port or 80, auth)
+    return Proxy(hostname.lower(), 80 if proxy_port is None else proxy_port, auth)
 
 
 # --------------------------------------------------------------------------------------------
 # JSON
 # --------------------------------------------------------------------------------------------
 
-_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
+# Linear on any input: possessive repetition never backtracks, and an unterminated string (or one
+# ending in a lone backslash) runs to the end of the input, which is invalid JSON anyway.
+_STRING = re.compile(rb'"(?:[^"\\]++|\\.)*+(?:"|\\?\Z)', re.DOTALL)
 _NON_BRACKETS = bytes(b for b in range(256) if b not in b"[]{}")
 _DELTA = tuple(1 if chr(b) in "[{" else -1 if chr(b) in "]}" else 0 for b in range(256))
 
@@ -373,8 +417,10 @@ def _parse_retry_after(value: str | None) -> int | None:
     if value is None:
         return None
     text = value.strip()
-    if re.fullmatch(r"[0-9]{1,9}", text, re.ASCII):
-        return int(text)
+    if re.fullmatch(r"[0-9]+", text, re.ASCII):
+        # Clamped, so any value above the cap ends the command at once (and int() of a
+        # 5000-digit header never runs).
+        return RETRY_AFTER_CLAMP if len(text) > 10 else min(int(text), RETRY_AFTER_CLAMP)
     return None
 
 
@@ -427,6 +473,7 @@ class _Attempt:
         self.done = threading.Event()
         self.cancelled = False
         self.sent = False
+        self.abandoned = False  # the deadline won: nothing the worker records afterwards counts
         self.conn: http.client.HTTPConnection | None = None
         self.thread: threading.Thread | None = None
         # Outcome. ``failure`` is a category (or None when a response arrived).
@@ -503,18 +550,24 @@ class _Attempt:
         if conn.sock is None:
             raise OSError
         conn.sock.settimeout(self.read_timeout)
+        # Building only buffers: a path or header that http.client refuses fails here, before the
+        # first request byte can exist, so it is never an ambiguous outcome.
+        self.stage = "build"
+        conn.putrequest(self.method, self.path, skip_accept_encoding=True)
+        for name, value in self.headers.items():
+            conn.putheader(name, value)
         with self.lock:
             if self.cancelled:
                 self.failure = "cancelled"
                 return
             self.sent = True
         self.stage = "send"
-        conn.putrequest(self.method, self.path, skip_accept_encoding=True)
-        for name, value in self.headers.items():
-            conn.putheader(name, value)
         conn.endheaders(self.body)
         self.stage = "response"
         response = conn.getresponse()
+        if not 200 <= response.status <= 599:  # 101, 103 and the like: never a final answer
+            self.failure = "malformed"
+            return
         self.status = response.status
         self.response_headers = {name: response.getheader(name) for name in _RATE_HEADERS}
         if 300 <= response.status < 400:
@@ -546,7 +599,9 @@ class _Attempt:
 
     def _classify(self, exc: BaseException) -> None:
         self.exc_name = type(exc).__name__
-        if isinstance(exc, ssl.SSLCertVerificationError):
+        if self.stage == "build":
+            self.failure = "internal"
+        elif isinstance(exc, ssl.SSLCertVerificationError):
             self.failure = "tls_verify"
         elif isinstance(exc, TimeoutError) or (
             isinstance(exc, ssl.SSLError) and "timed out" in str(exc)
@@ -571,6 +626,8 @@ class _Attempt:
 _PCHAR = r"(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})"
 _PATH = re.compile(rf"(?:/{_PCHAR}+)+")
 _QUERY = re.compile(rf"(?:{_PCHAR}|[/?])*")
+# ``sanitize.segment`` encodes all of these; the gateway refuses them again as a cheap second line.
+_PATH_FORBIDDEN = re.compile(r";|%2f|%5c", re.IGNORECASE)
 _TEMPLATE = re.compile(r"(?:/(?:[A-Za-z0-9._~-]+|\{[a-z_]+\}))+")
 
 
@@ -641,8 +698,12 @@ class Gateway:
         """
         if method not in _METHODS:
             raise _internal("unsupported method")
-        if not _PATH.fullmatch(path) or any(
-            unquote(part) in {".", ".."} for part in path.split("/")
+        if (
+            not _PATH.fullmatch(path)
+            or _PATH_FORBIDDEN.search(path)
+            or any(
+                unquote(part).startswith("..") or unquote(part) == "." for part in path.split("/")
+            )
         ):
             raise _internal("the request path is not a clean absolute path")
         if query and (query.startswith("?") or not _QUERY.fullmatch(query)):
@@ -650,11 +711,16 @@ class Gateway:
         if len(template) > 256 or not _TEMPLATE.fullmatch(template):
             raise _internal("the log path template is invalid")
         is_write = method != "GET" if write is None else write
-        payload = (
-            None
-            if body is None
-            else json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode()
-        )
+        try:
+            payload = (
+                None
+                if body is None
+                else json.dumps(
+                    body, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+                ).encode()
+            )
+        except (TypeError, ValueError, RecursionError):
+            raise _internal("the request body cannot be encoded as JSON") from None
         target = self.target
         headers = {
             "Authorization": "Basic " + _basic(target),
@@ -693,12 +759,19 @@ class Gateway:
             self._check_deadline()
             self._pace()
             attempt = self._attempt(call, proxy, url_path, payload, headers)
-            call.status = attempt.status if attempt.failure is None else None
-            call.note_rate(attempt.response_headers)
-            if attempt.failure is None:
-                status = attempt.status or 0
+            status = None if attempt.abandoned else attempt.status
+            call.status = status
+            if not attempt.abandoned:
+                call.note_rate(attempt.response_headers)
+            # A status that already decides the outcome beats a failure to read its body.
+            if status is not None and (
+                attempt.failure is None or self._status_decides(call, status)
+            ):
                 if 300 <= status < 400:
-                    raise _provider_changed("the provider answered with a redirect", status=status)
+                    # a 303 may follow a processed POST, so a write's outcome is unknown
+                    raise _provider_changed(
+                        "the provider answered with a redirect", status=status, unknown=call.write
+                    )
                 if status == 401:
                     raise GatewayError(
                         "bad_credentials", "the provider rejected the credentials", status=401
@@ -716,7 +789,6 @@ class Gateway:
                             "the provider failed after the request was sent",
                             outcome_unknown=True,
                             status=status,
-                            retry_after_s=retry_after,
                         )
                     raise GatewayError(
                         "unavailable",
@@ -726,6 +798,13 @@ class Gateway:
                     )
                 return self._response(attempt, call)
             self._handle_failure(call, attempt, proxy, max_retries)
+
+    def _status_decides(self, call: _Call, status: int) -> bool:
+        return (
+            300 <= status < 400
+            or status in {401, 403, 429}
+            or (not call.write and status in _READ_RETRY_STATUSES)
+        )
 
     def _wait_for_retry(
         self, call: _Call, status: int, retry_after: int | None, max_retries: int
@@ -770,9 +849,12 @@ class Gateway:
     def _handle_failure(
         self, call: _Call, attempt: _Attempt, proxy: Proxy | None, max_retries: int
     ) -> None:
-        category = attempt.failure
+        category = "deadline" if attempt.abandoned else attempt.failure
         sent = attempt.sent
         unknown = call.write and sent
+        # A 4xx means nothing was applied, so an unusable body after one is not ambiguous.
+        status = attempt.status
+        body_unknown = unknown and not (status is not None and 400 <= status < 500)
         if category in {"cancelled", "deadline"}:
             if unknown:
                 raise GatewayError(
@@ -783,7 +865,7 @@ class Gateway:
             raise GatewayError("timeout", "the command timed out")
         if category in {"too_big", "malformed"}:
             what = "is too large" if category == "too_big" else "is malformed"
-            raise _provider_changed(f"the provider's response {what}", unknown=unknown)
+            raise _provider_changed(f"the provider's response {what}", unknown=body_unknown)
         if category == "internal":
             raise GatewayError(
                 "internal",
@@ -793,7 +875,7 @@ class Gateway:
             )
         if category == "tls_verify":
             raise GatewayError(
-                "unavailable", f"TLS verification failed ({attempt.exc_name})", retryable=True
+                "unavailable", f"TLS verification failed ({attempt.exc_name})", retryable=False
             )
         if unknown:
             raise GatewayError(
@@ -837,8 +919,9 @@ class Gateway:
         )
         attempt.start()
         if not attempt.done.wait(self.deadline.remaining()):
+            # The worker is a daemon and cannot write after this: no wait, so the deadline holds.
             attempt.cancel()
-            attempt.done.wait(2.0)
+            attempt.abandoned = True
             attempt.failure = "deadline"
             attempt.status = None
         return attempt
@@ -866,7 +949,6 @@ class Gateway:
             return Response(
                 status, None, scrub(raw.decode("utf-8", "replace")), call.rate_limit, call.retries
             )
-        text = scrub(text)
         data: Any = None
         if text.strip():
             try:
@@ -877,9 +959,12 @@ class Gateway:
                         "the response is not valid JSON", status=status, unknown=call.write
                     ) from None
             except GatewayError as err:
-                err.outcome_unknown = call.write
+                err.outcome_unknown = call.write and not 400 <= status < 500
                 err.status = status
                 raise
+        # Parse first, scrub after: a replacement inside the raw text could break the structure.
+        data = _scrub_tree(data)
+        text = scrub(text)
         return Response(
             status, data, "" if ok and data is not None else text, call.rate_limit, call.retries
         )
@@ -907,10 +992,12 @@ class Gateway:
                 self.warnings.append("log_write_failed")
         if self._verbose is not None:
             shown = "-" if call.status is None else str(call.status)
+            limit = None if call.rate_limit is None else call.rate_limit["limit"]
             self._verbose(
                 render(
                     f"{call.method} {call.template} status={shown} duration_ms={duration_ms} "
-                    f"retries={call.retries} rate_limit_remaining={remaining}"
+                    f"retries={call.retries} rate_limit_remaining={remaining} "
+                    f"rate_limit_limit={limit}"
                 )
             )
         self._pace_pending = bool(
@@ -935,6 +1022,17 @@ class _Call:
         parsed = _parse_rate_limit(headers)
         if parsed is not None:
             self.rate_limit = parsed
+
+
+def _scrub_tree(node: Any) -> Any:
+    """Scrub every string (keys and values) of a parsed document; depth is capped at 400."""
+    if isinstance(node, str):
+        return scrub(node)
+    if isinstance(node, list):
+        return [_scrub_tree(item) for item in node]
+    if isinstance(node, dict):
+        return {scrub(key): _scrub_tree(value) for key, value in node.items()}
+    return node
 
 
 def _basic(target: Target) -> str:
