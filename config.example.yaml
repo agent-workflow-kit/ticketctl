@@ -5,6 +5,8 @@
 # (TICKETCTL_TIMEOUT, TICKETCTL_DEFAULT_SITE); nested keys cannot be set from the environment.
 # Durations everywhere (config, flags, hook timeouts): an integer with a unit (ms, s, m, h, d), or a bare
 # integer meaning seconds. 0 is allowed only for cache_ttl (no cache) and retry_after_max (never wait).
+# Caps: timeout and the per-site connect and read timeouts at most 24h; cache_ttl and retry_after_max at most 365d.
+# An explicit null is refused for every key (omit the key instead). XDG_CONFIG_HOME is used only when absolute.
 # With --config <file> only that file is loaded; the default location reads config.yaml then config.d/*.yaml
 # (maps merge, hooks lists append, other lists replace).
 

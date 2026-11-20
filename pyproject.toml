@@ -26,6 +26,7 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
     "pymarkdownlnt>=0.9.41",
+    "types-pyyaml>=6.0.12.20261113",
     "jsonschema>=4.26.0",
 ]
 
