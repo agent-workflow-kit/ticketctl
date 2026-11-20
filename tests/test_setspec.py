@@ -359,3 +359,95 @@ def test_parse_meta_caps_field_count() -> None:
     with pytest.raises(TicketctlError) as exc:
         setspec.parse_meta({"fields": raw})
     assert exc.value.code == "provider_changed"
+
+
+# ---- review round 1 ----------------------------------------------------------------------------
+
+
+BASE = [f for f in FIELD_LIST if not f["id"].startswith("customfield_")]
+
+
+def custom_site(extra_fields: list[dict[str, Any]], config: Fields | None = None) -> Any:
+    parsed = fieldmap.parse_field_list([*BASE, *extra_fields]).fields
+    return fieldmap.SiteFields(parsed, config or Fields())
+
+
+def custom_meta(extra_fields: list[dict[str, Any]], *ids: str) -> tuple[Any, ...]:
+    raw = {f["id"]: {"name": f["name"], "schema": f["schema"]} for f in [*BASE, *extra_fields]}
+    return setspec.parse_meta({"fields": {k: v for k, v in raw.items() if k in ids}})
+
+
+@pytest.mark.parametrize(
+    "name", ["Labels", "LABELS", "lAbels", "Assignee", "ASSIGNEE", "Resolution"]
+)
+def test_custom_field_with_a_dedicated_name_does_not_hide_the_refusal(name: str) -> None:
+    clone = fld("customfield_90001", name, "string")
+    metadata = custom_meta([clone], "customfield_90001", "summary")
+    assigns = setspec.check_offline("update", [f"{name}=x"], "--set")
+    with pytest.raises(TicketctlError) as exc:
+        setspec.resolve_assignments(
+            assigns, command="update", site=custom_site([clone]), meta=metadata
+        )
+    assert refusal(exc)[:2] == ("usage", "invalid_combination")
+
+
+def test_custom_field_named_sprint_does_not_hide_the_sprint_refusal() -> None:
+    real = fld("customfield_90001", "Sprint", "array", items="json", custom=SPRINT)
+    clone = fld("customfield_90002", "Sprint", "string")
+    metadata = custom_meta([real, clone], "customfield_90002")
+    assigns = setspec.check_offline("update", ["Sprint=x"], "--set")
+    with pytest.raises(TicketctlError) as exc:
+        setspec.resolve_assignments(
+            assigns, command="update", site=custom_site([real, clone]), meta=metadata
+        )
+    assert refusal(exc)[:2] == ("usage", "invalid_combination")
+
+
+def test_sprint_schema_refuses_when_the_sprint_field_is_not_mapped_to_it() -> None:
+    cfg = Fields(sprint=mapping(id="customfield_90004"), extra={})
+    assigns = setspec.check_offline("update", ["Sprint=x"], "--set")
+    with pytest.raises(TicketctlError) as exc:
+        setspec.resolve_assignments(assigns, command="update", site=site(cfg), meta=meta(*ALL))
+    assert refusal(exc)[:2] == ("usage", "invalid_combination")
+
+
+@pytest.mark.parametrize("allowed", [[], [None, 5, {"x": "y"}], "nope"])
+def test_option_field_without_usable_allowed_values_lists_none(allowed: Any) -> None:
+    (m,) = setspec.parse_meta(
+        {"fields": {"customfield_90003": {"name": "Size", "allowedValues": allowed}}}
+    )
+    assert m.allowed is None
+
+
+@pytest.mark.parametrize("operations", ["set", {"set": True}, 5, None])
+def test_malformed_operations_mean_no_set_operation(operations: Any) -> None:
+    raw = {"customfield_90003": {"name": "Size", "schema": {"type": "option"}}}
+    raw["customfield_90003"]["operations"] = operations
+    parsed = setspec.parse_meta({"fields": raw})
+    assigns = setspec.check_offline("update", ["Size=x"], "--set")
+    with pytest.raises(TicketctlError) as exc:
+        setspec.resolve_assignments(assigns, command="update", site=site(), meta=parsed)
+    assert refusal(exc)[:2] == ("invalid_request", "not_editable")
+
+
+def test_absent_operations_mean_the_metadata_does_not_say() -> None:
+    parsed = setspec.parse_meta(
+        {"fields": {"customfield_90003": {"name": "Size", "schema": {"type": "option"}}}}
+    )
+    (r,) = setspec.resolve_assignments(
+        setspec.check_offline("update", ["Size=x"], "--set"),
+        command="update",
+        site=site(),
+        meta=parsed,
+    )
+    assert r.field.id == "customfield_90003"
+
+
+def test_customfield_id_is_accepted_for_a_discovered_logical_mapping() -> None:
+    points = fld("customfield_90003", "Points", "number", custom=f"{NS}:jsw-story-points")
+    metadata = custom_meta([points], "customfield_90003")
+    assigns = setspec.check_offline("update", ["CustomField_90003=3"], "--set")
+    (r,) = setspec.resolve_assignments(
+        assigns, command="update", site=custom_site([points]), meta=metadata
+    )
+    assert r.field.id == "customfield_90003"

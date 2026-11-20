@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ticketctl import flags
+from ticketctl import cli, flags
 from ticketctl.cli import main
 from ticketctl.errors import TicketctlError
 from ticketctl.flags import Globals, check_globals
@@ -177,3 +177,18 @@ def test_cli_a_valid_set_reaches_the_handler(
     # the update command is owned by #30: the stub is reached after the checks pass
     code, _ = run(capsys, "update", "AB-1", "--set", "effort=3")
     assert code == 1
+
+
+def test_cli_usage_errors_come_before_the_configuration_is_read(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(_g: object) -> str:
+        raise AssertionError("the configuration was read")
+
+    monkeypatch.setattr(cli, "_me_name", boom)
+    monkeypatch.setattr(flags, "probe_dev_tty", lambda: True)
+    monkeypatch.setattr(flags, "_stderr_is_tty", lambda: True)
+    code, err = run(capsys, "update", "AB-1", "--set", "noequals")
+    assert code == 2 and err["reason"] == "invalid_argument"
+    code, err = run(capsys, "update", "AB-1", "--set", "x=-", "--set", "y=-")
+    assert code == 2 and err["reason"] == "stdin_conflict"

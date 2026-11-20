@@ -278,6 +278,7 @@ def check_globals(
     me_name: Callable[[], str | None] | None = None,
     stderr_tty: Callable[[], bool] | None = None,
     tty_openable: Callable[[], bool] | None = None,
+    resolve_actor: bool = True,
 ) -> None:
     """Flag combination rules that need only the global flags and the command kind.
 
@@ -285,6 +286,8 @@ def check_globals(
     (``attribution.default_actor``): an explicit ``--actor``, else ``human:<me.name>`` when stderr
     is a TTY and ``/dev/tty`` opens, else ``auto:unknown``. The probes are callables so the
     configuration (``me_name``) is read only when both probes pass and no ``--actor`` was given.
+    With ``resolve_actor=False`` the actor is left to ``resolve_write_actor`` (the CLI calls it
+    after its argument checks, so a bad configuration cannot pre-empt a usage error).
     """
     if kind == "read":
         present = [f for f in WRITE_ONLY_FLAGS if f in g.given]
@@ -295,8 +298,18 @@ def check_globals(
             )
     if g.verbose and g.quiet:
         raise usage_error("invalid_combination", "--verbose and --quiet cannot be combined")
-    if kind != "write":
-        return
+    if kind == "write" and resolve_actor:
+        resolve_write_actor(g, me_name=me_name, stderr_tty=stderr_tty, tty_openable=tty_openable)
+
+
+def resolve_write_actor(
+    g: Globals,
+    *,
+    me_name: Callable[[], str | None] | None = None,
+    stderr_tty: Callable[[], bool] | None = None,
+    tty_openable: Callable[[], bool] | None = None,
+) -> None:
+    """Resolve the default actor of a write command into ``g`` (see ``check_globals``)."""
     g.resolved_actor, g.actor_source = _resolve_actor(
         g.actor,
         me_name or (lambda: None),
@@ -342,6 +355,7 @@ __all__ = [
     "Globals",
     "extract_globals",
     "check_globals",
+    "resolve_write_actor",
     "check_yes",
     "parse_duration",
     "wants_json",

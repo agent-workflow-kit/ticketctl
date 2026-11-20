@@ -224,8 +224,9 @@ def test_user_account_id_none_and_me() -> None:
 
 
 def test_user_me_without_identity_is_a_caller_bug() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(TicketctlError) as exc:
         setconvert.convert_assignment(resolved("me", "user"), ctx())
+    assert exc.value.code == "internal"
 
 
 @pytest.mark.parametrize("text", ["has space", "a/b", "x" * 129, "<script>", "a\nb"])
@@ -453,3 +454,86 @@ def test_invalid_labels(label: str) -> None:
         setconvert.validate_label(label)
     assert (exc.value.code, exc.value.reason) == ("invalid_request", "invalid_value")
     assert exc.value.exit == 22
+
+
+# ---- review round 1 ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("digits", [20, 5000, 1_000_000])
+@pytest.mark.parametrize("sign", ["", "-"])
+def test_huge_integers_are_refused_not_crashed(digits: int, sign: str) -> None:
+    refused(sign + "9" * digits, "number")
+
+
+@pytest.mark.parametrize("text", ["1234567890123456.7", "9999999999999999.9"])
+def test_number_that_loses_precision_is_refused(text: str) -> None:
+    refused(text, "number")
+
+
+@pytest.mark.parametrize(("text", "expected"), [("0.1", 0.1), ("0.10", 0.1), ("2.5", 2.5)])
+def test_exact_decimals_still_pass(text: str, expected: float) -> None:
+    assert value(text, "number") == expected
+
+
+@pytest.mark.parametrize("text", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"])
+def test_datetime_outside_utc_range_is_invalid_value(text: str) -> None:
+    refused(text, "datetime")
+
+
+@pytest.mark.parametrize("text", ["ME", "Me", "NONE", "None"])
+def test_user_me_and_none_must_be_exact_lower_case(text: str) -> None:
+    refused(text, "user", context=ctx(me_account_id=lambda: "acct-me"))
+
+
+@pytest.mark.parametrize("text", ["   ", " \u00a0 "])
+def test_blank_string_is_refused(text: str) -> None:
+    refused(text)
+
+
+def test_string_keeps_surrounding_spaces() -> None:
+    assert value(" a b ") == " a b "
+
+
+def test_parent_issue_link_is_a_key() -> None:
+    assert value("ab-12", "issuelink", fid="parent") == {"key": "AB-12"}
+    assert value("", "issuelink", fid="parent") is None
+    refused("not a key", "issuelink", fid="parent")
+
+
+SECRET = "abcdefgh-secret-token"
+
+
+def secret_refused(r: Resolved) -> None:
+    sanitize.configure_scrubber([SECRET])
+    try:
+        with pytest.raises(TicketctlError) as exc:
+            setconvert.convert_assignment(r, ctx())
+        assert exc.value.reason == "secret_in_body"
+    finally:
+        sanitize.configure_scrubber([])
+
+
+def test_secret_hidden_by_a_json_escape_is_refused() -> None:
+    secret_refused(resolved('["abcdefgh\\u002dsecret\\u002dtoken"]', "array", items="string"))
+
+
+def test_secret_in_a_json_array_item_is_refused() -> None:
+    secret_refused(resolved(f'["{SECRET}"]', "array", items="string"))
+
+
+def test_secret_made_by_markdown_escapes_is_refused(tmp_path: Path) -> None:
+    p = tmp_path / "d.md"
+    p.write_text("abcdefgh\\-secret\\-token\n")
+    secret_refused(with_source(rich(), Source("file", str(p))))
+
+
+def test_secret_split_by_marks_is_refused(tmp_path: Path) -> None:
+    p = tmp_path / "d.md"
+    p.write_text("abcdefgh-**secret**-token\n")
+    secret_refused(with_source(rich(), Source("file", str(p))))
+
+
+def test_secret_the_document_drops_is_still_refused_in_the_body(tmp_path: Path) -> None:
+    p = tmp_path / "d.md"
+    p.write_text(f"visible\n\n[unused]: {SECRET}\n")
+    secret_refused(with_source(rich(), Source("file", str(p))))

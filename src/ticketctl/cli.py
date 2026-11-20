@@ -20,6 +20,7 @@ from .flags import (
     check_globals,
     check_yes,
     extract_globals,
+    resolve_write_actor,
     wants_json,
 )
 from .output import write as _write
@@ -98,7 +99,7 @@ def _me_name(g: Globals) -> str | None:
 def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None:
     """Flag combination rules, in the order: argument grammar, combinations, `--yes`."""
     command = " ".join(spec.path)
-    check_globals(g, spec.kind, command, me_name=lambda: _me_name(g))
+    check_globals(g, spec.kind, command, resolve_actor=False)
     if _stdin_sources(ns) > 1:
         raise usage_error("stdin_conflict", "at most one `-` source (stdin) per command")
     if spec.path == ("transition",):
@@ -112,6 +113,8 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
     if spec.path in (("create",), ("update",), ("transition",)):
         flag = "--field" if spec.path == ("transition",) else "--set"
         setspec.check_offline(spec.path[0], getattr(ns, flag[2:]), flag)
+    if spec.kind == "write":
+        resolve_write_actor(g, me_name=lambda: _me_name(g))
     # TODO(#28,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 

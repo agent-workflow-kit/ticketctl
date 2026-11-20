@@ -234,7 +234,8 @@ def _allowed(raw: object) -> tuple[str, ...] | None:
             if isinstance(value, str) and value:
                 names.append(sanitize_field(value, cap=NAME_CAP)[0])
                 break
-    return tuple(names)
+    # No usable value listed is the same as not listed: the text goes to the provider.
+    return tuple(names) or None
 
 
 def _meta_schema(raw: object) -> FieldSchema | None:
@@ -263,7 +264,12 @@ def parse_meta(data: object) -> tuple[MetaField, ...]:
         if not isinstance(name, str) or not name or not _id_ok(fid):
             continue
         ops = raw.get("operations")
-        operations = tuple(o for o in ops if isinstance(o, str)) if isinstance(ops, list) else None
+        # Absent: the metadata does not say. Present but malformed: no operation is allowed.
+        operations: tuple[str, ...] | None = None
+        if "operations" in raw:
+            operations = (
+                tuple(o for o in ops if isinstance(o, str)) if isinstance(ops, list) else ()
+            )
         field = ProviderField(
             fid,
             sanitize_field(name, cap=NAME_CAP)[0],
@@ -320,10 +326,15 @@ def _display_matches(
     typed: str, meta: Sequence[MetaField], site: SiteFields
 ) -> list[ProviderField]:
     """Fields whose display name equals ``typed`` ignoring case: from the metadata, else from the
-    provider's field list (so a dedicated field the metadata leaves out is still refused)."""
+    provider's field list. A dedicated field found in either wins, so a custom field that has the
+    name of a dedicated one cannot hide the refusal."""
     folded = typed.casefold()
     hits = [m.field for m in meta if m.field.name.casefold() == folded]
-    return hits or [f for f in site.fields if f.name.casefold() == folded]
+    listed = [f for f in site.fields if f.name.casefold() == folded]
+    dedicated = [f for f in (*hits, *listed) if _dedicated_key(f, site) is not None]
+    if dedicated:
+        return dedicated[:1]
+    return hits or listed
 
 
 def resolve_assignments(
@@ -393,7 +404,7 @@ def _resolve_one(
     hits = _display_matches(name, meta, site)
     if not hits:
         raise _unknown(a)
-    if len(hits) > 1:
+    if len(hits) > 1:  # never a dedicated field: that case returns one hit above
         Resolution(name, Status.AMBIGUOUS, tuple(hits), mapped=True, extra=True).need()
     return hits[0]
 

@@ -53,6 +53,7 @@ import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
 from .adf_validate import DEFAULT_BODY_CHARS, body_sha256
@@ -65,6 +66,7 @@ from .sanitize import (
     InputError,
     cap_text,
     ensure_no_secret,
+    normalize_ticket_key,
     read_input_file,
     read_input_stdin,
     sanitize_line,
@@ -76,6 +78,7 @@ TEXT_CAP = CAPS["title"]
 LABEL_MAX = 255
 MAX_INT = 2**63
 MAX_DECIMAL_DIGITS = 17
+MAX_INT_DIGITS = len(str(MAX_INT))
 RICH_IDS = frozenset({"description", "environment", "comment"})
 TEXTAREA_SUFFIX = ":textarea"
 # The object key of an option-like value, by schema type.
@@ -139,7 +142,7 @@ def _rich(field: ProviderField) -> bool:
 def _line(text: str, what: str, cap: int = TEXT_CAP) -> str:
     if len(text) > cap:
         raise _refuse(f"the {what} is longer than {cap} characters")
-    if not text or sanitize_line(text) != text:
+    if not text.strip() or sanitize_line(text) != text:
         raise _refuse(f"the {what} must be one line of visible text")
     return text
 
@@ -147,14 +150,24 @@ def _line(text: str, what: str, cap: int = TEXT_CAP) -> str:
 def _number(text: str) -> int | float:
     if _NUMBER.fullmatch(text) is None:
         raise _refuse("the value is not a number (digits with an optional minus and fraction)")
+    digits = sum(c.isdigit() for c in text)
     if "." not in text:
-        n = int(text)
+        # Counted before int(): converting a huge digit string is slow and may raise.
+        if digits > MAX_INT_DIGITS:
+            raise _refuse("the number is too large")
+        try:
+            n = int(text)
+        except ValueError:
+            raise _refuse("the number is too large") from None
         if abs(n) > MAX_INT:
             raise _refuse("the number is too large")
         return n
-    if sum(c.isdigit() for c in text) > MAX_DECIMAL_DIGITS:
+    if digits > MAX_DECIMAL_DIGITS:
         raise _refuse("the number has too many digits")
-    return float(text)
+    number = float(text)
+    if Decimal(repr(number)) != Decimal(text):
+        raise _refuse("the number cannot be sent exactly")
+    return number
 
 
 def _date(text: str) -> str:
@@ -174,7 +187,10 @@ def _datetime(text: str) -> str:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
     except ValueError:
         raise _refuse("the value is not a real datetime") from None
-    utc = parsed.astimezone(UTC)
+    try:
+        utc = parsed.astimezone(UTC)
+    except (OverflowError, ValueError):
+        raise _refuse("the datetime is outside the supported range") from None
     return f"{utc:%Y-%m-%dT%H:%M:%S}.{utc.microsecond // 1000:03d}+0000"
 
 
@@ -201,8 +217,10 @@ def _user(text: str, ctx: ValueContext) -> dict[str, str] | None:
         return None
     if text == "me":
         if ctx.me_account_id is None:
-            raise ValueError("me needs the context's me_account_id")
+            raise TicketctlError("internal", "the write flow gave no identity for the value me")
         return {"accountId": ctx.me_account_id()}
+    if text.casefold() in ("me", "none"):
+        raise _refuse("the value is not me, none or an account id (me and none are lower case)")
     if not GRAMMARS["account_id"].matches(text):
         raise _refuse("the value is not me, none or an account id")
     return {"accountId": text}
@@ -248,6 +266,11 @@ def _convert_text(r: Resolved, text: str, ctx: ValueContext) -> Any:
         return _datetime(text)
     if kind in OBJECT_KEY:
         return {OBJECT_KEY[kind]: _match(text, allowed)}
+    if kind == "issuelink":
+        try:
+            return {"key": normalize_ticket_key(text)}
+        except InputError:
+            raise _refuse("the value is not a ticket key") from None
     if kind == "user":
         return _user(text, ctx)
     if kind == "array" and schema.items in ITEM_TYPES:
@@ -276,6 +299,33 @@ def _read(r: Resolved, ctx: ValueContext, *, body: bool) -> str:
         if not text:
             raise _refuse("the file or stdin is empty; use name= to clear the field")
     return text
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string in a converted payload or ADF document, keys included."""
+    out: list[str] = []
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    out.reverse()
+    return out
+
+
+def _text_nodes(node: Any) -> list[str]:
+    """The text of every ``text`` node of an ADF document, in order."""
+    if isinstance(node, list):
+        return [t for child in node for t in _text_nodes(child)]
+    if not isinstance(node, dict):
+        return []
+    own = [node["text"]] if node.get("type") == "text" and isinstance(node.get("text"), str) else []
+    return own + _text_nodes(node.get("content"))
 
 
 def _clear(r: Resolved) -> FieldValue:
@@ -313,10 +363,14 @@ def _convert(r: Resolved, ctx: ValueContext) -> FieldValue:
             enabled=ctx.attribution_enabled,
             body_chars=ctx.body_chars,
         )
+        # Markdown escapes and marks can turn text that is not the secret into text that is.
+        ensure_no_secret(*_strings(rich.doc), "".join(_text_nodes(rich.doc)))
         return FieldValue(r.field, r.field.name, rich.doc, rich, False)
     text = source.value if source.kind == "inline" else _read(r, ctx, body=False)
     ensure_no_secret(text)
     payload = _convert_text(r, text, ctx)
+    # A decoded JSON item can hold a secret the raw text did not show (an escape).
+    ensure_no_secret(*_strings(payload))
     cleared = payload is None
     if cleared and r.meta.required:
         raise _refuse("a required field cannot be cleared")
