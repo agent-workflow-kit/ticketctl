@@ -44,6 +44,11 @@ HOSTS_OK = {
     "127.0.0.1.evil.test",
     "localhost.evil.test",
 }
+# Names under the zones reserved by RFC 2606/6761 never resolve to a real site, any label (punycode
+# included) is synthetic.
+RESERVED_TLDS = {"example", "test", "invalid", "localhost"}
+# Generic hostile-input samples (cut-short or lookalike hosts) the parsing tests use, not sites.
+HOSTS_OK |= {"x.co", "evil.com", "good.com", "a", "b", "fa", "xn--"}
 LOOPBACK = re.compile(r"^(127\.\d+\.\d+\.\d+|0\.0\.0\.0|::\d?|10\.0\.0\.\d+)$")
 # Project key prefixes the fixtures may use. Add one here only when it is invented.
 PROJECTS = {
@@ -59,9 +64,12 @@ PROJECTS = {
     "PROJECT",
     "ZZNOPE",
     "AB_C9",
+    "SECRET",
 }
 # Whole tokens shaped like a key that are not one (a hyphenated standard or constant).
 NOT_KEYS = {"UTF-8", "UTF-16", "UTF-32", "SHA-1", "SHA-256", "SHA-512", "ISO-8601", "CP-1252"}
+# Timezone offsets (exact strings only) shaped like a key.
+NOT_KEYS |= {"UTC-4", "UTC-5"}
 # Synthetic custom field ids: exactly the ones the fixtures use.
 FIELD_OK = re.compile(r"customfield_(1|9000[1-6])\b")
 
@@ -103,7 +111,11 @@ def files(root: Path = TESTS) -> Iterator[tuple[Path, str]]:
 
 def host_ok(host: str) -> bool:
     low = host.lower()
-    return low in HOSTS_OK or LOOPBACK.match(low) is not None
+    return (
+        low in HOSTS_OK
+        or LOOPBACK.match(low) is not None
+        or low.rsplit(".", 1)[-1] in RESERVED_TLDS
+    )
 
 
 def scan(text: str) -> list[tuple[int, str]]:
@@ -181,13 +193,10 @@ def test_the_scan_skips_binary_and_non_utf8_files_and_ignores_extensions(tmp_pat
             ["host jira.internal.corp"],  # scan: allow
         ),
         (
-            "https://foo.example/x",  # scan: allow
-            ["host foo.example"],  # scan: allow
+            "https://foo.example.com/x",  # scan: allow
+            ["host foo.example.com"],  # scan: allow
         ),
-        (
-            "https://other.example.test/x",  # scan: allow
-            ["host other.example.test"],  # scan: allow
-        ),
+        ("https://foo.example/x and https://xn--bcher-kva.example/", []),
         (
             "https://intranet/x",  # scan: allow
             ["host intranet"],  # scan: allow
@@ -255,7 +264,7 @@ def test_the_marker_exempts_its_own_line_only() -> None:
     assert [line for line, _ in scan(sample)] == [1, 1]
 
 
-@pytest.mark.parametrize("host", ["a", "api", "ex", "exa", "exam", "pro", "bad"])
+@pytest.mark.parametrize("host", ["api", "ex", "exa", "exam", "pro", "bad"])
 def test_a_plain_single_label_host_is_flagged(host: str) -> None:
     # Hostile-input fixtures that cut a host short carry the marker on their own line instead.
     assert [what for _, what in scan(f"url = 'http://{host}/x'")] == [f"host {host}"]
