@@ -320,10 +320,10 @@ def test_the_self_link_of_the_payload_is_never_followed_or_printed() -> None:
 
 
 def test_a_moved_ticket_carries_requested_key() -> None:
-    out = normalize_issue(issue("DEMO-9"), ctx("title"), requested_key="OLD-1")
+    out = normalize_issue(issue("DEMO-9"), ctx("title"), requested_key="DEMO-77")
     assert out is not None
     assert out.ticket["key"] == "DEMO-9"
-    assert out.ticket["requested_key"] == "OLD-1"
+    assert out.ticket["requested_key"] == "DEMO-77"
 
 
 def test_requested_key_is_absent_when_it_matches() -> None:
@@ -666,12 +666,12 @@ def test_acceptance_criteria_without_a_mapping_is_null_and_named_only_when_asked
 
 
 def test_acceptance_criteria_mapped_to_a_missing_field_is_named_and_warned() -> None:
-    sf = site_fields(Fields(acceptance_criteria=fm(id="customfield_90099")))
+    sf = site_fields(Fields(acceptance_criteria=fm(id="customfield_1")))
     out = normalize_issue(issue(), ctx("acceptance_criteria,incomplete", sf=sf))
     assert out is not None
     assert out.ticket["incomplete"] == ["acceptance_criteria"]
     assert out.warnings
-    assert "customfield_90099" not in json.dumps(out.warnings)
+    assert "customfield_1" not in json.dumps(out.warnings)
 
 
 def test_acceptance_criteria_of_a_wrong_type_is_null_and_named() -> None:
@@ -873,12 +873,12 @@ def test_an_extra_field_that_does_not_fit_is_null_and_named_by_extra_name() -> N
 
 
 def test_an_extra_field_mapped_to_nothing_is_null_and_named() -> None:
-    sf = site_fields(Fields(extra={"gone": fm(id="customfield_90099")}))
+    sf = site_fields(Fields(extra={"gone": fm(id="customfield_1")}))
     out = normalize_issue(issue(), ctx("fields,incomplete", sf=sf))
     assert out is not None
     assert out.ticket["fields"] == {"gone": None}
     assert out.ticket["incomplete"] == ["fields.gone"]
-    assert "customfield_90099" not in json.dumps(out.warnings)
+    assert "customfield_1" not in json.dumps(out.warnings)
 
 
 def test_an_extra_field_missing_from_the_payload_is_named() -> None:
@@ -1220,7 +1220,7 @@ def test_no_customfield_id_in_any_output_for_a_default_read() -> None:
         customfield_90003=[_sprint(1)],
         customfield_90004=adf("c"),
         customfield_90005="DEMO-8",
-        customfield_80001="filler",
+        customfield_1="filler",
         description=adf("d"),
     )
     out = normalize_issue(raw, ctx(None))
@@ -1298,7 +1298,7 @@ class TestAgainstTheFake:
         )
         sent = set(resp.data["fields"])
         assert "description" not in sent and "comment" not in sent and "issuelinks" not in sent
-        assert not any(k.startswith("customfield_8") for k in sent)
+        assert sent <= set(req.fields)  # no filler: only what was asked for
 
 
 # --- fuzz ----------------------------------------------------------------------------------
