@@ -210,6 +210,7 @@ def test_update_mode_writes_the_file_and_the_manifest(
     trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     schemas, goldens = trees
+    monkeypatch.delenv("CI", raising=False)
     monkeypatch.setenv(golden.UPDATE_ENV, "1")
     golden.assert_golden(
         "cli", "error", "usage", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens
