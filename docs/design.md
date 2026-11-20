@@ -122,12 +122,16 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | Module | Responsibility |
 |---|---|
 | `cli` | argparse subcommands, global flags, exit codes, human and `--json` output; the sanitizer runs here, at the output layer |
+| `commands` | the command registry: every command, its flags and its handler (stubs until the owning issue lands) |
+| `flags` | the global flags, their grammars and the pre-pass that reads them from anywhere in argv |
+| `errors` | the one exit-code table, the error type and the error envelope |
 | `config` | load and validate config (Pydantic), drop-ins, env overrides for top-level scalars; the loader checks (`default_site` names a site, `email` xor `email_env`, `queries` and `extra` names collide with no logical name, url, duration and board shapes, `me` and `account_id` shapes) that JSON Schema cannot express, all failing as `invalid_config` naming the key |
 | `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
 | `provider` | the internal provider interface and normalized objects |
 | `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
-| `adf` | ADF to Markdown renderer (with budgets); the one `validate_adf()` allowlist |
-| `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules); `adf` keeps the renderer and `validate_adf()` |
+| `adf` | the one `validate_adf()` allowlist (the renderer is `adf_render`, the converter is `adf_from_markdown`) |
+| `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
+| `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
 | `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
@@ -136,7 +140,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
 | `dedupe` | the dedupe lock and the lookups for comment and create |
 
-Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway.
+Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway. Test-only: `jsonschema` (development group) validates the golden files and the error envelope against `schemas/`.
 
 ## Data model
 
