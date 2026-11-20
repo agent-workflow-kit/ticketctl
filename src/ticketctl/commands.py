@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import fieldscmd, getcmd, handlers
+from . import fieldscmd, getcmd, handlers, searchcmd
 from .flags import (
     Globals,
     count_arg,
@@ -104,7 +104,6 @@ def _search(p: argparse.ArgumentParser) -> None:
     _add(p, "--fields")
     _add(p, "--count", action="store_true")
     _add(p, "--cursor")
-    # TODO(#16): raw query versus structured flag combination rules.
 
 
 def _key(p: argparse.ArgumentParser) -> None:
@@ -211,7 +210,14 @@ def _specs() -> list[CommandSpec]:
             handlers.human_whoami,
         ),
         CommandSpec(("get",), r, "read tickets", getcmd.get, _get, getcmd.human_get),
-        CommandSpec(("search",), r, "search tickets", _stub(17), _search),
+        CommandSpec(
+            ("search",),
+            r,
+            "search tickets",
+            searchcmd.search,
+            _search,
+            searchcmd.human_search,
+        ),
         CommandSpec(("comments",), r, "list comments", _stub(18), _comments),
         CommandSpec(("transitions",), r, "list available transitions", _stub(18), _key),
         CommandSpec(("sprints", "list"), r, "list sprints", _stub(18), _sprints_list),

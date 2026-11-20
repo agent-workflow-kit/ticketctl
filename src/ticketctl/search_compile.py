@@ -196,6 +196,11 @@ def _minute(dt: datetime) -> str:
     return f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d} {dt.hour:02d}:{dt.minute:02d}"
 
 
+def is_rfc3339(value: str) -> bool:
+    """Whether ``value`` has the RFC 3339 timestamp shape (the only time form needing a zone)."""
+    return _RFC3339.fullmatch(value) is not None
+
+
 def compile_time(flag: str, value: str, time_zone: str | None) -> str:
     """The quoted JQL time operand for the one time grammar.
 

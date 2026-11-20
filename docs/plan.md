@@ -22,6 +22,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `config` | 0 | load and validate config (Pydantic), drop-ins, env overrides for top-level scalars, loader checks |
 | `gateway` | 0 | the only HTTP boundary: requests, auth header, timeouts, retry policy, pacing, redirect and proxy rules |
 | `search_compile` | 1 | structured flags and named queries to JQL, the `ORDER BY` scanner, raw query rules (no provider calls) |
+| `search_cursor`, `searchcmd` | 1 | the `search` cursor and command (parse check, paging, caps, count) |
 | `timestamps` | 1 | provider timestamp and date normalization (UTC `Z`, offsets without a colon) |
 | `normalize` | 1 | the `--fields` vocabulary, the provider field request and the issue to ticket object conversion |
 | `comment_object` | 1 | the comment object and the `get --comments N` comment page (pure logic) |
