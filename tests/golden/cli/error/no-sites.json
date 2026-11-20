@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "invalid_config",
+    "details": null,
+    "key": null,
+    "message": "sites: no sites are configured",
+    "outcome_unknown": false,
+    "reason": "no_sites",
+    "retry_after_s": null,
+    "retryable": false,
+    "site": null
+  }
+}

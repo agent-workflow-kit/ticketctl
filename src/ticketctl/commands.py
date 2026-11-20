@@ -1,7 +1,8 @@
 """The command registry: every command of docs/interface.md with its flags.
 
-Handlers are stubs until the issue that owns each command lands; a stub raises
-NotImplementedError, which the top-level handler reports as exit 1 `internal`.
+Handlers are stubs until the issue that owns each command lands (``whoami``, ``sites`` and
+``validate`` live in ``handlers.py``); a stub raises NotImplementedError, which the top-level
+handler reports as exit 1 `internal`.
 The dispatcher looks a command up in REGISTRY at run time, so an owning issue
 replaces its entry (and tests may patch it).
 """
@@ -13,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from . import handlers
 from .flags import (
     Globals,
     count_arg,
@@ -36,6 +38,7 @@ class CommandSpec:
     help: str
     handler: Handler
     add_arguments: Adder
+    human: Callable[[Any], str] | None = None  # plain-text form of the result (no `--json`)
 
 
 def _stub(owner: int) -> Handler:
@@ -120,7 +123,7 @@ def _sprints_show(p: argparse.ArgumentParser) -> None:
 
 
 def _sites_resolve(p: argparse.ArgumentParser) -> None:
-    _key(p)
+    _add(p, "key", metavar="KEY_OR_URL")
 
 
 def _validate(p: argparse.ArgumentParser) -> None:
@@ -189,7 +192,14 @@ def _sprint_remove(p: argparse.ArgumentParser) -> None:
 def _specs() -> list[CommandSpec]:
     r, w = READ, WRITE
     return [
-        CommandSpec(("whoami",), r, "print the authenticated account", _stub(11), _whoami),
+        CommandSpec(
+            ("whoami",),
+            r,
+            "print the authenticated account",
+            handlers.whoami,
+            _whoami,
+            handlers.human_whoami,
+        ),
         CommandSpec(("get",), r, "read tickets", _stub(15), _get),
         CommandSpec(("search",), r, "search tickets", _stub(17), _search),
         CommandSpec(("comments",), r, "list comments", _stub(18), _comments),
@@ -199,11 +209,25 @@ def _specs() -> list[CommandSpec]:
         CommandSpec(("fields", "list"), r, "list discovered fields", _stub(19), _none),
         CommandSpec(("fields", "check"), r, "check the field mappings", _stub(19), _none),
         CommandSpec(("fields", "refresh"), r, "replace the field cache", _stub(19), _none),
-        CommandSpec(("sites",), r, "list configured sites", _stub(11), _none),
         CommandSpec(
-            ("sites", "resolve"), r, "show which site a key selects", _stub(11), _sites_resolve
+            ("sites",), r, "list configured sites", handlers.sites, _none, handlers.human_sites
         ),
-        CommandSpec(("validate",), r, "validate the configuration", _stub(11), _validate),
+        CommandSpec(
+            ("sites", "resolve"),
+            r,
+            "show which site a key selects",
+            handlers.sites_resolve,
+            _sites_resolve,
+            handlers.human_sites_resolve,
+        ),
+        CommandSpec(
+            ("validate",),
+            r,
+            "validate the configuration",
+            handlers.validate,
+            _validate,
+            handlers.human_validate,
+        ),
         CommandSpec(("export",), r, "print audit records", _stub(36), _export),
         CommandSpec(("transition",), w, "transition a ticket", _stub(28), _transition),
         CommandSpec(("comment",), w, "post a comment", _stub(29), _comment),

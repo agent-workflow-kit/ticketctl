@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "invalid_config",
+    "message": "the account differs from the configured expectation for site main",
+    "reason": "account_mismatch",
+    "retryable": false,
+    "retry_after_s": null,
+    "outcome_unknown": false,
+    "site": "main",
+    "key": null,
+    "details": null
+  }
+}

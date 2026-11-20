@@ -13,6 +13,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .config import ConfigError
+from .gateway import GatewayError
+from .sanitize import InputError, cap_text, sanitize_line, scrub
+from .state import StateError
+
 MESSAGE_MAX = 4096
 TRUNCATED = "<truncated>"
 
@@ -131,20 +136,19 @@ CODES: dict[str, CodeSpec] = {
 def clean_message(text: str) -> str:
     """Make `text` safe for one line of output and cap it.
 
-    Control, format, surrogate, private-use and unassigned characters (and every
-    line break) become ``<U+XXXX>`` markers; the result is cut to MESSAGE_MAX.
+    Control, format, surrogate, private-use and unassigned characters (and every line break)
+    become ``<U+XXXX>`` markers, then the sanitizer's own invisible-character rules and the output
+    scrub run, and the result is cut to MESSAGE_MAX (the scrub runs before the cut, so a secret
+    cannot straddle it).
     """
-    # TODO(#7): route through the one sanitizer once sanitize.py lands.
     out: list[str] = []
     for ch in text:
-        if unicodedata.category(ch)[0] == "C" or ch in "  ":
+        if unicodedata.category(ch)[0] == "C" or ch in "\u2028\u2029":
             out.append(f"<U+{ord(ch):04X}>")
         else:
             out.append(ch)
-    cleaned = "".join(out)
-    if len(cleaned) > MESSAGE_MAX:
-        cleaned = cleaned[: MESSAGE_MAX - len(TRUNCATED)] + TRUNCATED
-    return cleaned
+    cleaned = scrub(sanitize_line("".join(out)))
+    return cap_text(cleaned, MESSAGE_MAX)[0]
 
 
 class TicketctlError(Exception):
@@ -206,7 +210,13 @@ class TicketctlError(Exception):
         (a comment or create without a dedupe key) but is always `outcome_unknown: true`.
         """
         if code != "partial":
-            if outcome_unknown is not None and outcome_unknown != (code == "outcome_unknown"):
+            # A write that got a 3xx or an unusable 2xx is `provider_changed` with
+            # `outcome_unknown: true` (interface.md, Invoking the provider).
+            if (
+                outcome_unknown is not None
+                and outcome_unknown != (code == "outcome_unknown")
+                and not (code == "provider_changed" and outcome_unknown)
+            ):
                 raise ValueError(f"code {code!r} fixes outcome_unknown")
             if code != "outcome_unknown" and retryable not in (None, spec.retryable):
                 raise ValueError(f"code {code!r} fixes retryable")
@@ -241,3 +251,33 @@ def internal_error(exc: BaseException) -> TicketctlError:
         "internal",
         f"unexpected internal error ({name}); set TICKETCTL_DEBUG for a traceback",
     )
+
+
+def from_exception(exc: BaseException) -> TicketctlError | None:
+    """Map the modules' own errors onto the envelope; None for any other exception.
+
+    ConfigError (exit 2 `invalid_config`), InputError (the grammar and input refusals, with their
+    own exit, code and reason), GatewayError (the HTTP boundary) and StateError (exit 1 `internal`;
+    the table's only `internal` reason is `audit_failed`, so the state reason goes in the message).
+    """
+    if isinstance(exc, TicketctlError):
+        return exc
+    if isinstance(exc, ConfigError):
+        return TicketctlError("invalid_config", str(exc), reason=exc.reason)
+    if isinstance(exc, InputError):
+        return TicketctlError(exc.code, exc.message, reason=exc.reason, details=exc.details)
+    if isinstance(exc, GatewayError):
+        details = dict(exc.details)
+        reason = details.pop("reason", None)
+        return TicketctlError(
+            exc.code,
+            exc.message,
+            reason=reason,
+            details=details or None,
+            retryable=exc.retryable,
+            outcome_unknown=exc.outcome_unknown,
+            retry_after_s=exc.retry_after_s,
+        )
+    if isinstance(exc, StateError):
+        return TicketctlError("internal", f"state error ({exc.reason}): {exc.message}")
+    return None

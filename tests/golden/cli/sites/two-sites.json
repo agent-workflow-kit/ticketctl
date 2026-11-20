@@ -1,0 +1,22 @@
+{
+  "default_site": "alpha",
+  "sites": [
+    {
+      "default": true,
+      "name": "alpha",
+      "projects": [],
+      "provider": "jira",
+      "url": "https://other.test"
+    },
+    {
+      "default": false,
+      "name": "zed",
+      "projects": [
+        "DEMO",
+        "AB"
+      ],
+      "provider": "jira",
+      "url": "https://example.test/Jira"
+    }
+  ]
+}

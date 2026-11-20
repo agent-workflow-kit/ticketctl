@@ -50,7 +50,7 @@ _POLL_MAX = 0.05
 class StateError(Exception):
     """A state directory or file problem: exit 1, code ``internal``.
 
-    TODO(#5): the CLI maps this onto the error envelope exactly as for InputError.
+    ``errors.from_exception`` maps this onto the error envelope (exit 1 `internal`).
     ``reason`` is one of ``state_owner``, ``state_symlink``, ``state_type``, ``state_io``,
     ``lock_timeout``, ``record_invalid`` or ``record_too_large``. The message never holds a
     record value.

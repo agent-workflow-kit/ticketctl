@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "invalid_config",
+    "details": null,
+    "key": null,
+    "message": "sites.main.token_env: must match [A-Za-z_][A-Za-z0-9_]{0,127}",
+    "outcome_unknown": false,
+    "reason": "config_invalid",
+    "retry_after_s": null,
+    "retryable": false,
+    "site": null
+  }
+}

@@ -35,14 +35,14 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 ## Stage 0: foundation
 
 **Goal**: A package that loads config, makes one safe HTTP call through the gateway, prints errors as the envelope and writes the logs.
-**Success Criteria**: `ticketctl --version`, `validate`, `sites` and `whoami` work against the fake provider; config errors name the key; exit codes follow the table; the sanitizer matches the specified classes; the gateway enforces host, redirect, TLS, size and proxy rules; token never appears in any output.
+**Success Criteria**: `ticketctl --version`, `validate`, `sites`, `sites resolve` and `whoami` work against the fake provider; config errors name the key; exit codes follow the table; the sanitizer matches the specified classes; the gateway enforces host, redirect, TLS, size and proxy rules; token never appears in any output.
 **Tests**: config loader (drop-ins, env scalars, grammars, `url` rules, `allow_http` loopback only); gateway (timeouts, retry table, 429 and `Retry-After`, cross-host redirect fails, response caps, proxy CONNECT, no header echo with `--verbose` and `TICKETCTL_DEBUG`); sanitizer over all of Unicode categories against the specified classes; identifier grammars; log and audit append with `flock`, rotation; golden files for `whoami`, `sites`, `validate`, the error envelope; token-leak test (token in env never in stdout, stderr, log, audit, cache).
 **Status**: Not Started
 
 ## Stage 1: reads
 
 **Goal**: Every read command works against the fake provider with the normalized ticket object.
-**Success Criteria**: `get`, `search`, `comments`, `transitions`, `sprints`, `fields` and `sites resolve` print the schemas' shapes; a semantic JQL error is exit 22 before any search; paging with `--cursor` and the 500 cap; `blocked` computed from the same read; ADF rendered with the safety rules.
+**Success Criteria**: `get`, `search`, `comments`, `transitions`, `sprints` and `fields` print the schemas' shapes; a semantic JQL error is exit 22 before any search; paging with `--cursor` and the 500 cap; `blocked` computed from the same read; ADF rendered with the safety rules.
 **Tests**: search compilation (structured flags, named queries, ORDER BY wrapping with the quote-aware balance rule, bypass attempts including `x) OR (...`); parse-endpoint strictness; field discovery by schema and the ambiguity refusals; timestamp normalization (offsets without a colon, user time zone for absolute dates); renderer budgets (depth, nodes, output size) and unknown nodes; blocked tri-state; multi-key `get`; cache TTL and corruption; spike regressions V-2 to V-6, V-13, V-14, V-22.
 **Status**: Not Started
 

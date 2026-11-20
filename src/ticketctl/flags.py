@@ -6,24 +6,23 @@ import argparse
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import NoReturn
 
-from . import __version__
+from . import __version__, config
 from .errors import clean_message, usage_error
+from .sanitize import GRAMMARS
 
 PROG = "ticketctl"
 
-# TODO(#7): the shared flag grammars move to sanitize.py; these copy the interface table.
-ACTOR_RE = re.compile(r"(?:human|auto):[A-Za-z0-9._@-]{1,64}")
-DECISION_ID_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
-NUMERIC_ID_RE = re.compile(r"[0-9]{1,18}")
-SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# The shared flag grammars are the sanitizer's (docs/interface.md, Identifiers).
+ACTOR_RE = GRAMMARS["actor"].pattern
+DECISION_ID_RE = GRAMMARS["decision_id"].pattern
+NUMERIC_ID_RE = GRAMMARS["numeric_id"].pattern
+SHA256_RE = GRAMMARS["sha256"].pattern
 HOOK_NAME_RE = re.compile(r"(?:pre|post)-(?:transition|comment|create|update|sprint)")
-# TODO(#6): the duration grammar is owned by config.py; replace this copy (and parse_duration).
-DURATION_RE = re.compile(r"([0-9]{1,9})(ms|s|m|h|d)?")
-_UNIT_S = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0, None: 1.0}
-TIMEOUT_MIN_S = 1.0
-TIMEOUT_MAX_S = 86400.0
+TIMEOUT_MIN = timedelta(seconds=1)
+TIMEOUT_MAX = timedelta(hours=24)
 OVERRIDE_SCOPE = "ticketctl"
 
 # Flags that only make sense for a write; on a read command they exit 2 invalid_argument.
@@ -88,7 +87,7 @@ def _uint(max_digits: int, what: str):
 
 count_arg = _uint(9, "number")
 seq_arg = _uint(18, "sequence number")
-dedupe_key_arg = _pattern(DECISION_ID_RE, "dedupe key")
+dedupe_key_arg = _pattern(GRAMMARS["dedupe_key"].pattern, "dedupe key")
 numeric_id_arg = _pattern(NUMERIC_ID_RE, "numeric id")
 
 
@@ -100,20 +99,17 @@ def sprint_selector_arg(value: str) -> str:
 
 
 def parse_duration(value: str) -> float:
-    """TODO(#6): replace with the config duration grammar.
-
-    `<integer>(ms|s|m|h|d)` or a bare integer of seconds, 1 s to 24 h."""
-    m = DURATION_RE.fullmatch(value)
-    if not m:
-        raise argparse.ArgumentTypeError("invalid duration (use <integer>[ms|s|m|h|d])")
-    seconds = int(m.group(1)) * _UNIT_S[m.group(2)]
-    if not TIMEOUT_MIN_S <= seconds <= TIMEOUT_MAX_S:
-        raise argparse.ArgumentTypeError("duration must be between 1s and 24h")
-    return seconds
+    """The config duration grammar for `--timeout` (1 s to 24 h), in seconds."""
+    try:
+        return config.parse_duration(
+            value, minimum=TIMEOUT_MIN, maximum=TIMEOUT_MAX
+        ).total_seconds()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid duration: {exc}") from None
 
 
 def _hook(value: str) -> str:
-    # TODO(#7): the command text restriction (it accepts a newline today) belongs to the
+    # TODO(#25): the command text restriction (it accepts a newline today) belongs to the
     # sanitizer grammar.
     name, sep, command = value.partition("=")
     if not sep or not command or not HOOK_NAME_RE.fullmatch(name):
@@ -129,7 +125,6 @@ def build_global_parser() -> argparse.ArgumentParser:
     p.add_argument("--site", metavar="NAME")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--quiet", action="store_true")
-    # TODO(#6): the duration grammar is owned by config.py.
     p.add_argument("--timeout", type=parse_duration, metavar="DURATION")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--yes", action="store_true")
@@ -275,7 +270,7 @@ def check_yes(g: Globals, command: str, dedupe_key: str | None) -> None:
         return
     if g.expect_plan is None:
         raise usage_error("yes_requires_expect_plan", "--yes always needs --expect-plan")
-    if dedupe_key is not None and not DECISION_ID_RE.fullmatch(dedupe_key):
+    if dedupe_key is not None and not GRAMMARS["dedupe_key"].matches(dedupe_key):
         raise usage_error("invalid_argument", "invalid dedupe key")
     if command in ("comment", "create") and dedupe_key is None:
         raise usage_error("dedupe_key_required", f"--yes with {command} needs --dedupe-key")

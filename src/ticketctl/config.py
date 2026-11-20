@@ -71,7 +71,7 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 class ConfigError(Exception):
     """An invalid configuration: exit 2, code ``invalid_config``.
 
-    TODO(#5): map to the error envelope (code, reason, message) in cli.py.
+    ``errors.from_exception`` maps it onto the error envelope (code, reason, message).
     """
 
     code = "invalid_config"
@@ -544,6 +544,8 @@ def _read_file(path: Path) -> str:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
     except OSError as exc:
         failure = f"cannot open the file ({errno.errorcode.get(exc.errno or 0, 'error')})"
+    except ValueError:  # an embedded NUL in the path
+        failure = "cannot open the file (invalid path)"
     if failure is not None:
         raise ConfigError(failure, source=path)
     try:
