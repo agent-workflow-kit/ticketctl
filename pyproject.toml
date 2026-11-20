@@ -21,7 +21,13 @@ build-backend = "hatchling.build"
 packages = ["src/ticketctl"]
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380", "pymarkdownlnt>=0.9.41"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "pymarkdownlnt>=0.9.41",
+    "types-pyyaml>=6.0.12.20261113",
+]
 
 [tool.ruff]
 line-length = 100
