@@ -357,7 +357,7 @@ def test_traceback_only_with_debug(
 
 
 def test_stub_handler_is_exit_one(capsys: pytest.CaptureFixture[str]) -> None:
-    status, out, _ = run(capsys, "--json", "get", "AB-1")  # owned by #15
+    status, out, _ = run(capsys, "--json", "export")  # owned by #36
     assert status == 1
     assert _check_envelope(out)["code"] == "internal"
 
@@ -427,7 +427,7 @@ def test_json_after_double_dash_is_not_the_flag(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     seen: list[Any] = []
-    patch_handler(monkeypatch, ("get",), lambda g, a: seen.append((g, a)) or {"x": 1})
+    patch_handler(monkeypatch, ("get",), lambda g, a: seen.append((g, a)))
     status, out, _ = run(capsys, "get", "--", "--json")
     assert (status, out) == (0, "")
     assert seen[0][0].json is False and seen[0][1].keys == ["--json"]
@@ -897,9 +897,9 @@ def test_process_usage_error_exit_two_with_envelope(tmp_path: Path) -> None:
 
 
 def test_process_unexpected_exception_exit_one_without_traceback(tmp_path: Path) -> None:
-    r = _proc(tmp_path, "get", "AB-1", "--json")  # a stub (#15)
+    r = _proc(tmp_path, "export", "--json")  # a stub (#36)
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
     assert _check_envelope(r.stdout)["code"] == "internal"
-    r = _proc(tmp_path, "get", "AB-1", debug=True)
+    r = _proc(tmp_path, "export", debug=True)
     assert r.returncode == 1 and "Traceback" in r.stderr

@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import fieldscmd, handlers
+from . import fieldscmd, getcmd, handlers
 from .flags import (
     Globals,
     count_arg,
@@ -200,7 +200,7 @@ def _specs() -> list[CommandSpec]:
             _whoami,
             handlers.human_whoami,
         ),
-        CommandSpec(("get",), r, "read tickets", _stub(15), _get),
+        CommandSpec(("get",), r, "read tickets", getcmd.get, _get, getcmd.human_get),
         CommandSpec(("search",), r, "search tickets", _stub(17), _search),
         CommandSpec(("comments",), r, "list comments", _stub(18), _comments),
         CommandSpec(("transitions",), r, "list available transitions", _stub(18), _key),
