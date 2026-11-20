@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import string
 import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
@@ -12,6 +13,13 @@ from ticketctl import search_compile as sc
 from ticketctl.sanitize import InputError
 
 TZ = "America/New_York"
+
+try:
+    ZoneInfo(TZ)
+    _ZONE_SKIP = None
+except Exception as _e:  # pragma: no cover - only without a system zoneinfo database
+    _ZONE_SKIP = f"system time zone database has no {TZ} ({type(_e).__name__}); zone tests skipped"
+needs_zone = pytest.mark.skipif(_ZONE_SKIP is not None, reason=_ZONE_SKIP or "")
 
 
 def flags(**kw):
@@ -152,6 +160,7 @@ def test_duration() -> None:
     assert compile_(flags(created_since="2w")) == '(created >= "-2w")'
 
 
+@needs_zone
 def test_timestamp_converted_to_user_zone_and_rounded_down() -> None:
     # 2024-01-15 12:34:59Z is 07:34 in New York (UTC-5)
     assert compile_(flags(updated_since="2024-01-15T12:34:59Z")) == (
@@ -214,6 +223,7 @@ def test_bad_zone(zone: str) -> None:
     assert err(exc)[:2] == (22, "invalid_request")
 
 
+@needs_zone
 def test_timestamp_overflow_is_error() -> None:
     with pytest.raises(InputError) as exc:
         compile_(flags(updated_since="9999-12-31T23:59:59-23:59"), time_zone="Asia/Tokyo")
@@ -418,7 +428,7 @@ def test_empty_search_needs_a_filter() -> None:
     assert err(exc) == (2, "usage", "missing_option")
     with pytest.raises(InputError) as exc:
         compile_(query="   ")
-    assert err(exc) == (2, "usage", "missing_option")
+    assert err(exc) == (22, "invalid_request", "invalid_query")
 
 
 # --- raw queries -------------------------------------------------------------------------------
@@ -680,3 +690,240 @@ def test_huge_inputs_fail_fast() -> None:
         with pytest.raises(InputError):
             compile_(flags(), **kw)
     assert time.monotonic() - start < 2.0
+
+
+# --- review round 1 ----------------------------------------------------------------------------
+
+INVISIBLE = [
+    "͏",
+    "ᅟ",
+    "ᅠ",
+    "\U00016fe4",
+    "឴",
+    "឵",
+    "᠋",
+    "᠌",
+    "᠍",
+    "᠎",
+    "᠏",
+    "⠀",
+    "ㅤ",
+    "︀",
+    "️",
+    "ﾠ",
+    "￼",
+    "\U000e0100",
+    "\U000e01ef",
+]
+
+
+def _raises(code: tuple[int, str, str], fn, *a, **k) -> None:
+    with pytest.raises(InputError) as exc:
+        fn(*a, **k)
+    assert err(exc) == code
+
+
+VALUE = (22, "invalid_request", "invalid_value")
+QUERY = (22, "invalid_request", "invalid_query")
+
+
+@pytest.mark.parametrize("ch", INVISIBLE)
+def test_explicit_invisible_characters_refused(ch: str) -> None:
+    _raises(VALUE, compile_, flags(status=(f"a{ch}b",)))
+    _raises(VALUE, compile_, flags(label=(f"a{ch}",)))
+    _raises(VALUE, compile_, flags(text=f"a{ch}b"))
+    _raises(VALUE, sc.quote_string, f"a{ch}b")
+    _raises(QUERY, compile_, query=f"a = 1{ch}")
+    _raises(QUERY, compile_, raw_jql=f"a = 1{ch}")
+    _raises(QUERY, sc.split_order_by, f"a = 1 ORDER BY x{ch}")
+
+
+@pytest.mark.parametrize("space", [" ", " ", "　"])
+def test_non_ascii_spaces_refused_in_queries(space: str) -> None:
+    for q in (f"a{space}= 1", f"a = 1 ORDER{space}BY x", f"a = 1 ORDER BY{space}x"):
+        _raises(QUERY, compile_, query=q)
+        _raises(QUERY, compile_, raw_jql=q)
+
+
+def test_raw_blank_is_invalid_query() -> None:
+    _raises(QUERY, compile_, raw_jql="   ")
+    _raises(QUERY, compile_, raw_jql="")
+
+
+@pytest.mark.parametrize("ch", ["", "͸"])
+def test_private_use_and_unassigned_refused(ch: str) -> None:
+    _raises(VALUE, compile_, flags(status=(f"a{ch}",)))
+    _raises(QUERY, compile_, raw_jql=f"a = {ch}")
+    _raises(QUERY, compile_, query=f"a = {ch}")
+
+
+def test_blank_named_query_is_invalid_query_with_and_without_flags() -> None:
+    for q in ("", "   ", "\n\t "):
+        _raises(QUERY, compile_, query=q)
+        _raises(QUERY, compile_, flags(status=("Open",)), query=q)
+
+
+# time zones
+
+
+def test_utc_needs_no_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(name: str):
+        raise ZoneInfoNotFoundError(name)
+
+    monkeypatch.setattr(sc, "ZoneInfo", boom)
+    for z in ("UTC", "Etc/UTC"):
+        assert compile_(flags(updated_since="2024-01-15T12:34:59Z"), time_zone=z) == (
+            '(updated >= "2024-01-15 12:34")'
+        )
+
+
+def test_unloadable_zone_names_the_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(name: str):
+        raise ZoneInfoNotFoundError(name)
+
+    monkeypatch.setattr(sc, "ZoneInfo", boom)
+    with pytest.raises(InputError) as exc:
+        compile_(flags(updated_since="2024-01-15T12:00:00Z"), time_zone="Europe/Paris")
+    assert err(exc) == VALUE
+    assert "system time zone database not found or zone unknown" in exc.value.message
+
+
+@pytest.mark.parametrize("zone", ["localtime", "posixrules", "Factory", "Etc/UTC\n"])
+def test_special_zone_files_refused(zone: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    called = []
+    monkeypatch.setattr(sc, "ZoneInfo", lambda n: called.append(n))
+    _raises(VALUE, compile_, flags(updated_since="2024-01-15T12:00:00Z"), time_zone=zone)
+    assert not called
+
+
+def test_absent_zone_is_invalid_value() -> None:
+    _raises(VALUE, compile_, flags(updated_since="2024-01-15T12:00:00Z"), time_zone=None)
+    _raises(VALUE, compile_, flags(updated_since="2024-01-15T12:00:00Z"), time_zone="a b")
+
+
+# order-by names
+
+
+def test_order_by_logical_names_case_insensitive() -> None:
+    f = flags(project=("A",), order_by="Due_Date:asc")
+    assert compile_(f).endswith("ORDER BY duedate ASC")
+    f = flags(project=("A",), order_by="EPIC")
+    assert compile_(f, order_clauses={"epic": "cf[10002]"}).endswith("ORDER BY cf[10002]")
+    _raises((22, "invalid_request", "unknown_field"), compile_, f)
+    f = flags(project=("A",), order_by="Updated")
+    assert compile_(f).endswith("ORDER BY updated")
+
+
+def test_order_by_raw_clause_keeps_case() -> None:
+    assert compile_(flags(project=("A",), order_by="CustomField")).endswith("ORDER BY CustomField")
+
+
+def test_unusable_mapped_clause_message() -> None:
+    with pytest.raises(InputError) as exc:
+        compile_(flags(project=("A",), order_by="estimate"), order_clauses={"estimate": "a b"})
+    assert err(exc) == (22, "invalid_request", "unknown_field")
+    assert "not usable" in exc.value.message
+    with pytest.raises(InputError) as exc:
+        compile_(flags(project=("A",), order_by="estimate"))
+    assert "no field is mapped" in exc.value.message
+
+
+def test_order_by_cf_clause_digit_limit() -> None:
+    f = flags(project=("A",), order_by="estimate")
+    assert compile_(f, order_clauses={"estimate": "cf[" + "1" * 18 + "]"}).endswith(
+        "cf[" + "1" * 18 + "]"
+    )
+    _raises(
+        (22, "invalid_request", "unknown_field"),
+        compile_,
+        f,
+        order_clauses={"estimate": "cf[" + "1" * 19 + "]"},
+    )
+
+
+def test_builtin_updated_and_created_not_overridable() -> None:
+    for name in ("updated", "created"):
+        f = flags(project=("A",), order_by=name)
+        out = compile_(f, order_clauses={"updated": "cf[1]", "created": "cf[2]"})
+        assert out.endswith(f"ORDER BY {name}")
+    # the other built-ins still follow the site's mapping
+    f = flags(project=("A",), order_by="assignee")
+    assert compile_(f, order_clauses={"assignee": "cf[3]"}).endswith("ORDER BY cf[3]")
+
+
+# scanner
+
+
+def test_scanner_unicode_identifier_boundary() -> None:
+    for q in ("aéorder by x", "a = 1 order byé", "日order by x", "a = order byé"):
+        assert sc.split_order_by(q) == (q, None)
+    assert sc.split_order_by("a = 1 order by x") == ("a = 1 ", "x")
+
+
+def test_scanner_rejects_backslash_outside_string() -> None:
+    for q in ('a = b\\" ) OR project = Z OR (c = "d', "a = \\x", "\\"):
+        _raises(QUERY, sc.split_order_by, q)
+        _raises(QUERY, compile_, flags(status=("Open",)), query=q)
+    # a backslash inside a string is still fine
+    assert sc.split_order_by('a = "x\\\\y"') == ('a = "x\\\\y"', None)
+
+
+def test_orderby_without_space_is_not_a_keyword() -> None:
+    for q in ("a = ORDERBY", "ORDERBY x", "a = 1 ORDERBY x", "a = 1 ORDER_BY x"):
+        assert sc.split_order_by(q) == (q, None)
+
+
+# limits and speed
+
+
+@pytest.mark.parametrize(
+    "flag", ["status", "label", "assignee", "sprint", "project", "key", "text"]
+)
+def test_ten_megabyte_value_fails_fast(flag: str) -> None:
+    big = "a" * 10_000_000
+    start = time.monotonic()
+    value = big if flag == "text" else (big,)
+    with pytest.raises(InputError):
+        compile_(flags(**{flag: value}))
+    assert time.monotonic() - start < 0.5
+
+
+def test_value_count_cap() -> None:
+    ok = compile_(flags(status=tuple(str(i) for i in range(512))))
+    assert ok.startswith('(status in ("0", "1"')
+    with pytest.raises(InputError) as exc:
+        compile_(flags(status=tuple(str(i) for i in range(513))))
+    assert err(exc) == VALUE
+    assert "more than 512" in exc.value.message
+
+
+# time grammar mutants
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "2024-01-01T00:00:00+01:60",
+        "2024-01-01T00:00:00+01:99",
+        "2024-01-01T00:00:00Zjunk",
+        "2024-01-01T00:00:00Z ",
+        "2024-01-01T00:00:00.1.2Z",
+    ],
+)
+def test_time_grammar_mutants(bad: str) -> None:
+    _raises(VALUE, compile_, flags(updated_since=bad))
+
+
+# input type mutants
+
+
+def test_bare_string_flag_is_one_value() -> None:
+    assert compile_(flags(status="abc")) == '(status in ("abc"))'
+
+
+def test_non_text_values_are_invalid_value() -> None:
+    for f in (flags(status=[5]), flags(text=5), flags(label=(None,)), flags(assignee=[1])):
+        with pytest.raises(InputError) as exc:
+            compile_(f)
+        assert err(exc) == VALUE
+        assert "not text" in exc.value.message

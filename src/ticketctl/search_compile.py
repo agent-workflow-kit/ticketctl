@@ -23,10 +23,10 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
-from .sanitize import GRAMMARS, InputError, cap_text, normalize_ticket_key, render
+from .sanitize import _EXPLICIT, GRAMMARS, InputError, cap_text, normalize_ticket_key, render
 
 MAX_JQL = 4096
 MAX_VALUE = 256
@@ -34,14 +34,19 @@ MAX_TEXT = 200
 MAX_VALUES = 512
 _MAX_TIME = 64
 
-# Categories the sanitizer replaces: never allowed inside a value or a query.
+# What the sanitizer replaces: never allowed inside a value or a query. The categories are its
+# own; the explicit code points (invisible characters outside them) are imported from it.
 _BAD = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+_INVISIBLE = _EXPLICIT
+
+# Names that ``ZoneInfo`` would read as files of the database that are not zones.
+_NOT_ZONES = frozenset({"localtime", "posixrules", "Factory"})
 
 STATUS_CATEGORIES = {"new": "To Do", "indeterminate": "In Progress", "done": "Done"}
 
 # Logical ``--order-by`` names whose JQL clause name does not depend on a site's mapping. The
 # others (estimate, acceptance_criteria, epic and the configured extra names) come from the
-# caller through ``order_clauses``, which also overrides these.
+# caller through ``order_clauses``, which also overrides these except ``updated`` and ``created``.
 BUILTIN_ORDER_CLAUSES = {
     "assignee": "assignee",
     "priority": "priority",
@@ -79,8 +84,12 @@ _RFC3339 = re.compile(
     r"(?:\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})"
 )
 # Possessive whitespace run: no backtracking, so a long run costs one pass.
-_ORDER_BY = re.compile(r"order\s++by(?![A-Za-z0-9_])", re.IGNORECASE | re.ASCII)
-_IDENT = re.compile(r"[A-Za-z0-9_]", re.ASCII)
+_ORDER_BY = re.compile(r"order\s++by", re.IGNORECASE | re.ASCII)
+
+
+def _is_ident(ch: str) -> bool:
+    """An identifier character: any alphanumeric (not only ASCII) or an underscore."""
+    return ch == "_" or ch.isalnum()
 
 
 # --------------------------------------------------------------------------------------------
@@ -106,7 +115,7 @@ def _combination(why: str) -> InputError:
 
 def _shown(value: object) -> str:
     text = value if isinstance(value, str) else repr(value)
-    return cap_text(render(text), 64)[0]
+    return cap_text(render(text[:256]), 64)[0]
 
 
 # --------------------------------------------------------------------------------------------
@@ -115,7 +124,7 @@ def _shown(value: object) -> str:
 
 
 def _has_bad_char(text: str) -> bool:
-    return any(unicodedata.category(c) in _BAD for c in text)
+    return any(unicodedata.category(c) in _BAD or ord(c) in _INVISIBLE for c in text)
 
 
 def _escape(value: str) -> str:
@@ -154,6 +163,9 @@ def _values(flag: str, values: Sequence[str]) -> list[str]:
     for v in values:
         if not isinstance(v, str):
             raise _value_error(flag, "not text")
+        # Judged before any grammar, rendering or hashing reads a huge value.
+        if len(v) > MAX_VALUE:
+            raise _value_error(flag, f"longer than {MAX_VALUE} characters")
         seen.setdefault(v)
     return list(seen)
 
@@ -167,15 +179,17 @@ def _in(clause: str, op: str, quoted: Sequence[str]) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-def _zone(name: str | None) -> ZoneInfo:
+def _zone(name: str | None) -> tzinfo:
     if name is None:
         raise _value_error("time", "the site user's time zone is unknown")
-    if not GRAMMARS["time_zone"].matches(name):
+    if not isinstance(name, str) or not GRAMMARS["time_zone"].matches(name) or name in _NOT_ZONES:
         raise _value_error("time", "invalid time zone")
+    if name in ("UTC", "Etc/UTC"):
+        return UTC
     try:
         return ZoneInfo(name)
     except (ValueError, OSError, KeyError):  # ZoneInfoNotFoundError is a KeyError
-        raise _value_error("time", "unknown time zone") from None
+        raise _value_error("time", "system time zone database not found or zone unknown") from None
 
 
 def _minute(dt: datetime) -> str:
@@ -397,11 +411,20 @@ def _order_clause(spec: str, order_clauses: Mapping[str, str] | None) -> str:
         raise _value_error("--order-by", "direction must be :asc or :desc")
     mapped = dict(BUILTIN_ORDER_CLAUSES)
     mapped.update(order_clauses or {})
+    # ``updated`` and ``created`` are never remapped (a config ``extra`` may be named so).
+    mapped["updated"] = "updated"
+    mapped["created"] = "created"
+    field = field.lower() if field.lower() in mapped or field.lower() in _LOGICAL else field
     if field in mapped or field in _LOGICAL:
         clause = mapped.get(field)
-        if clause is None or not _CLAUSE_NAME.fullmatch(clause):
+        if clause is None:
             raise _invalid_request(
                 "unknown_field", f"--order-by: no field is mapped to {_shown(field)}"
+            )
+        if not isinstance(clause, str) or not _CLAUSE_NAME.fullmatch(clause):
+            raise _invalid_request(
+                "unknown_field",
+                f"--order-by: the clause name mapped to {_shown(field)} is not usable",
             )
     elif _ORDER_FIELD.fullmatch(field):
         clause = field
@@ -426,6 +449,7 @@ def _check_jql_text(text: str, what: str) -> None:
         if (
             (cat == "Cc" and c not in "\n\r\t")
             or cat in _BAD - {"Cc"}
+            or ord(c) in _INVISIBLE
             or (cat == "Zs" and c != " ")
         ):
             raise _query_error(f"{what} holds a control or invisible character")
@@ -462,9 +486,13 @@ def _scan(text: str) -> tuple[int, int] | None:
             depth -= 1
             if depth < 0:
                 raise _query_error("unbalanced parentheses or quote")
-        elif depth == 0 and ch in "oO" and (i == 0 or not _IDENT.match(text[i - 1])):
+        elif ch == "\\":
+            # Outside a string a backslash means nothing to this scanner, but Jira may read it as
+            # an escape and start a string elsewhere; refuse rather than guess.
+            raise _query_error("backslash outside a string")
+        elif depth == 0 and ch in "oO" and (i == 0 or not _is_ident(text[i - 1])):
             m = _ORDER_BY.match(text, i)
-            if m:
+            if m and not (m.end() < n and _is_ident(text[m.end()])):
                 span = (i, m.end())
                 i = m.end()
                 continue
@@ -547,6 +575,8 @@ def compile_search(
     order = ""
     if query is not None:
         where_part, tail = split_order_by(query)
+        if not query.strip():
+            raise _query_error("empty query")
         where = where_part.strip()
         order = tail or ""
     clauses = _clauses(flags, time_zone)
