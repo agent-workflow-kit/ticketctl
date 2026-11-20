@@ -1,0 +1,19 @@
+{
+  "probe": true,
+  "sites": [
+    {
+      "account_id": "acct-0001",
+      "problems": [],
+      "queries": [
+        {
+          "error": null,
+          "name": "open",
+          "valid": true
+        }
+      ],
+      "site": "main"
+    }
+  ],
+  "valid": true,
+  "warnings": []
+}

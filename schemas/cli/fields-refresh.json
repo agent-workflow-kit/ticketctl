@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/cli/fields-refresh.json",
   "title": "fields refresh --json",
-  "description": "The cache was replaced.",
+  "description": "The field list was fetched (and cached, unless the cache cannot be written or cache_ttl is 0).",
   "type": "object",
   "properties": {
     "site": {
