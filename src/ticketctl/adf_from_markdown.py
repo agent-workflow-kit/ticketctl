@@ -22,7 +22,7 @@ list or block quote nested deeper than 5 containers is literal text.
 Every input is sanitized first (``sanitize_body``), so control and bidirectional characters
 reach the output only as ``<U+XXXX>`` markers.
 
-TODO(#21): ``validate_adf()`` re-checks this output (and ``--format adf`` input) against the
+``validate_adf()`` (``adf_validate``) re-checks this output (and ``--format adf`` input) against the
 allowlist; this module does not replace it.
 TODO(#22): the attribution paragraph is added after conversion; callers pass its text length as
 ``reserve`` and its node count as ``reserve_nodes`` so the size rules count it.
@@ -37,6 +37,7 @@ from bisect import bisect_left
 from typing import Any
 from urllib.parse import quote
 
+from ticketctl.adf_validate import HREF, LANGUAGE
 from ticketctl.sanitize import InputError, sanitize_body
 
 MAX_NEST = 5  # lists and block quotes together
@@ -46,8 +47,8 @@ _DEST_WINDOW = 4100
 
 Node = dict[str, Any]
 
-_LANGUAGE = re.compile(r"[A-Za-z0-9+#._-]{1,32}")
-_HREF = re.compile(r"(?!https?://[^/?#]*@)https?://[\x21-\x7e]{1,2000}")
+_LANGUAGE = LANGUAGE
+_HREF = HREF
 _SCHEME = re.compile(r"(https?)://", re.IGNORECASE)
 _ORDERED = re.compile(r"([0-9]{1,9})([.)])(?=[ \t]|$)")
 _SPECIAL = re.compile(r"[\\`*_\[\]\n]|!(?=\[)")
