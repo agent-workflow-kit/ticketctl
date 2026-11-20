@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import json
 import os
 import re
 import stat
@@ -78,7 +79,10 @@ _EXPLICIT = frozenset(
 # Printable ASCII never needs a lookup; every other run goes through the table.
 _NON_PRINTABLE_ASCII_RUN = re.compile(r"[^\x20-\x7e]+")
 _NEWLINES = re.compile(r"\r\n|\r")
-_MARKER_PREFIX = re.compile(r"<(?:U(?:\+[0-9A-F]{0,6})?)?$")
+# A cut never leaves the start of a ``<U+XXXX>`` or ``<redacted>`` marker at the end of the text.
+_MARKER_PREFIX = re.compile(
+    r"<(?:U(?:\+[0-9A-F]{0,6})?|r(?:e(?:d(?:a(?:c(?:t(?:e(?:d)?)?)?)?)?)?)?)?$"
+)
 TRUNCATED = "<truncated>"
 
 CAPS: dict[str, int] = {
@@ -122,8 +126,8 @@ def _sanitize_all(text: str, *, body: bool) -> str:
 def cap_text(text: str, cap: int) -> tuple[str, bool]:
     """Cut ``text`` to at most ``cap`` characters, ending in ``<truncated>``; report the cut.
 
-    Cuts at a code-point boundary and never inside a ``<U+XXXX>`` marker. Call it on sanitized
-    text.
+    Cuts at a code-point boundary and never inside a ``<U+XXXX>`` or ``<redacted>`` marker. Call
+    it on sanitized, scrubbed text.
     """
     if len(text) <= cap:
         return text, False
@@ -134,9 +138,13 @@ def cap_text(text: str, cap: int) -> tuple[str, bool]:
 
 
 def sanitize_field(text: str, *, cap: int, body: bool = False) -> tuple[str, bool]:
-    """Sanitize, then cap: returns the text and whether it was cut (``<field>.truncated``)."""
-    clean = sanitize_body(text) if body else sanitize_line(text)
-    return cap_text(clean, cap)
+    """Sanitize, scrub, then cap: returns the text and whether it was cut.
+
+    The scrub runs before the cut so a secret that straddles the cap cannot leave a prefix; a
+    final scrub of the capped text is harmless.
+    """
+    capped, cut = cap_text(render(text, body=body), cap)
+    return scrub(capped), cut
 
 
 # --------------------------------------------------------------------------------------------
@@ -146,7 +154,6 @@ def sanitize_field(text: str, *, cap: int, body: bool = False) -> tuple[str, boo
 REDACTED = "<redacted>"
 MIN_SECRET_LENGTH = 8
 
-_scrub_pattern: re.Pattern[str] | None = None
 _scrub_values: list[str] = []
 
 
@@ -156,40 +163,88 @@ def basic_auth_value(email: str, token: str) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
-def configure_scrubber(secrets: Iterable[str], *, basic_values: Iterable[str] = ()) -> None:
-    """Replace the registered secrets. Values under 8 characters are ignored.
+def _secret_forms(value: object) -> set[str]:
+    """The stripped secret, its URL- and JSON-encoded forms and their sanitized forms.
 
-    Each secret is also registered in its sanitized form, since the scrub runs after the
-    sanitizer. TODO(#6): the config loader resolves ``token_env`` values and calls this once.
+    Only forms of at least 8 characters count; the minimum applies to each form's own length.
     """
-    global _scrub_pattern, _scrub_values
+    if not isinstance(value, str):
+        return set()
+    stripped = value.strip()
+    if len(stripped) < MIN_SECRET_LENGTH:
+        return set()
+    bases = {
+        stripped,
+        quote(stripped, safe=""),
+        quote(stripped),
+        json.dumps(stripped)[1:-1],
+    }
+    forms: set[str] = set()
+    for base in bases:
+        for form in (base, sanitize_line(base), sanitize_body(base)):
+            if len(form) >= MIN_SECRET_LENGTH:
+                forms.add(form)
+    return forms
+
+
+def configure_scrubber(secrets: Iterable[str], *, basic_values: Iterable[str] = ()) -> None:
+    """Replace the registered secrets.
+
+    Each value is stripped of surrounding whitespace first, and the 8-character minimum applies
+    to the stripped length. The stripped value, its percent-encoded forms (``quote`` with and
+    without safe characters) and its JSON-escaped form are registered, each also in its
+    sanitized form since the scrub runs after the sanitizer.
+
+    TODO(#6): the CLI and the config loader must resolve the ``token_env`` values and call this
+    once before any output; until it is called the scrub is the identity and fails open.
+    """
+    global _scrub_values
     values: set[str] = set()
     for value in list(secrets) + list(basic_values):
-        if not isinstance(value, str) or len(value) < MIN_SECRET_LENGTH:
-            continue
-        if not value.strip():
-            continue
-        values.add(value)
-        for form in (sanitize_line(value), sanitize_body(value)):
-            if len(form) >= MIN_SECRET_LENGTH:
-                values.add(form)
-    ordered = sorted(values, key=lambda v: (-len(v), v))
-    _scrub_values = ordered
-    if not ordered:
-        _scrub_pattern = None
-        return
-    _scrub_pattern = re.compile("|".join(re.escape(v) for v in ordered))
+        values |= _secret_forms(value)
+    _scrub_values = sorted(values, key=lambda v: (-len(v), v))
 
 
 def _configured_secrets() -> list[str]:
     return list(_scrub_values)
 
 
+def _match_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for value in _scrub_values:
+        pos = text.find(value)
+        while pos != -1:
+            spans.append((pos, pos + len(value)))
+            pos = text.find(value, pos + 1)
+    return spans
+
+
 def scrub(text: str) -> str:
-    """Replace every occurrence of a configured secret by ``<redacted>``."""
-    if _scrub_pattern is None:
+    """Replace every occurrence of a configured secret by ``<redacted>``.
+
+    Matches of all registered forms are collected over the original text; overlapping and
+    adjacent matches merge into one span, so overlapping secrets leave no partial.
+    """
+    if not _scrub_values:
         return text
-    return _scrub_pattern.sub(REDACTED, text)
+    spans = sorted(_match_spans(text))
+    if not spans:
+        return text
+    out: list[str] = []
+    cursor = 0
+    start, end = spans[0]
+    for s, e in spans[1:]:
+        if s <= end:
+            end = max(end, e)
+            continue
+        out.append(text[cursor:start])
+        out.append(REDACTED)
+        cursor = end
+        start, end = s, e
+    out.append(text[cursor:start])
+    out.append(REDACTED)
+    out.append(text[end:])
+    return "".join(out)
 
 
 def render(text: str, *, body: bool = False) -> str:
@@ -247,8 +302,8 @@ def _g(name: str, regex: str, kind: str) -> Grammar:
 GRAMMARS: dict[str, Grammar] = {
     g.name: g
     for g in (
-        _g("ticket_key", r"[A-Z][A-Z0-9_]*-[0-9]+", "key"),
-        _g("project_key", r"[A-Z][A-Z0-9_]*", "key"),
+        _g("ticket_key", r"(?=.{1,64}$)[A-Z][A-Z0-9_]*-[0-9]+", "key"),
+        _g("project_key", r"(?=.{1,64}$)[A-Z][A-Z0-9_]*", "key"),
         _g("site_name", r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", "site"),
         _g("provider_id", r"[A-Za-z0-9_.:-]{1,64}", "flag"),
         _g("numeric_id", r"[0-9]{1,18}", "flag"),
@@ -261,6 +316,7 @@ GRAMMARS: dict[str, Grammar] = {
     )
 }
 
+_URL_FORBIDDEN = frozenset({"Cc", "Zs", "Zl", "Zp"})
 _BROWSE_PATH = re.compile(r"/browse/([A-Z][A-Z0-9_]*-[0-9]+)/?")
 
 
@@ -295,8 +351,19 @@ def query(params: Mapping[str, object] | Sequence[tuple[str, object]]) -> str:
         raise _invalid_request("invalid_value", "query value is not valid text") from None
 
 
+def _is_url_forbidden(ch: str) -> bool:
+    return ord(ch) <= 0x20 or ord(ch) == 0x7F or unicodedata.category(ch) in _URL_FORBIDDEN
+
+
 def split_url(url: str) -> SplitResult:
-    """``urlsplit`` where a ValueError is exit 22 ``invalid_value``."""
+    """``urlsplit`` where a ValueError is exit 22 ``invalid_value``.
+
+    A URL with a character at or below U+0020, U+007F or a Cc, Zs, Zl or Zp character is refused
+    first: ``urlsplit`` silently strips tab, CR, LF and leading control characters.
+    """
+    if any(_is_url_forbidden(c) for c in url):
+        shown, _ = cap_text(render(url), _EXCERPT)
+        raise _invalid_request("invalid_value", f"invalid url: {shown}")
     try:
         return urlsplit(url)
     except ValueError:
@@ -372,6 +439,8 @@ def open_input_fd(path: str) -> int:
     # lstat first: refuses a device or FIFO before open() could have a side effect on it.
     try:
         pre = os.lstat(path)
+    except UnicodeError:
+        raise _file_error(path, "invalid path") from None
     except OSError as exc:
         raise _file_error(path, os.strerror(exc.errno or 0) or "unreadable") from None
     if stat.S_ISLNK(pre.st_mode):
@@ -382,6 +451,8 @@ def open_input_fd(path: str) -> int:
     flags |= getattr(os, "O_NOCTTY", 0)
     try:
         fd = os.open(path, flags)
+    except UnicodeError:
+        raise _file_error(path, "invalid path") from None
     except OSError as exc:
         raise _file_error(path, os.strerror(exc.errno or 0) or "unreadable") from None
     try:
@@ -433,12 +504,15 @@ def read_input_file(path: str, *, kind: str, body_chars: int) -> str:
     return _decode(b"".join(chunks), cap, path)
 
 
-def read_input_stdin(stdin: _TextStdin, *, kind: str, body_chars: int) -> str:
+def read_input_stdin(stdin: _TextStdin | None, *, kind: str, body_chars: int) -> str:
     """Read ``-``: refused (exit 2 ``invalid_argument``) on a TTY, else the same caps."""
     cap = _cap_for(kind, body_chars)
-    if stdin.isatty():
+    isatty = getattr(stdin, "isatty", None)
+    if isatty is not None and isatty():
         raise _usage("invalid_argument", "stdin is a terminal; pipe the input or use a file")
-    reader = stdin.buffer
+    reader = getattr(stdin, "buffer", None)
+    if reader is None:
+        raise _usage("invalid_argument", "stdin is not available; use a file")
     data = reader.read(cap + 1)
     return _decode(data, cap, "stdin")
 
@@ -446,19 +520,22 @@ def read_input_stdin(stdin: _TextStdin, *, kind: str, body_chars: int) -> str:
 def read_input(path: str, *, kind: str, body_chars: int, stdin: _TextStdin | None = None) -> str:
     """``-`` reads stdin (``sys.stdin`` unless given); anything else is a file argument."""
     if path == "-":
-        source: _TextStdin = sys.stdin if stdin is None else stdin
+        source = sys.stdin if stdin is None else stdin
         return read_input_stdin(source, kind=kind, body_chars=body_chars)
     return read_input_file(path, kind=kind, body_chars=body_chars)
 
 
 def ensure_no_secret(*texts: str, secrets: Iterable[str] | None = None) -> None:
-    """Exit 22 ``secret_in_body`` when any text holds a configured secret (8+ characters).
+    """Exit 22 ``secret_in_body`` when any text holds a configured secret.
 
+    A secret counts at 8 or more characters once stripped; its encoded forms are checked too.
     The message is fixed: it never echoes the value or says where it was found. With no
     ``secrets`` the values given to ``configure_scrubber`` are used.
     """
-    values = _configured_secrets() if secrets is None else list(secrets)
-    values = [v for v in values if len(v) >= MIN_SECRET_LENGTH and v.strip()]
+    if secrets is None:
+        values = _configured_secrets()
+    else:
+        values = sorted({form for v in secrets for form in _secret_forms(v)})
     for text in texts:
         if any(v in text for v in values):
             raise _invalid_request(

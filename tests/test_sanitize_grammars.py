@@ -264,3 +264,56 @@ def test_browse_path_grammar_is_fullmatch() -> None:
         "",
     ]:
         assert s.browse_key(bad) is None, bad
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "https://example.test/browse/ABC-1\n",
+        "https://example.test/\nbrowse/ABC-1",
+        "https://example.test/\tbrowse/ABC-1",
+        "https://example.test/\rbrowse",
+        "\x01 https://example.test/",
+        " https://example.test/",
+        "https://example.test/a b",
+        "https://example.test/\x7f",
+        "https://example.test/\x85",
+        "https://example.test/\u00a0x",
+        "https://example.test/\u2028x",
+        "https://example.test/\u2029x",
+        "https://example.test/\u3000x",
+    ],
+)
+def test_split_url_refuses_whitespace_and_control_characters(bad: str) -> None:
+    with pytest.raises(s.InputError) as info:
+        s.split_url(bad)
+    assert (info.value.exit_code, info.value.code, info.value.reason) == (
+        22,
+        "invalid_request",
+        "invalid_value",
+    )
+
+
+def test_ticket_and_project_keys_are_at_most_64_characters() -> None:
+    ok_key = "A" * 62 + "-1"
+    assert len(ok_key) == 64
+    assert s.GRAMMARS["ticket_key"].matches(ok_key)
+    assert not s.GRAMMARS["ticket_key"].matches("A" * 63 + "-1")
+    assert s.GRAMMARS["project_key"].matches("A" * 64)
+    assert not s.GRAMMARS["project_key"].matches("A" * 65)
+    assert s.normalize_ticket_key(ok_key.lower()) == ok_key
+    with pytest.raises(s.InputError):
+        s.normalize_ticket_key("a" * 63 + "-1")
+
+
+def test_segment_refuses_dot_segments_with_the_grammars_own_failure() -> None:
+    for name in ("provider_id", "account_id"):
+        g = s.GRAMMARS[name]
+        for dots in (".", ".."):
+            with pytest.raises(s.InputError) as info:
+                s.segment(name, dots)
+            assert (info.value.exit_code, info.value.code, info.value.reason) == (
+                g.exit_code,
+                g.code,
+                g.reason,
+            )

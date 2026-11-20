@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import base64
-import traceback
+import json
 import unicodedata
+import urllib.parse
 from collections.abc import Iterator
 
 import pytest
@@ -277,19 +278,21 @@ def test_token_in_a_traceback_is_redacted() -> None:
     assert "<redacted>" in text
     assert "RuntimeError" in text
     assert "\n" in text  # a traceback is multi-line
-    assert traceback.format_exc() is not None
 
 
 def test_token_in_a_chained_traceback_is_redacted() -> None:
     sanitize.configure_scrubber([TOKEN])
     try:
         try:
-            raise ValueError(TOKEN)
+            raise ValueError(f"inner {TOKEN}")
         except ValueError as inner:
             raise RuntimeError("outer") from inner
     except RuntimeError as exc:
+        assert exc.__cause__ is not None
         text = sanitize.format_traceback(exc)
     assert TOKEN not in text
+    assert "ValueError: inner <redacted>" in text
+    assert "RuntimeError: outer" in text
 
 
 def test_configure_replaces_previous_secrets() -> None:
@@ -300,3 +303,97 @@ def test_configure_replaces_previous_secrets() -> None:
 
 def test_scrub_without_configuration_is_identity() -> None:
     assert sanitize.scrub("anything") == "anything"
+
+
+# --- review round 1: stripped, encoded and overlapping secrets; scrub before cap -----------
+
+SECRET = "QZXV-secret-0123"
+
+
+@pytest.mark.parametrize("raw", [f"{TOKEN}\n", f"  {TOKEN}  ", f"\t{TOKEN}\r\n"])
+def test_whitespace_around_a_configured_secret_is_stripped(raw: str) -> None:
+    sanitize.configure_scrubber([raw], basic_values=[])
+    assert sanitize.scrub(f"{TOKEN}.") == "<redacted>."
+    assert sanitize.scrub(f"end {TOKEN}") == "end <redacted>"
+    assert sanitize.render(f"x {TOKEN} y") == "x <redacted> y"
+
+
+def test_minimum_length_applies_to_the_stripped_secret() -> None:
+    sanitize.configure_scrubber(["  1234567  \n"])
+    assert sanitize.scrub("1234567") == "1234567"
+    sanitize.configure_scrubber(["  12345678  "])
+    assert sanitize.scrub("1234567890") == "<redacted>90"
+
+
+def test_ensure_no_secret_uses_the_stripped_secret() -> None:
+    with pytest.raises(sanitize.InputError) as info:
+        sanitize.ensure_no_secret(f"a {TOKEN}.", secrets=[f"{TOKEN}\n"])
+    assert info.value.reason == "secret_in_body"
+    with pytest.raises(sanitize.InputError):
+        sanitize.ensure_no_secret(f"a {TOKEN}", secrets=[f"  {TOKEN} "])
+    sanitize.ensure_no_secret("a 1234567", secrets=["  1234567\n"])
+    sanitize.configure_scrubber([f"{TOKEN}\n"])
+    with pytest.raises(sanitize.InputError):
+        sanitize.ensure_no_secret(f"x {TOKEN}")
+
+
+def test_secret_straddling_the_cap_leaves_no_prefix() -> None:
+    sanitize.configure_scrubber([SECRET])
+    text = "a" * 20 + SECRET + "b" * 20
+    for cap in range(12, 60):
+        out, _ = sanitize.sanitize_field(text, cap=cap)
+        assert SECRET[:4] not in out, (cap, out)
+        assert len(out) <= cap
+        body = out[: -len("<truncated>")] if out.endswith("<truncated>") else out
+        assert body.count("<") == body.count(">"), (cap, out)
+
+
+def test_basic_header_value_straddling_the_cap_leaves_no_prefix() -> None:
+    value = _basic("user@example.test", TOKEN)
+    sanitize.configure_scrubber([TOKEN], basic_values=[value])
+    text = "a" * 20 + value + "b" * 20
+    for cap in range(12, 80):
+        out, _ = sanitize.sanitize_field(text, cap=cap, body=True)
+        assert value[:4] not in out, (cap, out)
+
+
+def test_cap_text_never_splits_a_redacted_marker() -> None:
+    text = "ab" + sanitize.REDACTED * 3
+    for cap in range(12, 40):
+        out, cut = sanitize.cap_text(text, cap)
+        if not cut:
+            continue
+        body = out[: -len("<truncated>")]
+        assert body.count("<") == body.count(">"), (cap, out)
+
+
+def test_encoded_forms_of_a_secret_are_scrubbed() -> None:
+    secret = 'pa ss/w"o\\rd+&é'
+    sanitize.configure_scrubber([secret])
+    forms = [
+        urllib.parse.quote(secret, safe=""),
+        urllib.parse.quote(secret),
+        json.dumps(secret)[1:-1],
+        secret,
+    ]
+    for form in forms:
+        assert sanitize.scrub(f"x {form} y") == "x <redacted> y", form
+
+
+def test_slash_secret_is_matched_in_its_percent_encoded_form() -> None:
+    sanitize.configure_scrubber(["abc/defg"])  # 8 chars; quote(safe="") makes %2F (10 chars)
+    assert sanitize.scrub("abc%2Fdefg") == "<redacted>"
+    with pytest.raises(sanitize.InputError):
+        sanitize.ensure_no_secret("abc%2Fdefg", secrets=["abc/defg"])
+
+
+def test_overlapping_secrets_leave_no_partial() -> None:
+    sanitize.configure_scrubber(["12345678abc", "5678abcdefg"])
+    assert sanitize.scrub("12345678abcdefg") == "<redacted>"
+    assert sanitize.scrub("x 12345678abcdefg y") == "x <redacted> y"
+
+
+def test_adjacent_secrets_merge_into_one_marker() -> None:
+    sanitize.configure_scrubber(["aaaaaaaa", "bbbbbbbb"])
+    assert sanitize.scrub("aaaaaaaabbbbbbbb") == "<redacted>"
+    assert sanitize.scrub("aaaaaaaa bbbbbbbb") == "<redacted> <redacted>"
