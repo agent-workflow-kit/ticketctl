@@ -844,7 +844,7 @@ def test_link_without_visible_text_stays_literal(md: str) -> None:
     doc = conv(md)
     assert "mark:link" not in types(doc)
     assert all_text(doc).startswith("[")
-    assert "http://a.example" in all_text(doc)
+    assert re.search(r"\(http://a\.example\)$", all_text(doc))
 
 
 def test_link_whose_text_is_a_sanitizer_marker_is_a_link() -> None:
