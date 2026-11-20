@@ -21,6 +21,7 @@ from .errors import TicketctlError
 from .gateway import Gateway
 from .runtime import Runtime
 from .sanitize import CAPS, GRAMMARS, sanitize_field
+from .state import StateError
 
 MYSELF = "/rest/api/3/myself"
 
@@ -61,9 +62,11 @@ def fetch_me(gw: Gateway) -> Me:
     if not 200 <= response.status < 300 or not isinstance(data, dict):
         raise TicketctlError("provider_changed", f"unexpected answer from {MYSELF}")
     zone = data.get("timeZone")
+    name = data.get("displayName")
     document = {
         "account_id": data.get("accountId"),
-        "display_name": data.get("displayName"),
+        # Like the zone, a non-string name is dropped, not an error: only the id matters.
+        "display_name": name if isinstance(name, str) else None,
         # A zone that fails its grammar is dropped, not an error: only time-zone users need it.
         "time_zone": zone if GRAMMARS["time_zone"].matches(zone) else None,
     }
@@ -79,22 +82,34 @@ def load_me(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> Me:
     url = str(site.url)
     email = gw.target.email
     if not refresh:
-        stored = cache.read_cache(
-            rt.state_dir, site_name, "me", url=url, email=email, ttl=site.cache_ttl
-        )
+        try:
+            stored = cache.read_cache(
+                rt.state_dir, site_name, "me", url=url, email=email, ttl=site.cache_ttl
+            )
+        except StateError as exc:
+            rt.warn(f"warning: the account cache cannot be read ({exc.reason}); refetching")
+            stored = None
         me = None if stored is None else _from_document(stored, "cache")
         if me is not None:
             return me
     me = fetch_me(gw)
-    cache.write_cache(
-        rt.state_dir,
-        site_name,
-        "me",
-        {"account_id": me.account_id, "display_name": me.display_name, "time_zone": me.time_zone},
-        url=url,
-        email=email,
-        ttl=site.cache_ttl,
-    )
+    try:
+        cache.write_cache(
+            rt.state_dir,
+            site_name,
+            "me",
+            {
+                "account_id": me.account_id,
+                "display_name": me.display_name,
+                "time_zone": me.time_zone,
+            },
+            url=url,
+            email=email,
+            ttl=site.cache_ttl,
+        )
+    except StateError as exc:
+        # The answer is good; a cache that cannot be written only costs the next call a fetch.
+        rt.warn(f"warning: the account cache cannot be written ({exc.reason})")
     return me
 
 
@@ -103,6 +118,8 @@ def expected_account(config: Config, site_name: str) -> str | None:
     return config.sites[site_name].account_id or config.me.jira
 
 
+# todo(#23): the write flow must call check_expectation(write=True) after a fresh /myself
+# (load_me with refresh=True, never the cache) and then validate_adf() on rich text.
 def check_expectation(
     config: Config, site_name: str, account_id: str, *, write: bool
 ) -> str | None:

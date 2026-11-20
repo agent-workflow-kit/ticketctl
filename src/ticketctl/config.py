@@ -544,6 +544,8 @@ def _read_file(path: Path) -> str:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
     except OSError as exc:
         failure = f"cannot open the file ({errno.errorcode.get(exc.errno or 0, 'error')})"
+    except ValueError:  # an embedded NUL in the path
+        failure = "cannot open the file (invalid path)"
     if failure is not None:
         raise ConfigError(failure, source=path)
     try:

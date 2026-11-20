@@ -11,6 +11,7 @@ import argparse
 from typing import Any
 
 from . import identity, selection
+from .errors import TicketctlError
 from .flags import Globals
 from .runtime import for_site, load_runtime, open_gateway
 
@@ -80,7 +81,7 @@ def validate(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     if a.probe:
         # TODO(#19): --probe authenticates, compares the account, runs the `fields check` routine
         # and parses the named queries (needs #17 and #19); only the offline form exists.
-        raise NotImplementedError("validate --probe is owned by #19")
+        raise TicketctlError("internal", "validate --probe is not implemented yet")
     rt = load_runtime(g, show_warnings=False)  # they are part of the result
     # A configuration with no site validates nothing a command could use: `no_sites`.
     rt.config.require_sites()

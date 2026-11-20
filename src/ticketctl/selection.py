@@ -100,6 +100,7 @@ def _parse_url(text: str) -> tuple[str, str, int, str]:
     key = browse_key(parts.path)
     if key is None:
         raise _invalid("invalid_value", "a browse url must have the path /browse/<KEY>")
+    key = normalize_ticket_key(key)  # the key grammar caps the length: exit 22 invalid_key
     return scheme, host, port or (443 if scheme == "https" else 80), key
 
 

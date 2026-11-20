@@ -42,7 +42,7 @@ A command picks its site with one table. The inputs are tried in this order and 
 | 5 | the only configured site | selects it |
 | 6 | nothing selects | several sites exit 21 `ambiguous_site` listing the names; zero configured sites exit 2 (`invalid_config`, `reason: no_sites`) |
 
-A browse URL must have the scheme `https` (`http` only for an `allow_http` site), no userinfo, and a path matching `^/browse/<KEY>/?$`, compared after `urlsplit`, never by substring. Its query and fragment are ignored (a pasted link often carries `?focusedCommentId=` or `#comment-1`); only scheme, host, port and path are checked, and a board or other URL form is not accepted. A command with several keys needs one site: keys, `--project` values or `--key` values that select different sites exit 22 `mixed_sites`, and `--site` forces one site for all keys. A key from an unclaimed project goes to `default_site` or the only site by design; a user who wants a refusal claims all projects. ticketctl contacts only the selected site's host, and only hosts named in config. `sites resolve KEY` prints the exit 21 envelope with the candidates when ambiguous.
+A browse URL must have the scheme `https` (`http` only for an `allow_http` site), no userinfo, and a path matching `^/browse/<KEY>/?$`, compared after `urlsplit`, never by substring. Its query and fragment are ignored (a pasted link often carries `?focusedCommentId=` or `#comment-1`); only scheme, host, port and path are checked, and a board or other URL form is not accepted. A command with several keys needs one site: keys, `--project` values or `--key` values that select different sites exit 22 `mixed_sites`, and `--site` forces one site for all keys. With zero configured sites, exit 2 `no_sites` wins over everything else, an unknown `--site` included. A browse URL is matched only on `/browse/<KEY>`: a site `url` with a context path never matches a browse URL, so use the key or `--site` there. A key from an unclaimed project goes to `default_site` or the only site by design; a user who wants a refusal claims all projects. ticketctl contacts only the selected site's host, and only hosts named in config. `sites resolve KEY_OR_URL` prints the exit 21 envelope with the candidates when ambiguous.
 
 ### Human actions
 
@@ -385,7 +385,7 @@ Lists the transitions available now, with required fields: `{key, site, transiti
 
 ### `sites`
 
-Prints the configured sites and their `projects`; `sites resolve KEY` (a key or a browse URL) prints `{key, site, rule}`, where `rule` is `site_flag`, `url`, `project`, `default_site` or `only_site` (see [Site selection](#site-selection)). Offline: no network and no credentials are read. Schemas `schemas/cli/sites.json` and `schemas/cli/sites-resolve.json`.
+Prints the configured sites and their `projects`; `sites resolve KEY_OR_URL` (a KEY or a browse URL) prints `{key, site, rule}`, where `rule` is `site_flag`, `url`, `project`, `default_site` or `only_site` (see [Site selection](#site-selection)). Offline: no network and no credentials are read. Schemas `schemas/cli/sites.json` and `schemas/cli/sites-resolve.json`.
 
 ### `validate`
 

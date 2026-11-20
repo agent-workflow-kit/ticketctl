@@ -16,7 +16,7 @@ import pytest
 
 from tests.fake_provider import ME_ACCOUNT, SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault
 from tests.golden import assert_golden
-from ticketctl import identity, sanitize
+from ticketctl import identity, output, sanitize
 from ticketctl.cli import main
 from ticketctl.config import load_config
 from ticketctl.errors import TicketctlError
@@ -259,13 +259,25 @@ def test_whoami_writes_the_request_log_with_a_path_template(live: Env) -> None:
     assert "audit.jsonl" not in live.files()  # a read is not audited
 
 
-def test_an_unusable_state_directory_never_leaks_a_traceback(live: Env) -> None:
+def test_an_unusable_state_directory_is_a_warning_not_a_failure(live: Env) -> None:
     live.state.parent.write_text("a file where the state home should be")
     code, out, err = live.run("--json", "whoami")
-    assert "Traceback" not in err
-    assert code in (0, 1)
-    if code == 1:
-        assert err_of(out)["code"] == "internal"
+    assert code == 0 and json.loads(out)["account_id"] == ME_ACCOUNT
+    assert "warning" in err and "Traceback" not in err
+    assert SITE_TOKEN not in out + err
+
+
+@pytest.mark.parametrize("argv", [["whoami"], ["whoami", "--refresh"]])
+def test_a_symlinked_me_json_is_a_warning_and_a_refetch(live: Env, argv: list[str]) -> None:
+    live.run("--json", "whoami")
+    target = live.root / "elsewhere.json"
+    target.write_text("{}")
+    me_file = live.state / "cache" / "main" / "me.json"
+    me_file.unlink()
+    me_file.symlink_to(target)
+    code, out, err = live.run("--json", *argv)
+    assert code == 0 and json.loads(out)["source"] == "provider"
+    assert "warning" in err and "Traceback" not in err
 
 
 def test_quiet_drops_warnings_not_results(env: Env) -> None:
@@ -370,6 +382,12 @@ def test_fetch_me_sanitizes_the_untrusted_display_name() -> None:
     assert "\x1b" not in me.display_name and "‮" not in me.display_name
     assert len(me.display_name) <= 256
     assert me.time_zone is None  # fails its grammar: dropped, not an error
+
+
+@pytest.mark.parametrize("name", [12, ["x"], {"a": 1}, True])
+def test_fetch_me_drops_a_non_string_display_name(name: Any) -> None:
+    me = identity.fetch_me(_Gw(200, {"accountId": "acct-1", "displayName": name}))  # type: ignore[arg-type]
+    assert me.account_id == "acct-1" and me.display_name is None
 
 
 # --- sites -----------------------------------------------------------------------------------
@@ -593,8 +611,10 @@ def test_validate_missing_config_file_is_config_invalid(env: Env) -> None:
 
 def test_validate_probe_is_not_implemented_yet(env: Env) -> None:
     env.write(TWO)
-    code, out, _ = env.run("--json", "validate", "--probe")
+    code, out, err = env.run("--json", "validate", "--probe")
     assert code == 1 and err_of(out)["code"] == "internal"
+    assert err_of(out)["message"] == "validate --probe is not implemented yet"
+    assert "NotImplementedError" not in out + err and "Traceback" not in err
 
 
 def test_config_file_contents_are_never_echoed(env: Env) -> None:
@@ -704,3 +724,75 @@ def test_hostile_site_definitions_are_refused_by_every_command(env: Env, block: 
         code, out, err = env.run("--json", *argv)
         assert (code, err_of(out)["reason"]) == (2, "config_invalid"), argv
         assert "Traceback" not in err
+
+
+def test_resolve_a_browse_url_with_an_overlong_key_is_invalid_key(env: Env) -> None:
+    env.write(TWO)
+    long_key = "A" * 70 + "-1"
+    code, out, _ = env.run("--json", "sites", "resolve", f"https://example.test/browse/{long_key}")
+    assert (code, err_of(out)["code"]) == (22, "invalid_request")
+    assert err_of(out)["reason"] == "invalid_key"
+
+
+def test_no_sites_wins_over_an_unknown_site_flag(env: Env) -> None:
+    env.write("sites: {}\n")
+    code, out, _ = env.run("--json", "--site", "nope", "sites", "resolve", "AB-1")
+    assert (code, err_of(out)["reason"]) == (2, "no_sites")
+
+
+def test_a_nul_in_the_config_path_is_config_invalid(env: Env) -> None:
+    code = main(["--json", "--config", "a\x00b", "sites"])
+    cap = env.capsys.readouterr()
+    assert code == 2 and err_of(cap.out)["reason"] == "config_invalid"
+    assert "Traceback" not in cap.err
+
+
+# --- the scrub really guards the output (fails when it is disarmed) ---------------------------
+
+
+def test_a_token_in_a_provider_display_name_is_redacted_everywhere(
+    live: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hostile = _Resp(200, {"accountId": "acct-1", "displayName": f"Mr {SITE_TOKEN}"})
+    monkeypatch.setattr("ticketctl.gateway.Gateway.request", lambda *a, **k: hostile)
+    for flags in (["--json"], [], ["--json", "--verbose"]):
+        code, out, err = live.run(*flags, "whoami", "--refresh")
+        assert code == 0, (flags, err)
+        assert SITE_TOKEN not in out + err
+        assert "<redacted>" in out
+
+
+def test_a_token_in_an_error_message_is_redacted_in_envelope_and_stderr(
+    live: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*a: Any, **k: Any) -> None:
+        raise TicketctlError("internal", f"failed with {SITE_TOKEN} inside")
+
+    monkeypatch.setattr("ticketctl.identity.fetch_me", boom)
+    code, out, err = live.run("--json", "whoami")
+    assert code == 1
+    assert SITE_TOKEN not in out + err
+    assert "<redacted>" in out and "<redacted>" in err
+
+
+def test_the_scrub_is_armed_before_any_output_is_written(
+    live: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    real_configure = sanitize.configure_scrubber
+
+    def configure(secrets: Any, **kw: Any) -> None:
+        events.append("armed")
+        real_configure(secrets, **kw)
+
+    monkeypatch.setattr("ticketctl.runtime.configure_scrubber", configure)
+    real_write = output.write
+
+    def write(stream: Any, text: str) -> None:
+        events.append("write")
+        real_write(stream, text)
+
+    monkeypatch.setattr("ticketctl.output.write", write)
+    monkeypatch.setattr("ticketctl.cli._write", write)
+    live.run("--json", "--verbose", "whoami")
+    assert "write" in events and events[0] == "armed"

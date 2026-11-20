@@ -109,7 +109,7 @@ def parse_duration(value: str) -> float:
 
 
 def _hook(value: str) -> str:
-    # TODO(#7): the command text restriction (it accepts a newline today) belongs to the
+    # TODO(#25): the command text restriction (it accepts a newline today) belongs to the
     # sanitizer grammar.
     name, sep, command = value.partition("=")
     if not sep or not command or not HOOK_NAME_RE.fullmatch(name):
