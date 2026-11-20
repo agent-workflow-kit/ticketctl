@@ -115,7 +115,7 @@ Spikes ran against a real Jira Cloud site on 2026-11-11 and 2026-11-12 (private 
 | V-32 | Spike D: absolute dates in JQL are read in the searching user's time zone. | `--updated-since` |
 | V-33 | Spike D: a label added by update was JQL-visible about 0.6 s after the 1.1 s write call. | Dedupe lag guard (D-36) |
 
-Still to verify (conservative defaults apply): closed-sprint membership under the backlog call and moving out of a closed sprint, the label index lag after a create with the label in the body (the dedupe lag guard of D-36 is a bound until then), an explicit unassigned value in a create body, the phrase compile of `--text` against live JQL, the `statusCategory` names, per-user transition filtering, 429 behavior, scoped API tokens, moved or archived tickets (a moved key can differ from the requested one) and the order of the provider's priority list, the 404-versus-403 behavior for a hidden ticket, comment visibility on a customer-facing (service management) project, the text limits of descriptions and rich-text custom fields, an empty text node, a total text limit across nodes, and the order of add and remove within one update. Spike C (V-19 to V-23) settled the dedupe mechanisms, the body cap (verified for a single text node; the total across nodes is assumed) and the parse endpoint's use; spike D (V-26 to V-33) settled the create body. Not tested: a 300 KB body.
+Still to verify (conservative defaults apply): how Jira reads instants either side of a daylight-saving fall-back fold (the compiled minute string is the same for both; an incremental refresh overlaps by at least an hour meanwhile), the incremental pool refresh (a named query plus `--updated-since` plus `--order-by updated:asc` with `--cursor` paging), closed-sprint membership under the backlog call and moving out of a closed sprint, the label index lag after a create with the label in the body (the dedupe lag guard of D-36 is a bound until then), an explicit unassigned value in a create body, the phrase compile of `--text` against live JQL, the `statusCategory` names, per-user transition filtering, 429 behavior, scoped API tokens, moved or archived tickets (a moved key can differ from the requested one) and the order of the provider's priority list, the 404-versus-403 behavior for a hidden ticket, comment visibility on a customer-facing (service management) project, the text limits of descriptions and rich-text custom fields, an empty text node, a total text limit across nodes, and the order of add and remove within one update. Spike C (V-19 to V-23) settled the dedupe mechanisms, the body cap (verified for a single text node; the total across nodes is assumed) and the parse endpoint's use; spike D (V-26 to V-33) settled the create body. Not tested: a 300 KB body.
 
 ## Modules
 
@@ -132,6 +132,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `adf` | the one `validate_adf()` allowlist (the renderer is `adf_render`, the converter is `adf_from_markdown`) |
 | `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
 | `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
+| `search_compile` | structured flags and named queries compiled to one JQL string: string escaping, the time grammar, the string-aware `ORDER BY` scanner and balance proof; no provider calls (the jira module sends the parse check) |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
 | `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
@@ -140,7 +141,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
 | `dedupe` | the dedupe lock and the lookups for comment and create |
 
-Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway. Test-only: `jsonschema` (development group) validates the golden files and the error envelope against `schemas/`.
+Time zones for `search` timestamps come from the system zoneinfo database through `zoneinfo`; `UTC` and `Etc/UTC` are built in. There is deliberately no `tzdata` dependency (one more runtime package for a case Linux, WSL and macOS cover), so a minimal container without the database fails a timestamp search with exit 22 `invalid_value` ("system time zone database not found or zone unknown") while durations and dates still work. Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway. Test-only: `jsonschema` (development group) validates the golden files and the error envelope against `schemas/`.
 
 ## Data model
 
