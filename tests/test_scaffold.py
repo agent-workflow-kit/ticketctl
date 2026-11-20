@@ -89,17 +89,24 @@ def _is_os_process(name: str) -> bool:
     return name.startswith(OS_PROCESS_NAMES)
 
 
+def _denied(dotted: str) -> bool:
+    # urllib.parse is pure string handling (no connection); the rest of urllib is not.
+    if dotted == "urllib.parse" or dotted.startswith("urllib.parse."):
+        return False
+    return dotted.split(".")[0] in DENIED_MODULES
+
+
 def _violations(source: str) -> set[str]:
     found: set[str] = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".")[0]
-                if root in DENIED_MODULES:
+                if _denied(alias.name):
                     found.add(f"import {root}")
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             root = node.module.split(".")[0]
-            if root in DENIED_MODULES:
+            if _denied(node.module):
                 found.add(f"import {root}")
             if root == "os":
                 found.update(f"os.{a.name}" for a in node.names if _is_os_process(a.name))
@@ -151,6 +158,9 @@ def test_only_gateway_may_use_network_or_process_apis() -> None:
         ("import asyncio", {"import asyncio"}),
         ("try:\n    import requests\nexcept ImportError:\n    pass", {"import requests"}),
         ("def f():\n    import urllib.request", {"import urllib"}),
+        ("import urllib.parse\nfrom urllib.parse import quote", set()),
+        ("from urllib import parse", {"import urllib"}),
+        ("from urllib.request import urlopen", {"import urllib"}),
         ("if True:\n    from xmlrpc.client import ServerProxy", {"import xmlrpc"}),
         ("__import__('socket')", {"call __import__"}),
         ("import importlib\nimportlib.import_module('x')", {"call import_module"}),
