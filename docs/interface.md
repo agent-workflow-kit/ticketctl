@@ -421,6 +421,8 @@ Prints audit records as JSON lines on stdout: `--since <ts>` (bare dates are UTC
 
 `--json`, `--config <path>`, `--site <name>`, `--verbose`, `--quiet`, `--timeout <duration>` (the duration grammar, 1 s to 24 h), `--dry-run` (writes), `--yes` (writes; always needs `--expect-plan`), `--expect-plan <sha256>`, `--actor <string>`, `--decision-id <id>` (repeatable), `--override-escalation[=<scope>]` (human-only, see [Human actions](#human-actions); the scope is `ticketctl`), `--hook <name>=<command>` (repeatable, in addition to configured hooks), `--version`. `--quiet` suppresses non-error stderr (not the confirmation dialog); `--verbose` prints extra diagnostics (rate limits, retries) on stderr and never headers; both together exit 2 `invalid_combination`. A value that can carry untrusted text is accepted as a file or stdin, never only as argv (design guide §4.1): bodies, titles, JQL, text filters and `--set` rich-text values. At most one `-` source per command (exit 2 `stdin_conflict`). `--config <file>` loads only that file (no drop-ins). A time setting takes the duration grammar under [Config](#config).
 
+`--help`, `-h` and `--version` always print plain text to stdout and exit 0, whatever `--json` says.
+
 ### Input files
 
 One reader serves every file argument (`--body-file`, `--title-file`, `--jql-file`, `--text-file`, `@file`). It opens with `O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC`, requires `fstat` to show a regular file (so a FIFO never blocks), then clears non-blocking; it refuses a path under `/proc`, `/sys` or `/dev`, judged on the opened descriptor's resolved path (`/proc/self/fd/N` on Linux, `F_GETPATH` on macOS, `realpath` as the fallback; stdin `-` is the exception). It reads at most `4 * limits.body_chars + 1` bytes for bodies and 1 MiB for the others, and decodes strict UTF-8. A failure is exit 22 `invalid_file`. Any other file the user can read is readable this way (see [Trust boundary](#trust-boundary)). Before any send, an outbound body, title, JQL, label or field value that contains the exact value of any configured token variable (a value of at least 8 characters) is exit 22 `secret_in_body`; the message never echoes the value or its position. `export --to` opens with `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW` and mode 0600 and requires the parent to be a directory owned by the caller. The cache writes (temporary file plus rename) and the state directory use `O_NOFOLLOW` and ownership checks. A driven caller can still create new files with `export --to`.
@@ -444,6 +446,8 @@ One table of exit, `code`, `reason` and the caller's action. `retryable` is true
 | 22 | `invalid_request` | `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_invalid`, `cursor_expired` | the input failed ticketctl's own validation; fix it |
 
 `needs_resolution` is exit 22: the plan needs one more input. Exit 2 is for a flag or shared flag grammar that fails (argparse, actor, decision id, dedupe key, numeric ids, durations, integers); exit 22 is for a ticket, project or site identifier, a browse URL, or a value judged with config, provider or object context.
+
+Exit 130 is not a table row: it means the process was interrupted by SIGINT before any result, and it prints one line `ticketctl: interrupted` on stderr and no envelope.
 
 ## Output by exit code
 
