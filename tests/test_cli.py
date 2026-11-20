@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ from ticketctl import __version__
 from ticketctl.cli import main
 from ticketctl.commands import REGISTRY
 from ticketctl.errors import CODES, DETAILS_KEYS, TicketctlError, clean_message
+from ticketctl.flags import Globals, check_yes
 
 SCHEMAS = Path(__file__).resolve().parent.parent / "schemas"
 
@@ -50,7 +52,7 @@ def patch_handler(monkeypatch: pytest.MonkeyPatch, path: tuple[str, ...], handle
     monkeypatch.setitem(REGISTRY, path, dataclasses.replace(REGISTRY[path], handler=handler))
 
 
-def raiser(exc: Exception):
+def raiser(exc: BaseException):
     def handler(g: Any, a: Any) -> Any:
         raise exc
 
@@ -229,12 +231,50 @@ HANDLER_ROWS = [
 def test_handler_rows_cover_every_code_and_reason() -> None:
     assert {c for c, _, _ in HANDLER_ROWS} | {"usage"} == set(CODES)
     for code, spec in CODES.items():
+        if code == "usage":
+            continue  # covered by test_every_usage_reason_has_a_producer
         reasons = {r for c, r, _ in HANDLER_ROWS if c == code}
         if spec.reason_is_code:
             reasons.add(code)
-        assert spec.reasons <= reasons | ({"audit_failed"} if code == "internal" else set()) | (
-            spec.reasons if code == "usage" else set()
-        ), code
+        assert spec.reasons <= reasons, code
+
+
+SHA = "a" * 64
+# One command line per `usage` reason the parser itself produces.
+USAGE_PRODUCERS = {
+    "human_only": [
+        "transition", "AB-1", "--to", "x", "--actor", "auto:bot", "--override-escalation",
+    ],
+    "yes_requires_expect_plan": ["transition", "AB-1", "--to", "x", "--yes"],
+    "dedupe_key_required": ["comment", "AB-1", "--body", "x", "--yes", "--expect-plan", SHA],
+    "stdin_conflict": ["create", "--title-file", "-", "--body-file", "-"],
+    "invalid_combination": ["whoami", "--verbose", "--quiet"],
+    "invalid_argument": ["get"],
+}  # fmt: skip
+# `missing_option` has no parser-level producer: it needs config and provider context (the
+# board of `sprints`, the project of `create`), so it is raised as a TicketctlError by the
+# handlers. TODO(#18,#31): add the command-line test with the handlers that own it.
+HANDLER_ONLY_USAGE_REASONS = {"missing_option"}
+
+
+def test_every_usage_reason_has_a_producer(capsys: pytest.CaptureFixture[str]) -> None:
+    assert set(USAGE_PRODUCERS) | HANDLER_ONLY_USAGE_REASONS == CODES["usage"].reasons
+    for reason, argv in USAGE_PRODUCERS.items():
+        status, out, _ = run(capsys, "--json", *argv)
+        assert status == 2, reason
+        assert _check_envelope(out)["reason"] == reason
+
+
+def test_missing_option_is_produced_through_ticketctl_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_handler(
+        monkeypatch,
+        ("sprints", "list"),
+        raiser(TicketctlError("usage", "no board", reason="missing_option")),
+    )
+    status, out, _ = run(capsys, "--json", "sprints", "list")
+    assert status == 2 and _check_envelope(out)["reason"] == "missing_option"
 
 
 @pytest.mark.parametrize(("code", "reason", "exit_"), HANDLER_ROWS)
@@ -332,7 +372,6 @@ BAD_ARGV = [
     ["--hook", "pre-bogus=cmd", "comment", "AB-1", "--body", "x"],
     ["--override-escalation=other", "comment", "AB-1", "--body", "x"],
     ["--site"],
-    ["whoami", "--json=1"],
     ["whoami", "\x1b[31mevil\x1b[0m"],
 ]
 
@@ -516,6 +555,32 @@ def test_partial_copies_the_failing_steps_flags() -> None:
     assert not TicketctlError("partial", "m").body()["retryable"]
 
 
+def test_partial_carries_retry_after() -> None:
+    e = TicketctlError("partial", "m", retryable=True, retry_after_s=7)
+    assert e.body()["retry_after_s"] == 7 and e.body()["retryable"] is True
+
+
+def test_retryable_override_only_for_partial_and_outcome_unknown() -> None:
+    assert TicketctlError("outcome_unknown", "m", retryable=False).retryable is False
+    assert TicketctlError("outcome_unknown", "m").retryable is True
+    for code in ("not_found", "timeout", "rate_limited", "rejected"):
+        default = TicketctlError(code, "m").retryable
+        with pytest.raises(ValueError):
+            TicketctlError(code, "m", retryable=not default)
+        assert TicketctlError(code, "m", retryable=default).retryable is default
+
+
+def test_outcome_unknown_override_only_for_partial() -> None:
+    assert TicketctlError("partial", "m", outcome_unknown=True).outcome_unknown is True
+    assert TicketctlError("outcome_unknown", "m").outcome_unknown is True
+    with pytest.raises(ValueError):
+        TicketctlError("outcome_unknown", "m", outcome_unknown=False)
+    for code in ("not_found", "timeout", "rejected"):
+        with pytest.raises(ValueError):
+            TicketctlError(code, "m", outcome_unknown=True)
+        assert TicketctlError(code, "m", outcome_unknown=False).outcome_unknown is False
+
+
 def test_unknown_details_key_is_refused() -> None:
     with pytest.raises(ValueError):
         TicketctlError("not_found", "m", details={"bogus": 1})
@@ -559,6 +624,211 @@ def test_message_is_cleaned_and_capped() -> None:
 def test_hostile_message_in_envelope_validates() -> None:
     e = TicketctlError("not_found", "\x00" * 5000 + " ")
     _validator("cli/error.json").validate(e.envelope())
+
+
+# --- the global-flag pre-pass ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "argv", "attr", "value"),
+    [
+        (("search",), ["search", "--text", "--yes=1 foo"], "text", "--yes=1 foo"),
+        (
+            ("comment",),
+            ["comment", "AB-1", "--body", "--override-escalation=x y"],
+            "body",
+            "--override-escalation=x y",
+        ),
+        (("comment",), ["comment", "AB-1", "--body", "--json=1 x"], "body", "--json=1 x"),
+        (("comment",), ["comment", "AB-1", "--body", "--dry-run=1 x"], "body", "--dry-run=1 x"),
+    ],
+)
+def test_option_value_that_looks_like_a_global_flag_reaches_the_subcommand(
+    path: tuple[str, ...],
+    argv: list[str],
+    attr: str,
+    value: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[Any] = []
+    patch_handler(monkeypatch, path, lambda g, a: seen.append((g, a)) or None)
+    status, _, err = run(capsys, *argv)
+    assert status == 0, err
+    g, a = seen[0]
+    assert getattr(a, attr) == value
+    assert not (g.yes or g.json or g.dry_run or g.override_escalation)
+    assert g.given == frozenset()
+
+
+def test_given_holds_only_the_flags_the_pre_pass_consumed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[Any] = []
+    patch_handler(monkeypatch, ("comment",), lambda g, a: seen.append(g) or None)
+    run(capsys, "comment", "AB-1", "--body", "--yes=1 x", "--dry-run", "--actor=human:me")
+    assert seen[0].given == frozenset({"--dry-run", "--actor"})
+
+
+@pytest.mark.parametrize("flag", ["--json=1", "--json=true"])
+def test_json_with_a_value_prints_an_envelope(
+    flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, out, _ = run(capsys, "get", flag, "AB-1")
+    assert status == 2
+    body = _check_envelope(out)
+    assert (body["code"], body["reason"]) == ("usage", "invalid_argument")
+
+
+def test_help_and_version_stay_plain_text_with_json(capsys: pytest.CaptureFixture[str]) -> None:
+    for argv in (["--json", "--version"], ["--json", "whoami", "--help"], ["-h", "--json"]):
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        with pytest.raises(ValueError):
+            json.loads(out)
+
+
+# --- shared flag grammars at the parser -------------------------------------------------
+
+BAD_DEDUPE = ["bad key", "k\n", "", "a" * 129, "k\u00e9", "a;b"]
+
+
+@pytest.mark.parametrize("value", BAD_DEDUPE, ids=repr)
+@pytest.mark.parametrize(
+    "cmd", [["comment", "AB-1", "--body", "x"], ["create", "--type", "Task"]], ids=lambda c: c[0]
+)
+def test_bad_dedupe_key_is_invalid_argument(
+    cmd: list[str], value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, out, _ = run(capsys, "--json", *cmd, "--dedupe-key", value)
+    assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
+
+
+def test_bad_decision_id_with_trailing_newline(capsys: pytest.CaptureFixture[str]) -> None:
+    status, out, _ = run(capsys, "--json", "comment", "AB-1", "--body", "x", "--decision-id", "d\n")
+    assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
+
+
+def test_good_dedupe_key_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_handler(monkeypatch, ("comment",), lambda g, a: None)
+    assert run(capsys, "comment", "AB-1", "--body", "x", "--dedupe-key", "run.1:a@b/c-d")[0] == 0
+
+
+BAD_NUMBERS = ["abc", "1_0", "\u0663", " 5", "5 ", "-5", "+5", "5\n", "9" * 29, ""]
+
+
+@pytest.mark.parametrize("value", BAD_NUMBERS, ids=repr)
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["get", "AB-1", "--comments"],
+        ["search", "--limit"],
+        ["comments", "AB-1", "--limit"],
+        ["sprints", "list", "--limit"],
+        ["export", "--after-seq"],
+        ["transition", "AB-1", "--transition-id"],
+        ["sprint", "add", "AB-1", "--sprint"],
+    ],
+    ids=lambda a: a[-1],
+)
+def test_bad_number_is_invalid_argument(
+    argv: list[str], value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, out, _ = run(capsys, "--json", *argv, value)
+    assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
+
+
+@pytest.mark.parametrize("argv", [["sprints", "show"], ["sprints", "show", "x1"]])
+def test_sprint_show_id_must_be_numeric(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, out, _ = run(capsys, "--json", *argv)
+    assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
+
+
+def test_numbers_parse_to_ints_and_sprint_selectors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[Any] = []
+    patch_handler(monkeypatch, ("get",), lambda g, a: seen.append(a) or None)
+    patch_handler(monkeypatch, ("sprint", "add"), lambda g, a: seen.append(a) or None)
+    assert run(capsys, "get", "AB-1", "--comments", "0")[0] == 0
+    assert seen[0].comments == 0
+    for sel in ("open", "next", "123456789012345678"):
+        assert run(capsys, "sprint", "add", "AB-1", "--sprint", sel)[0] == 0
+        assert seen[-1].sprint == sel
+
+
+def test_check_yes_rejects_an_empty_dedupe_key_by_grammar() -> None:
+    g = Globals(yes=True, expect_plan=SHA)
+    for key in ("", "bad key", "k\n"):
+        with pytest.raises(TicketctlError) as exc:
+            check_yes(g, "comment", key)
+        assert exc.value.reason == "invalid_argument"
+    check_yes(g, "comment", "ok-key")
+
+
+# --- output failures and interrupts -----------------------------------------------------
+
+
+class _BrokenStream:
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    def write(self, text: str) -> int:
+        raise self.exc
+
+    def flush(self) -> None:
+        raise self.exc
+
+
+def _closed_stream() -> io.StringIO:
+    s = io.StringIO()
+    s.close()
+    return s
+
+
+BAD_STREAMS = [
+    lambda: _BrokenStream(OSError(28, "no space")),
+    lambda: _BrokenStream(BrokenPipeError()),
+    lambda: _BrokenStream(ValueError("I/O operation on closed file")),
+    _closed_stream,
+    lambda: None,
+]
+
+
+@pytest.mark.parametrize("make", BAD_STREAMS)
+def test_failing_streams_never_change_the_exit_code(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patch_handler(monkeypatch, ("whoami",), raiser(TicketctlError("not_found", "gone")))
+    monkeypatch.setattr(sys, "stdout", make())
+    monkeypatch.setattr(sys, "stderr", make())
+    assert main(["--json", "whoami"]) == 10
+    patch_handler(monkeypatch, ("whoami",), lambda g, a: {"x": 1})
+    assert main(["--json", "whoami"]) == 0
+
+
+def test_keyboard_interrupt_is_one_line_and_exit_130(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_handler(monkeypatch, ("whoami",), raiser(KeyboardInterrupt()))
+    monkeypatch.delenv("TICKETCTL_DEBUG", raising=False)
+    status, out, err = run(capsys, "--json", "whoami")
+    assert (status, out, err) == (130, "", "ticketctl: interrupted\n")
+
+
+def test_keyboard_interrupt_traceback_with_debug(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_handler(monkeypatch, ("whoami",), raiser(KeyboardInterrupt()))
+    monkeypatch.setenv("TICKETCTL_DEBUG", "1")
+    status, out, err = run(capsys, "whoami")
+    assert status == 130 and out == "" and "Traceback" in err and "ticketctl: interrupted" in err
 
 
 # --- real process ----------------------------------------------------------------------

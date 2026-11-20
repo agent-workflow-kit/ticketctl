@@ -92,7 +92,7 @@ CODES: dict[str, CodeSpec] = {
     "outcome_unknown": _spec(12, retryable=True),
     "rate_limited": _spec(12, retryable=True, allows_retry_after=True),
     "provider_changed": _spec(12),
-    "partial": _spec(12),
+    "partial": _spec(12, allows_retry_after=True),
     "lookup_incomplete": _spec(12),
     "confirmation_required": _spec(13),
     "escalated": _spec(13),
@@ -126,9 +126,6 @@ CODES: dict[str, CodeSpec] = {
         reason_required=True,
     ),
 }
-
-# `retry_after_s` is only ever set for these codes (and only when the provider sent it).
-_UNSET: Any = object()
 
 
 def clean_message(text: str) -> str:
@@ -181,6 +178,7 @@ class TicketctlError(Exception):
             raise ValueError(f"code {code!r} never carries retry_after_s")
         if retry_after_s is not None and retry_after_s < 0:
             raise ValueError("retry_after_s must not be negative")
+        self._check_overrides(code, spec, retryable, outcome_unknown)
         if details is not None:
             extra = set(details) - DETAILS_KEYS
             if extra:
@@ -197,6 +195,21 @@ class TicketctlError(Exception):
         self.outcome_unknown = (
             (code == "outcome_unknown") if outcome_unknown is None else outcome_unknown
         )
+
+    @staticmethod
+    def _check_overrides(
+        code: str, spec: CodeSpec, retryable: bool | None, outcome_unknown: bool | None
+    ) -> None:
+        """`retryable` and `outcome_unknown` follow the table (interface.md, Exit codes).
+
+        `partial` copies both from the failing step; `outcome_unknown` may be non-retryable
+        (a comment or create without a dedupe key) but is always `outcome_unknown: true`.
+        """
+        if code != "partial":
+            if outcome_unknown is not None and outcome_unknown != (code == "outcome_unknown"):
+                raise ValueError(f"code {code!r} fixes outcome_unknown")
+            if code != "outcome_unknown" and retryable not in (None, spec.retryable):
+                raise ValueError(f"code {code!r} fixes retryable")
 
     def body(self) -> dict[str, Any]:
         """The envelope's `error` object (schemas/cli/error.json)."""

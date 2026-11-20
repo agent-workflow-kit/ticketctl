@@ -13,7 +13,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .flags import Globals
+from .flags import (
+    Globals,
+    count_arg,
+    dedupe_key_arg,
+    numeric_id_arg,
+    seq_arg,
+    sprint_selector_arg,
+)
 
 Handler = Callable[[Globals, argparse.Namespace], Any]
 Adder = Callable[[argparse.ArgumentParser], None]
@@ -53,7 +60,7 @@ def _whoami(p: argparse.ArgumentParser) -> None:
 def _get(p: argparse.ArgumentParser) -> None:
     _add(p, "keys", metavar="KEY", nargs="+")
     _add(p, "--fields")
-    _add(p, "--comments", type=int, metavar="N")
+    _add(p, "--comments", type=count_arg, metavar="N")
     _add(p, "--include-adf", action="store_true")
 
 
@@ -80,7 +87,7 @@ def _search(p: argparse.ArgumentParser) -> None:
     _add(p, "--updated-since")
     _add(p, "--created-since")
     _add(p, "--order-by")
-    _add(p, "--limit", type=int, metavar="N")
+    _add(p, "--limit", type=count_arg, metavar="N")
     _add(p, "--fields")
     _add(p, "--count", action="store_true")
     _add(p, "--cursor")
@@ -93,7 +100,7 @@ def _key(p: argparse.ArgumentParser) -> None:
 
 def _comments(p: argparse.ArgumentParser) -> None:
     _key(p)
-    _add(p, "--limit", type=int, metavar="N")
+    _add(p, "--limit", type=count_arg, metavar="N")
     _add(p, "--since")
     _add(p, "--newest-first", action="store_true")
     _add(p, "--own", action="store_true")
@@ -103,11 +110,11 @@ def _sprints_list(p: argparse.ArgumentParser) -> None:
     _add(p, "--state", choices=["future", "active", "closed"])
     _add(p, "--board")
     _add(p, "--project")
-    _add(p, "--limit", type=int, metavar="N")
+    _add(p, "--limit", type=count_arg, metavar="N")
 
 
 def _sprints_show(p: argparse.ArgumentParser) -> None:
-    _add(p, "id", metavar="ID")
+    _add(p, "id", metavar="ID", type=numeric_id_arg)
     _add(p, "--board")
     _add(p, "--project")
 
@@ -122,14 +129,14 @@ def _validate(p: argparse.ArgumentParser) -> None:
 
 def _export(p: argparse.ArgumentParser) -> None:
     _add(p, "--since")
-    _add(p, "--after-seq", type=int, metavar="N")
+    _add(p, "--after-seq", type=seq_arg, metavar="N")
     _add(p, "--to", metavar="PATH")
 
 
 def _transition(p: argparse.ArgumentParser) -> None:
     _key(p)
     _add(p, "--to")
-    _add(p, "--transition-id")
+    _add(p, "--transition-id", type=numeric_id_arg)
     _add(p, "--resolution")
     _add(p, "--assign")
     _add(p, "--field", action="append")
@@ -141,7 +148,7 @@ def _comment(p: argparse.ArgumentParser) -> None:
     _add(p, "--body")
     _add(p, "--body-file")
     _add(p, "--format", choices=["markdown", "adf"])
-    _add(p, "--dedupe-key")
+    _add(p, "--dedupe-key", type=dedupe_key_arg)
 
 
 def _create(p: argparse.ArgumentParser) -> None:
@@ -154,7 +161,7 @@ def _create(p: argparse.ArgumentParser) -> None:
     _add(p, "--assign")
     _add(p, "--label", action="append")
     _add(p, "--set", action="append")
-    _add(p, "--dedupe-key")
+    _add(p, "--dedupe-key", type=dedupe_key_arg)
 
 
 def _update(p: argparse.ArgumentParser) -> None:
@@ -169,7 +176,7 @@ def _update(p: argparse.ArgumentParser) -> None:
 
 def _sprint_add(p: argparse.ArgumentParser) -> None:
     _key(p)
-    _add(p, "--sprint")
+    _add(p, "--sprint", type=sprint_selector_arg, metavar="open|next|ID")
     _add(p, "--board")
 
 

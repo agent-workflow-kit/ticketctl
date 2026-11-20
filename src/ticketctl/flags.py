@@ -9,15 +9,17 @@ from dataclasses import dataclass, field
 from typing import NoReturn
 
 from . import __version__
-from .errors import TicketctlError, clean_message, usage_error
+from .errors import clean_message, usage_error
 
 PROG = "ticketctl"
 
 # TODO(#7): the shared flag grammars move to sanitize.py; these copy the interface table.
 ACTOR_RE = re.compile(r"(?:human|auto):[A-Za-z0-9._@-]{1,64}")
 DECISION_ID_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
+NUMERIC_ID_RE = re.compile(r"[0-9]{1,18}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 HOOK_NAME_RE = re.compile(r"(?:pre|post)-(?:transition|comment|create|update|sprint)")
+# TODO(#6): the duration grammar is owned by config.py; replace this copy (and parse_duration).
 DURATION_RE = re.compile(r"([0-9]{1,9})(ms|s|m|h|d)?")
 _UNIT_S = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0, None: 1.0}
 TIMEOUT_MIN_S = 1.0
@@ -72,8 +74,35 @@ def _pattern(regex: re.Pattern[str], what: str):
     return check
 
 
+def _uint(max_digits: int, what: str):
+    """A strict non-negative ASCII integer: no sign, space, underscore or non-ASCII digit."""
+    regex = re.compile(f"[0-9]{{1,{max_digits}}}")
+
+    def check(value: str) -> int:
+        if not regex.fullmatch(value):
+            raise argparse.ArgumentTypeError(f"invalid {what} (a non-negative integer)")
+        return int(value)
+
+    return check
+
+
+count_arg = _uint(9, "number")
+seq_arg = _uint(18, "sequence number")
+dedupe_key_arg = _pattern(DECISION_ID_RE, "dedupe key")
+numeric_id_arg = _pattern(NUMERIC_ID_RE, "numeric id")
+
+
+def sprint_selector_arg(value: str) -> str:
+    """`open`, `next` or a numeric sprint id."""
+    if value in ("open", "next"):
+        return value
+    return numeric_id_arg(value)
+
+
 def parse_duration(value: str) -> float:
-    """`<integer>(ms|s|m|h|d)` or a bare integer of seconds, 1 s to 24 h."""
+    """TODO(#6): replace with the config duration grammar.
+
+    `<integer>(ms|s|m|h|d)` or a bare integer of seconds, 1 s to 24 h."""
     m = DURATION_RE.fullmatch(value)
     if not m:
         raise argparse.ArgumentTypeError("invalid duration (use <integer>[ms|s|m|h|d])")
@@ -84,6 +113,8 @@ def parse_duration(value: str) -> float:
 
 
 def _hook(value: str) -> str:
+    # TODO(#7): the command text restriction (it accepts a newline today) belongs to the
+    # sanitizer grammar.
     name, sep, command = value.partition("=")
     if not sep or not command or not HOOK_NAME_RE.fullmatch(name):
         raise argparse.ArgumentTypeError("invalid hook (use <name>=<command>)")
@@ -98,6 +129,7 @@ def build_global_parser() -> argparse.ArgumentParser:
     p.add_argument("--site", metavar="NAME")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--quiet", action="store_true")
+    # TODO(#6): the duration grammar is owned by config.py.
     p.add_argument("--timeout", type=parse_duration, metavar="DURATION")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--yes", action="store_true")
@@ -127,30 +159,76 @@ def split_argv(argv: Sequence[str]) -> tuple[list[str], list[str]]:
 
 
 def wants_json(argv: Sequence[str]) -> bool:
-    return "--json" in split_argv(argv)[0]
+    """`--json`, or `--json=<anything>` (which then fails in the parser), before `--`."""
+    return any(t == "--json" or _json_with_value(t) for t in split_argv(argv)[0])
+
+
+def _json_with_value(tok: str) -> bool:
+    return tok.startswith("--json=") and not any(c.isspace() for c in tok)
+
+
+# Global options by shape. A `--name=value` token is global only for a value option, and
+# an option value that merely looks like a flag (`--text "--yes=1 foo"`) is not one.
+_FLAG_OPTS = frozenset(
+    {"--version", "--json", "--verbose", "--quiet", "--dry-run", "--yes", "--override-escalation"}
+)
+_VALUE_OPTS = frozenset(
+    {"--config", "--site", "--timeout", "--expect-plan", "--actor", "--decision-id", "--hook"}
+)
+
+
+def _is_global_with_value(tok: str) -> bool:
+    name, sep, value = tok.partition("=")
+    if not sep:
+        return False
+    if name == "--hook":  # the command text may hold spaces
+        return True
+    if name == "--override-escalation" or name in _VALUE_OPTS:
+        # Every other global value (and the override scope) has a grammar with no whitespace.
+        return not any(c.isspace() for c in value)
+    return False
 
 
 def extract_globals(argv: Sequence[str]) -> tuple[Globals, list[str]]:
     """Read the global flags from anywhere in argv; return them and the rest."""
     head, tail = split_argv(argv)
     scope: str | None = None
-    prepared: list[str] = []
-    for tok in head:
-        if tok.startswith("--override-escalation="):
-            scope = tok.split("=", 1)[1]
-            if scope != OVERRIDE_SCOPE:
-                raise usage_error(
-                    "invalid_argument",
-                    f"--override-escalation scope must be {OVERRIDE_SCOPE}",
-                )
-            prepared.append("--override-escalation")
+    taken: list[str] = []  # the tokens the global parser will consume
+    rest: list[str] = []
+    given: set[str] = set()
+    i = 0
+    while i < len(head):
+        tok = head[i]
+        i += 1
+        if tok in _FLAG_OPTS:
+            taken.append(tok)
+            given.add(tok)
+        elif tok in _VALUE_OPTS:
+            taken.append(tok)
+            given.add(tok)
+            if i < len(head):
+                taken.append(head[i])
+                i += 1
+        elif _is_global_with_value(tok):
+            name, _, value = tok.partition("=")
+            given.add(name)
+            if name == "--override-escalation":
+                scope = value
+                if scope != OVERRIDE_SCOPE:
+                    raise usage_error(
+                        "invalid_argument",
+                        f"--override-escalation scope must be {OVERRIDE_SCOPE}",
+                    )
+                taken.append(name)
+            else:
+                taken.append(tok)
         else:
-            prepared.append(tok)
+            rest.append(tok)
     try:
-        ns, rest = build_global_parser().parse_known_args(prepared)
+        ns, extra = build_global_parser().parse_known_args(taken)
     except ArgError as e:
         raise usage_error("invalid_argument", clean_message(str(e))) from None
-    given = frozenset(t.split("=", 1)[0] for t in head if t.startswith("--"))
+    rest.extend(extra)
     g = Globals(
         json=ns.json,
         config=ns.config,
@@ -165,7 +243,7 @@ def extract_globals(argv: Sequence[str]) -> tuple[Globals, list[str]]:
         decision_ids=list(ns.decision_id),
         override_escalation=(scope or OVERRIDE_SCOPE) if ns.override_escalation else None,
         hooks=list(ns.hook),
-        given=given,
+        given=frozenset(given),
     )
     return g, rest + tail
 
@@ -181,6 +259,8 @@ def check_globals(g: Globals, kind: str, command: str) -> None:
             )
     if g.verbose and g.quiet:
         raise usage_error("invalid_combination", "--verbose and --quiet cannot be combined")
+    # TODO(#27): resolve the default actor (human:<me.name> on a TTY, else auto:unknown; needs
+    # the config of #6) so a bare --override-escalation without --actor on a non-TTY is human_only.
     if g.override_escalation and g.actor and g.actor.startswith("auto:"):
         raise usage_error("human_only", "--override-escalation needs a human actor")
 
@@ -191,13 +271,14 @@ def check_yes(g: Globals, command: str, dedupe_key: str | None) -> None:
         return
     if g.expect_plan is None:
         raise usage_error("yes_requires_expect_plan", "--yes always needs --expect-plan")
+    if dedupe_key is not None and not DECISION_ID_RE.fullmatch(dedupe_key):
+        raise usage_error("invalid_argument", "invalid dedupe key")
     if command in ("comment", "create") and dedupe_key is None:
         raise usage_error("dedupe_key_required", f"--yes with {command} needs --dedupe-key")
 
 
 __all__ = [
     "Globals",
-    "TicketctlError",
     "extract_globals",
     "check_globals",
     "check_yes",

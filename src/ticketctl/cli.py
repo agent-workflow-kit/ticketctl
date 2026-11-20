@@ -101,7 +101,7 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
             raise usage_error("invalid_combination", "--format adf needs --body-file")
     elif spec.path == ("sprint", "remove") and ns.sprint is not None:
         raise usage_error("invalid_combination", "sprint remove takes no --sprint")
-    # TODO(#27,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
+    # TODO(#27,#28,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 
 
@@ -110,7 +110,8 @@ def _write(stream: Any, text: str) -> None:
     try:
         stream.write(text + "\n")
         stream.flush()
-    except BrokenPipeError:
+    except (OSError, ValueError, AttributeError):
+        # A full disk, a broken pipe, a closed or missing stream: the exit code still stands.
         pass
 
 
@@ -142,6 +143,11 @@ def main(argv: list[str] | None = None) -> int:
     as_json = wants_json(args)
     try:
         return run(args)
+    except KeyboardInterrupt:
+        if os.environ.get("TICKETCTL_DEBUG"):
+            traceback.print_exc()
+        _write(sys.stderr, f"{PROG}: interrupted")
+        return 130
     except TicketctlError as err:
         return _report(err, as_json)
     except Exception as exc:
