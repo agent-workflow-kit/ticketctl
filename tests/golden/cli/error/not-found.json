@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "not_found",
+    "message": "the ticket is missing or you have no permission",
+    "reason": null,
+    "retryable": false,
+    "retry_after_s": null,
+    "outcome_unknown": false,
+    "site": "main",
+    "key": "DEMO-1",
+    "details": null
+  }
+}

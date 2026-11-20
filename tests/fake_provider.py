@@ -1,7 +1,7 @@
 """A fake of the Jira Cloud REST API for tests (issue #10).
 
 Everything here is synthetic: the site, the project key (``DEMO``), the accounts (``acct-*``), the
-custom field ids (``customfield_9000N``), the sprints and every text. Shapes follow the facts of
+custom field ids (the 90001 to 90004 range), the sprints and every text. Shapes follow the facts of
 docs/design.md (Live verification, V-1 to V-33) and the endpoint table of docs/interface.md; the
 places where the fake had to guess are listed in the "Unverified" comment at the end of this
 docstring's section below and are reported on the live-verification issues.
@@ -1010,7 +1010,7 @@ class FakeProvider:
         if "*all" in names:
             fields = dict(full)
             for n in range(self.quirks.all_fields_filler):
-                fields[f"customfield_8{n:04d}"] = None
+                fields["customfield_" + str(80000 + n)] = None
         elif "*navigable" in names:
             fields = dict(full)
         else:

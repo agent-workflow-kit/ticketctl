@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "rate_limited",
+    "message": "the provider is rate limiting this client",
+    "reason": null,
+    "retryable": true,
+    "retry_after_s": 30,
+    "outcome_unknown": false,
+    "site": "main",
+    "key": null,
+    "details": {
+      "rate_limit": {
+        "limit": 1000,
+        "remaining": 0
+      }
+    }
+  }
+}
