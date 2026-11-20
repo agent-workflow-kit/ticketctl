@@ -25,7 +25,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `audit` | 0 | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | 1 | field list and identity cache with atomic replace |
 | `provider`, `jira` | 1 | the provider interface and the Jira implementation (endpoints, field discovery, JQL compile and parse check, transitions, sprints) |
-| `adf` | 2 | Markdown to ADF converter and the `validate_adf()` allowlist (the renderer is `adf_render`, stage 1) |
+| `adf`, `adf_render`, `adf_from_markdown` | 1, 2 | the ADF to Markdown renderer (`adf_render`, stage 1), the Markdown to ADF converter (`adf_from_markdown`) and the `validate_adf()` allowlist (`adf`, stage 2) |
 | `plan`, `writeflow` | 3 | plan building, canonical hash, the write order, partial results |
 | `hooks` | 3 | hook execution (process groups, timeouts, payloads) |
 | `dedupe` | 4 | the dedupe lock and the lookups for comment and create |

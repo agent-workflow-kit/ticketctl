@@ -129,8 +129,9 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
 | `provider` | the internal provider interface and normalized objects |
 | `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
-| `adf` | Markdown to ADF converter; the one `validate_adf()` allowlist (the renderer is `adf_render`) |
+| `adf` | the one `validate_adf()` allowlist (the renderer is `adf_render`, the converter is `adf_from_markdown`) |
 | `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
+| `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
 | `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
