@@ -8,6 +8,7 @@ import os
 import sys
 from typing import Any
 
+from . import setspec
 from .commands import REGISTRY, CommandSpec
 from .errors import TicketctlError, clean_message, from_exception, internal_error, usage_error
 from .flags import (
@@ -22,6 +23,7 @@ from .flags import (
     wants_json,
 )
 from .output import write as _write
+from .runtime import load_runtime
 from .sanitize import format_traceback
 
 DESCRIPTION = "Normalized ticket access (Jira first; other providers later)."
@@ -88,10 +90,15 @@ def _exactly_one(ns: argparse.Namespace, a: str, b: str, label: str) -> None:
         raise usage_error("invalid_combination", f"exactly one of {label} is required")
 
 
+def _me_name(g: Globals) -> str | None:
+    """`me.name` from the configuration; read only when the default actor needs it."""
+    return load_runtime(g, show_warnings=False).config.me.name
+
+
 def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None:
     """Flag combination rules, in the order: argument grammar, combinations, `--yes`."""
     command = " ".join(spec.path)
-    check_globals(g, spec.kind, command)
+    check_globals(g, spec.kind, command, me_name=lambda: _me_name(g))
     if _stdin_sources(ns) > 1:
         raise usage_error("stdin_conflict", "at most one `-` source (stdin) per command")
     if spec.path == ("transition",):
@@ -102,7 +109,10 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
             raise usage_error("invalid_combination", "--format adf needs --body-file")
     elif spec.path == ("sprint", "remove") and ns.sprint is not None:
         raise usage_error("invalid_combination", "sprint remove takes no --sprint")
-    # TODO(#27,#28,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
+    if spec.path in (("create",), ("update",), ("transition",)):
+        flag = "--field" if spec.path == ("transition",) else "--set"
+        setspec.check_offline(spec.path[0], getattr(ns, flag[2:]), flag)
+    # TODO(#28,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 
 

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import NoReturn
 
 from . import __version__, config
+from .attribution import default_actor
 from .errors import clean_message, usage_error
 from .sanitize import GRAMMARS
 
@@ -62,6 +65,9 @@ class Globals:
     override_escalation: str | None = None
     hooks: list[str] = field(default_factory=list)
     given: frozenset[str] = frozenset()  # option strings present on the command line
+    # Set by check_globals on a write command: the actor and its `actor_source`.
+    resolved_actor: str | None = None
+    actor_source: str | None = None
 
 
 def _pattern(regex: re.Pattern[str], what: str):
@@ -247,8 +253,39 @@ def extract_globals(argv: Sequence[str]) -> tuple[Globals, list[str]]:
     return g, rest + tail
 
 
-def check_globals(g: Globals, kind: str, command: str) -> None:
-    """Flag combination rules that need only the global flags and the command kind."""
+def probe_dev_tty() -> bool:
+    """True when ``/dev/tty`` can be opened (a controlling terminal exists)."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+def _stderr_is_tty() -> bool:
+    try:
+        return sys.stderr.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def check_globals(
+    g: Globals,
+    kind: str,
+    command: str,
+    *,
+    me_name: Callable[[], str | None] | None = None,
+    stderr_tty: Callable[[], bool] | None = None,
+    tty_openable: Callable[[], bool] | None = None,
+) -> None:
+    """Flag combination rules that need only the global flags and the command kind.
+
+    On a write command it also resolves the actor into ``g.resolved_actor`` and ``g.actor_source``
+    (``attribution.default_actor``): an explicit ``--actor``, else ``human:<me.name>`` when stderr
+    is a TTY and ``/dev/tty`` opens, else ``auto:unknown``. The probes are callables so the
+    configuration (``me_name``) is read only when both probes pass and no ``--actor`` was given.
+    """
     if kind == "read":
         present = [f for f in WRITE_ONLY_FLAGS if f in g.given]
         if present:
@@ -258,10 +295,35 @@ def check_globals(g: Globals, kind: str, command: str) -> None:
             )
     if g.verbose and g.quiet:
         raise usage_error("invalid_combination", "--verbose and --quiet cannot be combined")
-    # TODO(#27): resolve the default actor (human:<me.name> on a TTY, else auto:unknown; needs
-    # the config of #6) so a bare --override-escalation without --actor on a non-TTY is human_only.
-    if g.override_escalation and g.actor and g.actor.startswith("auto:"):
+    if kind != "write":
+        return
+    g.resolved_actor, g.actor_source = _resolve_actor(
+        g.actor,
+        me_name or (lambda: None),
+        stderr_tty or _stderr_is_tty,
+        tty_openable or probe_dev_tty,
+    )
+    if g.override_escalation and g.resolved_actor.startswith("auto:"):
         raise usage_error("human_only", "--override-escalation needs a human actor")
+
+
+def _resolve_actor(
+    flag: str | None,
+    me_name: Callable[[], str | None],
+    stderr_tty: Callable[[], bool],
+    openable: Callable[[], bool],
+) -> tuple[str, str]:
+    # An explicit actor needs no probe and no configuration. The flag parser has already refused
+    # a string outside the actor grammar, so default_actor cannot raise for it.
+    if flag is not None:
+        return default_actor(flag, me_name=None, stderr_tty=False, tty_openable=False)
+    on_tty = stderr_tty() and openable()
+    return default_actor(
+        None,
+        me_name=me_name() if on_tty else None,
+        stderr_tty=on_tty,
+        tty_openable=on_tty,
+    )
 
 
 def check_yes(g: Globals, command: str, dedupe_key: str | None) -> None:

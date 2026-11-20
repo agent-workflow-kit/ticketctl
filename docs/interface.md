@@ -144,7 +144,9 @@ Logical field names are fixed: `estimate`, `acceptance_criteria`, `sprint`, `par
 | user | `me`, `none` or an account id |
 | rich text | only `@path` or `-`, converted like a body (an inline value is exit 22 `invalid_value`) |
 
-An empty value (`name=`) clears an optional field (null; an empty list for arrays). For an `auto:` actor a rich-text value is refused (see [Attribution](#attribution)).
+An empty value (`name=`) clears an optional field (null; an empty list for arrays); a required field refuses it. For an `auto:` actor a rich-text value is refused (see [Attribution](#attribution)).
+
+Edge rules. A `--set` or `--field` argument with no `=`, an empty name, a name with a control or invisible character, a name over 256 characters, an `@` with no path, more than 100 assignments or the same typed name twice exits 2 (`invalid_argument`, or `invalid_combination` for the repeat); an inline value over 1,000,000 characters exits 22 `invalid_value`. A value that starts with `@` is always a file (there is no escape; put the text in a file). `@-` is a file named `-`, never stdin. A file or stdin that is empty (after the one stripped newline) is refused, so only `name=` clears. A string value is one line of at most 4096 visible characters, a number has at most 17 digits after the sign when it has a fraction (an integer at most 2^63), a datetime is sent in UTC as `YYYY-MM-DDTHH:MM:SS.mmm+0000`, an option field with no listed values sends the text and the provider decides, a priority sends its `name`, a list element of a component or version field sends its `name`, a user list takes account ids and `me` (not `none`), and a field of any other type exits 22 `invalid_value`. A configured secret in a value exits 22 `secret_in_body`. No error message carries the value.
 
 ## Sanitizing
 
