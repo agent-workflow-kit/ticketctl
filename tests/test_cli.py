@@ -157,7 +157,7 @@ def test_global_flags_before_and_after_the_command(
         capsys,
         "comment", "AB-1", "--body", "x", "--dry-run", "--yes", "--expect-plan", sha,
         "--decision-id", "d1", "--decision-id", "d2", "--hook", "pre-comment=true",
-        "--override-escalation=ticketctl",
+        "--override-escalation=ticketctl", "--actor", "human:tester",
     )  # fmt: skip
     g = seen[-1]
     assert g.decision_ids == ["d1", "d2"] and g.hooks == ["pre-comment=true"]
@@ -169,7 +169,10 @@ def test_override_escalation_does_not_swallow_the_next_argument(
 ) -> None:
     seen: list[Any] = []
     patch_handler(monkeypatch, ("transition",), lambda g, a: seen.append(a) or None)
-    code, _, _ = run(capsys, "transition", "--override-escalation", "AB-1", "--to", "Done")
+    code, _, _ = run(
+        capsys,
+        "transition", "--override-escalation", "AB-1", "--to", "Done", "--actor", "human:tester",
+    )  # fmt: skip
     assert code == 0 and seen[0].key == "AB-1"
 
 

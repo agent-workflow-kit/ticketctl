@@ -129,6 +129,7 @@ Still to verify (conservative defaults apply): how Jira reads instants either si
 | `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
 | `provider` | the internal provider interface and normalized objects |
 | `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
+| `setspec`, `setconvert` | the `--set` and `--field` grammar, name resolution and dedicated-field refusals, and the reading and conversion of their values |
 | `fieldmap`, `fieldload`, `fieldconv` | the field list and logical mapping (parsing the untrusted list, discovery by schema, lazy ambiguity, mapping problems), its fetch and cache (field, priority and resolution lists) and the conversion of a value by its schema |
 | `adf_validate` | the one `validate_adf()` allowlist (nodes, marks, attributes, link URL rule, depth, node and size limits) and the `--format adf` input parser; `schemas/adf.json` needs a Draft 2019-09 or later validator for its mark rules, and the code validator is the authority |
 | `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
