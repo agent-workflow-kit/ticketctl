@@ -122,6 +122,9 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | Module | Responsibility |
 |---|---|
 | `cli` | argparse subcommands, global flags, exit codes, human and `--json` output; the sanitizer runs here, at the output layer |
+| `commands` | the command registry: every command, its flags and its handler (stubs until the owning issue lands) |
+| `flags` | the global flags, their grammars and the pre-pass that reads them from anywhere in argv |
+| `errors` | the one exit-code table, the error type and the error envelope |
 | `config` | load and validate config (Pydantic), drop-ins, env overrides for top-level scalars; the loader checks (`default_site` names a site, `email` xor `email_env`, `queries` and `extra` names collide with no logical name, url, duration and board shapes, `me` and `account_id` shapes) that JSON Schema cannot express, all failing as `invalid_config` naming the key |
 | `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
 | `provider` | the internal provider interface and normalized objects |
@@ -136,7 +139,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
 | `dedupe` | the dedupe lock and the lookups for comment and create |
 
-Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway.
+Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway. Test-only: `jsonschema` (development group) validates the golden files and the error envelope against `schemas/`.
 
 ## Data model
 
