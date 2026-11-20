@@ -150,10 +150,22 @@ class _Ctx:
         return text
 
     def charge(self, size: int) -> None:
-        """Charge synthetic text (link suffixes, table padding) to the output budget."""
+        """Charge synthetic text (table padding) to the output budget."""
         self.used += size
         if self.used > self.room_limit:
             self.stop("too_large")
+
+    def try_charge(self, size: int) -> bool:
+        """Charge synthetic inline text only if it fits; otherwise stop and charge nothing.
+
+        Refusing here (instead of overshooting) keeps the already built paragraph text from
+        being rejected whole by ``line()``.
+        """
+        if self.used + size > self.room_limit:
+            self.stop("too_large")
+            return False
+        self.used += size
+        return True
 
     def partial(self) -> str:
         """The text rendered so far plus the error marker, for an internal failure."""
@@ -376,7 +388,7 @@ class _Ctx:
         width = max((len(r) for r in grid), default=0)
         if width:
             for index, cells in enumerate(grid):
-                self.charge(3 * width + 4 + (3 * width + 2 if index == 0 else 0))
+                self.charge(3 * width + 4 + (6 * width + 1 if index == 0 else 0))
                 if self.stopped:
                     break
                 padded = cells + [""] * (width - len(cells))
@@ -446,8 +458,7 @@ class _Ctx:
             if not isinstance(url, str):
                 return f"[unsupported: {kind}]"
             shown = _safe_href(url) or UNSAFE_LINK
-            self.charge(len(shown))
-            return shown
+            return shown if self.try_charge(len(shown)) else ""
         if kind in ("media", "mediaInline"):
             ident = attrs.get("id")
             ok = isinstance(ident, str) and _MEDIA_ID.fullmatch(ident)
@@ -486,16 +497,15 @@ class _Ctx:
     def link(self, text: str, href: str) -> str:
         safe = _safe_href(href)
         if safe is None:
-            self.charge(len(UNSAFE_LINK))
-            return UNSAFE_LINK
+            return UNSAFE_LINK if self.try_charge(len(UNSAFE_LINK)) else ""
         shown = text.strip()
         bare = href[len("mailto:") :] if href[:7].lower() == "mailto:" else href
         if not shown:
-            self.charge(len(safe))
-            return safe
+            return safe if self.try_charge(len(safe)) else ""
         if shown in (href, bare):
             return text
-        self.charge(len(safe) + 3)
+        if not self.try_charge(len(safe) + 3):
+            return text
         return f"{text} ({safe})"
 
     def emoji(self, attrs: dict[str, Any]) -> str:

@@ -685,3 +685,36 @@ def test_ordered_list_start_is_range_checked(order: int, first: str) -> None:
 )
 def test_date_uses_utc_day_boundaries(ms: int, day: str) -> None:
     assert md(para({"type": "date", "attrs": {"timestamp": str(ms)}})) == day
+
+
+def _card(url: str) -> dict[str, Any]:
+    return {"type": "inlineCard", "attrs": {"url": url}}
+
+
+def test_card_suffix_overflow_keeps_paragraph_text() -> None:
+    result = render_adf(doc(para(txt("k" * 1_048_000), _card("https://e.test/" + "a" * 2000))))
+    assert result.text.startswith("k" * 1_048_000) and result.text.endswith("\n[too large]")
+    assert "too_large" in result.reasons
+
+
+def test_many_cards_after_text_keep_paragraph_text() -> None:
+    cards = [_card("https://e.test/" + "a" * 2000) for _ in range(100)]
+    result = render_adf(doc(para(txt("k" * 900_000), *cards)))
+    assert result.text.startswith("k" * 900_000) and result.text.endswith("\n[too large]")
+
+
+def test_link_suffix_overflow_keeps_paragraph_text() -> None:
+    linked = txt("lnk", link("https://e.test/" + "a" * 2000))
+    result = render_adf(doc(para(txt("k" * 1_048_000), linked)))
+    assert result.text.startswith("k" * 1_048_000) and result.text.endswith("\n[too large]")
+
+
+def test_table_separator_row_is_charged_at_its_real_length() -> None:
+    width = 5000
+    cells = [{"type": "tableHeader", "content": [para()]} for _ in range(width)]
+    ctx = adf_render._Ctx()
+    ctx.table([{"type": "tableRow", "content": cells}], 0)
+    out = "\n".join(ctx.lines)
+    # 3w+4 for the header row, 6w+1 for the separator row, 1 for the joining newline.
+    assert ctx.used == 3 * width + 4 + 6 * width + 1 + 1
+    assert len(out) <= ctx.used
