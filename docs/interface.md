@@ -155,11 +155,11 @@ Every string that leaves the process (`--json` values, stderr, `--verbose` outpu
 
 The provider's rich text (ADF) is rendered to Markdown with one list of rules:
 
-- Blocks: `table` as pipe-table rows (header from the first row, at most 200 rows, cells flattened), `taskList` and `taskItem` as `- [ ]` and `- [x]`, `hardBreak` as a newline, `rule` as `---`, `panel`, `expand` and `nestedExpand` as a block quote with the title first.
+- Blocks: `table` as pipe-table rows (header from the first row, at most 200 rows, cells flattened, escaping only `|`; rows beyond 200 are cut and followed by `[N more rows not shown]`), `taskList` and `taskItem` as `- [ ]` and `- [x]`, `hardBreak` as a newline, `rule` as `---`, `panel`, `expand` and `nestedExpand` as a block quote with the title first.
 - Inline: `emoji` from `attrs.text` else `:shortName:`, `status` and `date` as their text, `mention` as `@name`, marks `strong`, `em`, `code` and `strike` as Markdown; other marks are dropped.
-- Links: a link whose real `href` differs from its text renders `text (href)` with the href percent-encoded for `)`, spaces and control characters. `inlineCard`, `blockCard` and `embedCard` render the URL under the same rule. Only `http`, `https` and `mailto` keep their target; any other scheme renders `[unsafe link removed]`.
+- Links: a link whose real `href` differs from its text renders `text (href)` with the href percent-encoded for `)`, spaces and control characters. `inlineCard`, `blockCard` and `embedCard` render the URL under the same rule. Only `http`, `https` and `mailto` keep their target; any other scheme, and any href or card URL longer than 2048 characters, renders `[unsafe link removed]`.
 - Media nodes render `[attachment: <id>]` when the id matches `^[A-Za-z0-9-]{1,64}$`, else `[attachment: ?]`. An unknown node renders `[unsupported: <type>]` (the type when it matches `^[A-Za-z]{1,32}$`, else `unknown`) followed by its plain text.
-- Budgets: depth 50 (`[too deep]`), 50,000 nodes and 1 MiB of output (`[too large]`, and `incomplete` names the part). The renderer never raises. Text is not escaped (a literal `*` and a bold mark look the same); the consumer fences.
+- Budgets: depth 50 (`[too deep]`), 50,000 nodes and 1 MiB of output (`[too large]`, and `incomplete` names the part). The renderer never raises: the node budget also ends the text with `[too large]`, and an internal failure keeps the text rendered so far and ends it with `[render error]`. The renderer's `incomplete` carries the bare part name (the consumer maps it to `<part>.truncated`) and its reasons are `too_deep`, `too_many_nodes`, `too_large`, `table_rows` and `internal`. Text is not escaped (a literal `*` and a bold mark look the same); the consumer fences.
 
 ### Writing
 
