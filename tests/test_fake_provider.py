@@ -25,6 +25,7 @@ from tests.fake_provider import (
     OTHER_ACCOUNT,
     FakeProvider,
     Fault,
+    JqlSyntax,
     Quirks,
     adf_text,
     adf_variety_doc,
@@ -82,7 +83,9 @@ def test_close_stops_listening_and_wakes_a_sleeping_handler(fake_factory: Factor
 
 
 def test_wrong_token_is_401_with_a_plain_text_body(fake: FakeProvider) -> None:
-    status, headers, body = fake.request("GET", f"{API}/myself", auth=fake.basic_header(token="nope"))
+    status, headers, body = fake.request(
+        "GET", f"{API}/myself", auth=fake.basic_header(token="nope")
+    )
     assert status == 401
     assert headers["content-type"].startswith("text/plain")
     assert not body.startswith(b"{")
@@ -119,10 +122,18 @@ def test_old_search_works_when_the_quirk_is_off(fake_factory: Factory) -> None:
 
 
 def test_search_pages_with_a_token_and_has_no_total(fake: FakeProvider) -> None:
-    status, first = search(fake, "project = DEMO ORDER BY key ASC", maxResults=2, fields=["summary"])
+    status, first = search(
+        fake, "project = DEMO ORDER BY key ASC", maxResults=2, fields=["summary"]
+    )
     assert status == 200 and keys(first) == ["DEMO-1", "DEMO-2"]
     assert "total" not in first and first["nextPageToken"]
-    _, second = search(fake, "project = DEMO ORDER BY key ASC", maxResults=2, fields=["summary"], nextPageToken=first["nextPageToken"])
+    _, second = search(
+        fake,
+        "project = DEMO ORDER BY key ASC",
+        maxResults=2,
+        fields=["summary"],
+        nextPageToken=first["nextPageToken"],
+    )
     assert keys(second) == ["DEMO-3"] and "nextPageToken" not in second
 
 
@@ -177,14 +188,20 @@ def test_semantic_error_is_400_when_the_quirk_is_off(fake_factory: Factory) -> N
 
 def test_parse_endpoint_reports_what_search_hides(fake: FakeProvider) -> None:
     path = f"{API}/jql/parse"
-    status, doc = fake.json("POST", path + "?validation=strict", {"queries": ["nosuchfield = 1", "project = DEMO", "project ="]})
+    status, doc = fake.json(
+        "POST",
+        path + "?validation=strict",
+        {"queries": ["nosuchfield = 1", "project = DEMO", "project ="]},
+    )
     assert status == 200
     semantic, fine, syntax = (q["errors"] for q in doc["queries"])
     assert semantic and not fine and syntax
 
 
 def test_parse_with_validation_none_reports_only_syntax_errors(fake: FakeProvider) -> None:
-    _, doc = fake.json("POST", f"{API}/jql/parse?validation=none", {"queries": ["nosuchfield = 1", "project ="]})
+    _, doc = fake.json(
+        "POST", f"{API}/jql/parse?validation=none", {"queries": ["nosuchfield = 1", "project ="]}
+    )
     semantic, syntax = (q["errors"] for q in doc["queries"])
     assert not semantic and syntax
 
@@ -194,11 +211,16 @@ def test_parse_always_answers_200_even_for_garbage(fake: FakeProvider) -> None:
 
 
 def test_approximate_count(fake: FakeProvider) -> None:
-    assert fake.json("POST", f"{API}/search/approximate-count", {"jql": "project = DEMO"}) == (200, {"count": 3})
+    assert fake.json("POST", f"{API}/search/approximate-count", {"jql": "project = DEMO"}) == (
+        200,
+        {"count": 3},
+    )
 
 
 def test_jql_precedence_parentheses_and_order(fake: FakeProvider) -> None:
-    _, doc = search(fake, 'project = DEMO AND (status = Backlog OR status = Done) ORDER BY key DESC')
+    _, doc = search(
+        fake, "project = DEMO AND (status = Backlog OR status = Done) ORDER BY key DESC"
+    )
     assert keys(doc) == ["DEMO-3", "DEMO-1"]
     _, doc = search(fake, "project = DEMO AND NOT status = Done AND assignee = currentUser()")
     assert keys(doc) == ["DEMO-2"]
@@ -219,7 +241,9 @@ def test_text_match_is_a_tokenized_phrase_match(fake: FakeProvider) -> None:
 def test_absolute_dates_are_read_in_the_users_time_zone(fake: FakeProvider) -> None:
     from datetime import UTC, datetime
 
-    fake.tickets["DEMO-1"].updated = datetime(2026, 3, 10, 5, 30, tzinfo=UTC)  # 23:30 the day before, local
+    fake.tickets["DEMO-1"].updated = datetime(
+        2026, 3, 10, 5, 30, tzinfo=UTC
+    )  # 23:30 the day before, local
     _, doc = search(fake, 'updated >= "2026-03-10" AND key = DEMO-1')
     assert keys(doc) == []
     _, doc = search(fake, 'updated >= "2026-03-09" AND key = DEMO-1')
@@ -227,7 +251,7 @@ def test_absolute_dates_are_read_in_the_users_time_zone(fake: FakeProvider) -> N
 
 
 def test_parse_jql_helper_rejects_trailing_garbage() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(JqlSyntax):
         parse_jql("project = DEMO )")
 
 
@@ -255,7 +279,9 @@ def test_missing_key_is_one_404_with_the_same_text(fake: FakeProvider) -> None:
 
 def test_search_embeds_only_the_first_20_comments(fake: FakeProvider) -> None:
     for i in range(25):
-        assert fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text(f"c{i}")})[0] == 201
+        assert (
+            fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text(f"c{i}")})[0] == 201
+        )
     _, doc = search(fake, "key = DEMO-1", fields=["comment"])
     embedded = doc["issues"][0]["fields"]["comment"]
     assert (len(embedded["comments"]), embedded["total"]) == (20, 25)
@@ -333,7 +359,12 @@ def test_unknown_path_is_404_and_wrong_method_is_405(fake: FakeProvider) -> None
 def test_every_response_carries_rate_limit_headers(fake: FakeProvider) -> None:
     for path in (f"{API}/myself", f"{API}/issue/DEMO-999"):
         _, headers, _ = fake.request("GET", path)
-        assert {"x-ratelimit-limit", "x-ratelimit-remaining", "ratelimit", "ratelimit-policy"} <= set(headers)
+        assert {
+            "x-ratelimit-limit",
+            "x-ratelimit-remaining",
+            "ratelimit",
+            "ratelimit-policy",
+        } <= set(headers)
     _, headers, _ = fake.request("GET", f"{API}/myself", auth=False)
     assert "x-ratelimit-limit" in headers
 
@@ -355,7 +386,9 @@ def test_rate_limit_remaining_can_be_pinned_and_headers_switched_off(fake_factor
         ("none", lambda v: v is None),
     ],
 )
-def test_429_retry_after_formats(fake_factory: Factory, fmt: str, check: Callable[[Any], bool]) -> None:
+def test_429_retry_after_formats(
+    fake_factory: Factory, fmt: str, check: Callable[[Any], bool]
+) -> None:
     provider = fake_factory(Quirks(retry_after_format=fmt))
     provider.inject(Fault("status", status=429, retry_after=7))
     status, headers, _ = provider.request("GET", f"{API}/myself")
@@ -372,18 +405,26 @@ def _transitions(fake: FakeProvider, key: str) -> dict[str, Any]:
 
 
 def test_transition_ids_are_the_same_from_every_status(fake: FakeProvider) -> None:
-    ids = [{n: t["id"] for n, t in _transitions(fake, k).items()} for k in ("DEMO-1", "DEMO-2", "DEMO-3")]
+    ids = [
+        {n: t["id"] for n, t in _transitions(fake, k).items()}
+        for k in ("DEMO-1", "DEMO-2", "DEMO-3")
+    ]
     assert ids[0] == ids[1] == ids[2]
 
 
 def test_done_transition_lists_a_required_resolution_with_five_values(fake: FakeProvider) -> None:
     field = _transitions(fake, "DEMO-2")["Finish"]["fields"]["resolution"]
     assert field["required"] and len(field["allowedValues"]) == 5
-    assert "fields" not in _transitions(fake, "DEMO-2")["Start progress"] or "resolution" not in _transitions(fake, "DEMO-2")["Start progress"]["fields"]
+    assert (
+        "fields" not in _transitions(fake, "DEMO-2")["Start progress"]
+        or "resolution" not in _transitions(fake, "DEMO-2")["Start progress"]["fields"]
+    )
 
 
 def test_done_transition_is_accepted_without_a_resolution(fake: FakeProvider) -> None:
-    assert fake.json("POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "41"}})[0] == 204
+    assert (
+        fake.json("POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "41"}})[0] == 204
+    )
     _, doc = fake.json("GET", f"{API}/issue/DEMO-2?fields=status,resolution")
     assert doc["fields"]["status"]["name"] == "Done" and doc["fields"]["resolution"] is None
 
@@ -396,7 +437,9 @@ def test_done_transition_with_a_resolution_sets_it(fake: FakeProvider) -> None:
 
 def test_done_without_resolution_is_400_when_the_quirk_is_off(fake_factory: Factory) -> None:
     provider = fake_factory(Quirks(done_without_resolution=False))
-    status, doc = provider.json("POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "41"}})
+    status, doc = provider.json(
+        "POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "41"}}
+    )
     assert status == 400 and "resolution" in doc["errors"]
     assert provider.tickets["DEMO-2"].status == "In Progress"
 
@@ -412,7 +455,9 @@ def test_leaving_the_backlog_needs_an_assignee_and_applies_nothing(fake: FakePro
 
 def test_assigning_first_lets_the_transition_through(fake: FakeProvider) -> None:
     assert fake.json("PUT", f"{API}/issue/DEMO-1/assignee", {"accountId": ME_ACCOUNT})[0] == 204
-    assert fake.json("POST", f"{API}/issue/DEMO-1/transitions", {"transition": {"id": "31"}})[0] == 204
+    assert (
+        fake.json("POST", f"{API}/issue/DEMO-1/transitions", {"transition": {"id": "31"}})[0] == 204
+    )
     assert fake.tickets["DEMO-1"].status == "In Progress"
 
 
@@ -424,18 +469,29 @@ def test_validator_message_is_configurable_for_locales(fake_factory: Factory) ->
 
 def test_validator_can_be_switched_off(fake_factory: Factory) -> None:
     provider = fake_factory(Quirks(assignee_validator=False))
-    assert provider.json("POST", f"{API}/issue/DEMO-1/transitions", {"transition": {"id": "31"}})[0] == 204
+    assert (
+        provider.json("POST", f"{API}/issue/DEMO-1/transitions", {"transition": {"id": "31"}})[0]
+        == 204
+    )
 
 
 def test_subtask_done_needs_an_assignee_and_a_parent(fake: FakeProvider) -> None:
     sub = fake.add_ticket("DEMO-20", "sub", type_id="3", status="In Progress", parent="DEMO-1")
-    assert fake.json("POST", f"{API}/issue/DEMO-20/transitions", {"transition": {"id": "41"}})[0] == 400
+    assert (
+        fake.json("POST", f"{API}/issue/DEMO-20/transitions", {"transition": {"id": "41"}})[0]
+        == 400
+    )
     sub.assignee = ME_ACCOUNT
-    assert fake.json("POST", f"{API}/issue/DEMO-20/transitions", {"transition": {"id": "41"}})[0] == 204
+    assert (
+        fake.json("POST", f"{API}/issue/DEMO-20/transitions", {"transition": {"id": "41"}})[0]
+        == 204
+    )
 
 
 def test_unknown_transition_and_unknown_field_are_400(fake: FakeProvider) -> None:
-    assert fake.json("POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "99"}})[0] == 400
+    assert (
+        fake.json("POST", f"{API}/issue/DEMO-2/transitions", {"transition": {"id": "99"}})[0] == 400
+    )
     body = {"transition": {"id": "41"}, "fields": {"nope": 1}}
     assert fake.json("POST", f"{API}/issue/DEMO-2/transitions", body)[0] == 400
 
@@ -444,7 +500,9 @@ def test_unknown_transition_and_unknown_field_are_400(fake: FakeProvider) -> Non
 
 
 def test_identical_creates_make_duplicates(fake: FakeProvider) -> None:
-    body = {"fields": {"project": {"key": "DEMO"}, "issuetype": {"name": "Task"}, "summary": "Same"}}
+    body = {
+        "fields": {"project": {"key": "DEMO"}, "issuetype": {"name": "Task"}, "summary": "Same"}
+    }
     a = fake.json("POST", f"{API}/issue", body)
     b = fake.json("POST", f"{API}/issue", body)
     assert a[0] == b[0] == 201 and a[1]["key"] != b[1]["key"]
@@ -452,7 +510,9 @@ def test_identical_creates_make_duplicates(fake: FakeProvider) -> None:
 
 def test_identical_comments_are_not_deduplicated(fake: FakeProvider) -> None:
     for _ in range(2):
-        assert fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("same")})[0] == 201
+        assert (
+            fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("same")})[0] == 201
+        )
     assert fake.json("GET", f"{API}/issue/DEMO-1/comment")[1]["total"] == 2
 
 
@@ -483,23 +543,38 @@ def test_labels_are_writable_though_editmeta_omits_them(fake: FakeProvider) -> N
 
 
 def test_label_with_a_space_is_400_and_255_chars_is_fine(fake: FakeProvider) -> None:
-    assert fake.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "a b"}]}})[0] == 400
-    assert fake.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "x" * 255}]}})[0] == 204
-    assert fake.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "x" * 256}]}})[0] == 400
+    assert (
+        fake.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "a b"}]}})[0] == 400
+    )
+    assert (
+        fake.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "x" * 255}]}})[0]
+        == 204
+    )
+    assert (
+        fake.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "x" * 256}]}})[0]
+        == 400
+    )
 
 
-def test_adding_an_existing_label_or_removing_an_absent_one_is_a_204_noop(fake: FakeProvider) -> None:
+def test_adding_an_existing_label_or_removing_an_absent_one_is_a_204_noop(
+    fake: FakeProvider,
+) -> None:
     body = {"update": {"labels": [{"add": "alpha"}, {"remove": "never-there"}]}}
     assert fake.json("PUT", f"{API}/issue/DEMO-1", body)[0] == 204
     assert not fake.applied
 
 
 def test_notify_users_false_is_403_for_a_non_admin(fake: FakeProvider) -> None:
-    assert fake.json("PUT", f"{API}/issue/DEMO-1?notifyUsers=false", {"fields": {"summary": "x"}})[0] == 403
+    assert (
+        fake.json("PUT", f"{API}/issue/DEMO-1?notifyUsers=false", {"fields": {"summary": "x"}})[0]
+        == 403
+    )
 
 
 def test_closed_tickets_still_accept_label_comment_writes(fake: FakeProvider) -> None:
-    assert fake.json("PUT", f"{API}/issue/DEMO-3", {"update": {"labels": [{"add": "late"}]}})[0] == 204
+    assert (
+        fake.json("PUT", f"{API}/issue/DEMO-3", {"update": {"labels": [{"add": "late"}]}})[0] == 204
+    )
     assert fake.json("POST", f"{API}/issue/DEMO-3/comment", {"body": adf_text("late")})[0] == 201
 
 
@@ -517,7 +592,10 @@ def test_create_accepts_labels_though_createmeta_does_not_list_them(fake: FakePr
 
 
 def test_create_accepts_update_labels(fake: FakeProvider) -> None:
-    body = {"fields": {"project": {"key": "DEMO"}, "issuetype": {"id": "1"}, "summary": "s"}, "update": {"labels": [{"add": "viaupdate"}]}}
+    body = {
+        "fields": {"project": {"key": "DEMO"}, "issuetype": {"id": "1"}, "summary": "s"},
+        "update": {"labels": [{"add": "viaupdate"}]},
+    }
     status, doc = fake.json("POST", f"{API}/issue", body)
     assert status == 201 and "viaupdate" in fake.tickets[doc["key"]].labels
 
@@ -577,9 +655,19 @@ def test_comment_properties_round_trip_with_expand(fake: FakeProvider) -> None:
 
 def test_property_limits(fake: FakeProvider) -> None:
     big = {"key": "k", "value": "x" * 40000}
-    assert fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("a"), "properties": [big]})[0] == 400
+    assert (
+        fake.json(
+            "POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("a"), "properties": [big]}
+        )[0]
+        == 400
+    )
     long_key = {"key": "k" * 256, "value": 1}
-    assert fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("a"), "properties": [long_key]})[0] == 400
+    assert (
+        fake.json(
+            "POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("a"), "properties": [long_key]}
+        )[0]
+        == 400
+    )
 
 
 def test_comment_order_and_paging(fake: FakeProvider) -> None:
@@ -599,7 +687,9 @@ def test_a_label_becomes_searchable_only_after_the_lag(fake_factory: Factory) ->
     provider.json("PUT", f"{API}/issue/DEMO-1", {"update": {"labels": [{"add": "fresh"}]}})
     assert keys(search(provider, "labels = fresh")[1]) == []
     # the label is on the ticket at once
-    assert "fresh" in provider.json("GET", f"{API}/issue/DEMO-1?fields=labels")[1]["fields"]["labels"]
+    assert (
+        "fresh" in provider.json("GET", f"{API}/issue/DEMO-1?fields=labels")[1]["fields"]["labels"]
+    )
     provider.advance(0.7)
     assert keys(search(provider, "labels = fresh")[1]) == ["DEMO-1"]
 
@@ -614,7 +704,11 @@ def test_a_label_set_at_create_lags_too(fake_factory: Factory) -> None:
 
 
 def test_properties_are_never_searchable(fake: FakeProvider) -> None:
-    fake.json("POST", f"{API}/issue/DEMO-1/comment", {"body": adf_text("a"), "properties": [{"key": "p", "value": 1}]})
+    fake.json(
+        "POST",
+        f"{API}/issue/DEMO-1/comment",
+        {"body": adf_text("a"), "properties": [{"key": "p", "value": 1}]},
+    )
     assert search(fake, "issue.property[p].v = 1")[1]["issues"] == []
 
 
@@ -758,7 +852,9 @@ def test_gateway_reads_myself_through_the_fake(fake: FakeProvider) -> None:
 
 def test_gateway_maps_401_and_403(fake: FakeProvider) -> None:
     with pytest.raises(GatewayError) as bad:
-        make_gateway(fake, token="wrong-token").request("GET", f"{API}/myself", template=f"{API}/myself")
+        make_gateway(fake, token="wrong-token").request(
+            "GET", f"{API}/myself", template=f"{API}/myself"
+        )
     assert bad.value.code == "bad_credentials"
 
 
@@ -769,7 +865,9 @@ def test_gateway_retries_a_read_after_a_reset_and_after_a_503(fake: FakeProvider
     assert resp.status == 200 and len(fake.calls) == 3
 
 
-def test_gateway_honors_a_whole_second_retry_after_and_ignores_a_date(fake_factory: Factory) -> None:
+def test_gateway_honors_a_whole_second_retry_after_and_ignores_a_date(
+    fake_factory: Factory,
+) -> None:
     slept: list[float] = []
     for fmt in ("seconds", "http_date"):
         provider = fake_factory(Quirks(retry_after_format=fmt))
@@ -783,7 +881,10 @@ def test_gateway_does_not_retry_a_write_after_a_reset_that_landed(fake: FakeProv
     fake.inject(Fault("reset", method="PUT", after_apply=True, times=None))
     with pytest.raises(GatewayError) as err:
         make_gateway(fake).request(
-            "PUT", f"{API}/issue/DEMO-1", template=f"{API}/issue/{{key}}", body={"fields": {"summary": "once"}}
+            "PUT",
+            f"{API}/issue/DEMO-1",
+            template=f"{API}/issue/{{key}}",
+            body={"fields": {"summary": "once"}},
         )
     assert err.value.outcome_unknown
     assert len(fake.applied) == 1 and len(fake.calls) == 1
@@ -791,7 +892,11 @@ def test_gateway_does_not_retry_a_write_after_a_reset_that_landed(fake: FakeProv
 
 def test_gateway_410_on_old_search_is_a_410_response(fake: FakeProvider) -> None:
     resp = make_gateway(fake).request(
-        "POST", f"{API}/search", template=f"{API}/search", body={"jql": "project = DEMO"}, write=False
+        "POST",
+        f"{API}/search",
+        template=f"{API}/search",
+        body={"jql": "project = DEMO"},
+        write=False,
     )
     assert resp.status == 410
 
@@ -801,10 +906,16 @@ def test_gateway_pages_the_search_to_the_end(fake: FakeProvider) -> None:
     token: str | None = None
     seen: list[str] = []
     while True:
-        body: dict[str, Any] = {"jql": "project = DEMO ORDER BY key", "maxResults": 2, "fields": ["summary"]}
+        body: dict[str, Any] = {
+            "jql": "project = DEMO ORDER BY key",
+            "maxResults": 2,
+            "fields": ["summary"],
+        }
         if token:
             body["nextPageToken"] = token
-        data = gw.request("POST", f"{API}/search/jql", template=f"{API}/search/jql", body=body, write=False).data
+        data = gw.request(
+            "POST", f"{API}/search/jql", template=f"{API}/search/jql", body=body, write=False
+        ).data
         seen += keys(data)
         token = data.get("nextPageToken")
         if not token:

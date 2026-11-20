@@ -115,7 +115,10 @@ def test_the_scan_covers_python_and_json_files() -> None:
         ("https://jira.internal.corp/x", ["host jira.internal.corp"]),
         ("PROJ-123 and DEMO-5 and UTF-8 and SHA-256", ["project key PROJ-123"]),
         ("customfield_10016 customfield_90001", ["custom field id customfield_10016"]),
-        ("5b10a2844c20165700ede21g 5b10a2844c20165700ede21f", ["account id 5b10a2844c20165700ede21f"]),
+        (
+            "5b10a2844c20165700ede21g 5b10a2844c20165700ede21f",
+            ["account id 5b10a2844c20165700ede21f"],
+        ),
         ("557058:f58131cb-b67d-43c7-b30d-6b58d40bd077", ["account id 557058"]),
         ("acct-0001 and a sha " + "ab" * 32, []),
     ],

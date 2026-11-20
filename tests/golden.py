@@ -1,6 +1,7 @@
 """The golden-file harness (issue #10).
 
-Layout: ``tests/golden/cli/<command>/<case>.json`` is validated against ``schemas/cli/<command>.json``
+Layout: ``tests/golden/cli/<command>/<case>.json`` is validated against
+``schemas/cli/<command>.json``
 and ``tests/golden/hooks/<hook>/<case>.json`` against ``schemas/hooks/<hook>.json``; ``<command>``
 and ``<hook>`` are the schema's file stem. A test produces a document and calls
 ``assert_golden("cli", "whoami", "basic", doc)``: the document must satisfy the schema and equal the
@@ -83,7 +84,9 @@ def registry(schemas: Path = SCHEMAS) -> Registry:
     resources = []
     for path in schemas.rglob("*.json"):
         doc = _load(path)
-        uri = "ticketctl/" + path.relative_to(schemas).as_posix() if "$id" not in doc else doc["$id"]
+        uri = (
+            "ticketctl/" + path.relative_to(schemas).as_posix() if "$id" not in doc else doc["$id"]
+        )
         resources.append((uri, Resource.from_contents(doc)))
         resources.append((path.resolve().as_uri(), Resource.from_contents(doc)))
     return Registry().with_resources(resources)
@@ -165,7 +168,9 @@ def check_tree(
         errors = sorted(validator(rel, schemas).iter_errors(doc), key=lambda e: list(e.path))
         for err in errors[:3]:
             where = "/".join(str(p) for p in err.path) or "(root)"
-            problems.append(f"{path.relative_to(golden_dir)}: fails {rel} at {where}: {err.message[:200]}")
+            problems.append(
+                f"{path.relative_to(golden_dir)}: fails {rel} at {where}: {err.message[:200]}"
+            )
     schemas_all = set(schema_files(schemas))
     for rel in sorted(schemas_all - have - set(pending)):
         problems.append(f"{rel}: no golden file and not listed in PENDING")
@@ -204,9 +209,13 @@ def assert_golden(
     schemas: Path = SCHEMAS,
     golden_dir: Path = GOLDEN,
 ) -> None:
-    """The document satisfies the schema and equals the golden file ``<kind>/<name>/<case>.json``."""
+    """The document satisfies the schema and equals ``golden/<kind>/<name>/<case>.json``."""
     rel = f"{kind}/{name}.json"
-    if kind not in KINDS or not re.fullmatch(r"[a-z0-9-]+", name) or not re.fullmatch(r"[a-z0-9-]+", case):
+    if (
+        kind not in KINDS
+        or not re.fullmatch(r"[a-z0-9-]+", name)
+        or not re.fullmatch(r"[a-z0-9-]+", case)
+    ):
         raise ValueError(f"bad golden name {kind}/{name}/{case}")
     # Round-trip so a non-JSON value (a tuple, a set) cannot pass for its JSON form.
     doc = json.loads(json.dumps(actual))

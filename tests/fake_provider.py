@@ -65,7 +65,11 @@ STATUSES = {
     "Done": ("12", "done"),
 }
 # Global transitions: the same ids from every status (V-7).
-TRANSITIONS = {"31": ("Start progress", "In Progress"), "41": ("Finish", "Done"), "51": ("Back to backlog", "Backlog")}
+TRANSITIONS = {
+    "31": ("Start progress", "In Progress"),
+    "41": ("Finish", "Done"),
+    "51": ("Back to backlog", "Backlog"),
+}
 RESOLUTIONS = ["Done", "Won't Do", "Duplicate", "Cannot Reproduce", "Declined"]
 PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"]
 ISSUE_TYPES = {
@@ -75,6 +79,7 @@ ISSUE_TYPES = {
     "4": ("Epic", False),
 }
 
+NOT_SETTABLE = "Field '{name}' cannot be set. It is not on the appropriate screen, or unknown."
 COMMENT_BODY_LIMIT = 32768
 PROPERTY_VALUE_LIMIT = 32768
 LABEL_LIMIT = 255
@@ -552,8 +557,20 @@ class Ticket:
 
 
 SPRINTS: dict[int, dict[str, Any]] = {
-    1: {"name": "Sprint one", "state": "closed", "start": "2026-02-02T15:00:00.000Z", "end": "2026-02-16T15:00:00.000Z", "board": 1},
-    2: {"name": "Sprint two", "state": "active", "start": "2026-02-16T15:00:00.000Z", "end": "2026-03-02T15:00:00.000Z", "board": 1},
+    1: {
+        "name": "Sprint one",
+        "state": "closed",
+        "start": "2026-02-02T15:00:00.000Z",
+        "end": "2026-02-16T15:00:00.000Z",
+        "board": 1,
+    },
+    2: {
+        "name": "Sprint two",
+        "state": "active",
+        "start": "2026-02-16T15:00:00.000Z",
+        "end": "2026-03-02T15:00:00.000Z",
+        "board": 1,
+    },
     3: {"name": "Sprint three", "state": "future", "start": None, "end": None, "board": 1},
 }
 USERS = {
@@ -659,9 +676,7 @@ class FakeProvider:
             return ticket
 
     def next_key(self, project: str = PROJECT) -> str:
-        numbers = [
-            int(k.split("-")[1]) for k in self.tickets if k.startswith(project + "-")
-        ] or [0]
+        numbers = [int(k.split("-")[1]) for k in self.tickets if k.startswith(project + "-")] or [0]
         return f"{project}-{max(numbers) + 1}"
 
     # a tiny client for tests -----------------------------------------------------------------
@@ -722,7 +737,9 @@ class FakeProvider:
             body = json.loads(req.body) if req.body else None
         except ValueError:
             body = ("invalid", req.body)
-        call = Call(req.method, path, parse_qs(split.query, keep_blank_values=True), body, req.headers)
+        call = Call(
+            req.method, path, parse_qs(split.query, keep_blank_values=True), body, req.headers
+        )
         with self._lock:
             self.calls.append(call)
             fault = next((f for f in self.faults if f.matches(req.method, path)), None)
@@ -826,7 +843,9 @@ class FakeProvider:
             text = err.text or (err.messages[0] if err.messages else "error")
             return Out(err.status, text)
         if shape == "error":
-            message = err.messages[0] if err.messages else (next(iter(err.errors.values()), "error"))
+            message = (
+                err.messages[0] if err.messages else (next(iter(err.errors.values()), "error"))
+            )
             return Out(err.status, {"error": message})
         return Out(err.status, {"errorMessages": err.messages, "errors": err.errors})
 
@@ -854,7 +873,9 @@ class FakeProvider:
         try:
             decoded = base64.b64decode(value, validate=True).decode()
         except (binascii.Error, UnicodeDecodeError):
-            raise ProviderError(401, text="Client must be authenticated to access this resource.") from None
+            raise ProviderError(
+                401, text="Client must be authenticated to access this resource."
+            ) from None
         creds = self.quirks.credentials
         if creds is not None and decoded != f"{creds[0]}:{creds[1]}":
             raise ProviderError(401, text="Client must be authenticated to access this resource.")
@@ -898,7 +919,9 @@ class FakeProvider:
         ticket = self.tickets.get(key)
         # V-16: a missing, malformed or hidden key is the same 404 with the same text.
         if ticket is None:
-            raise ProviderError(404, ["Issue does not exist or you do not have permission to see it."])
+            raise ProviderError(
+                404, ["Issue does not exist or you do not have permission to see it."]
+            )
         return ticket
 
     def _need_body(self, call: Call) -> dict[str, Any]:
@@ -934,7 +957,9 @@ class FakeProvider:
             out["endDate"] = sp["end"]
         return out
 
-    def _body_doc(self, doc: dict[str, Any] | None, *, force: bool = False) -> dict[str, Any] | None:
+    def _body_doc(
+        self, doc: dict[str, Any] | None, *, force: bool = False
+    ) -> dict[str, Any] | None:
         if self.quirks.adf_variety and (doc is not None or force):
             return adf_variety_doc()
         return doc
@@ -1001,7 +1026,9 @@ class FakeProvider:
             },
         }
 
-    def _issue_json(self, t: Ticket, wanted: list[str] | None, *, default_all: bool) -> dict[str, Any]:
+    def _issue_json(
+        self, t: Ticket, wanted: list[str] | None, *, default_all: bool
+    ) -> dict[str, Any]:
         full = self._all_fields(t)
         names = wanted
         if names is None:
@@ -1071,19 +1098,51 @@ class FakeProvider:
             f("resolution", "Resolution", {"type": "resolution", "system": "resolution"}),
             f("parent", "Parent", {"type": "issuelink", "system": "parent"}),
             f("duedate", "Due date", {"type": "date", "system": "duedate"}),
-            f("issuelinks", "Linked Issues", {"type": "array", "items": "issuelinks", "system": "issuelinks"}),
+            f(
+                "issuelinks",
+                "Linked Issues",
+                {"type": "array", "items": "issuelinks", "system": "issuelinks"},
+            ),
         ]
         ns = "com.atlassian.jira.plugin.system.customfieldtypes"
         custom = [
-            f(F_POINTS, "Story Points", {"type": "number", "custom": f"{ns}:float", "customId": 90001}, True),
-            f(F_ESTIMATE, "Story point estimate", {"type": "number", "custom": f"{ns}:jsw-story-points", "customId": 90002}, True),
-            f(F_SPRINT, "Sprint", {"type": "array", "items": "json", "custom": "com.pyxis.greenhopper.jira:gh-sprint", "customId": 90003}, True),
-            f(F_CRITERIA, "Acceptance Criteria", {"type": "string", "custom": f"{ns}:textarea", "customId": 90004}, True),
+            f(
+                F_POINTS,
+                "Story Points",
+                {"type": "number", "custom": f"{ns}:float", "customId": 90001},
+                True,
+            ),
+            f(
+                F_ESTIMATE,
+                "Story point estimate",
+                {"type": "number", "custom": f"{ns}:jsw-story-points", "customId": 90002},
+                True,
+            ),
+            f(
+                F_SPRINT,
+                "Sprint",
+                {
+                    "type": "array",
+                    "items": "json",
+                    "custom": "com.pyxis.greenhopper.jira:gh-sprint",
+                    "customId": 90003,
+                },
+                True,
+            ),
+            f(
+                F_CRITERIA,
+                "Acceptance Criteria",
+                {"type": "string", "custom": f"{ns}:textarea", "customId": 90004},
+                True,
+            ),
         ]
         return Out(200, sys_fields + custom)
 
     def _resolutions(self, call: Call) -> Out:
-        return Out(200, [{"id": str(100 + i), "name": n, "description": ""} for i, n in enumerate(RESOLUTIONS)])
+        return Out(
+            200,
+            [{"id": str(100 + i), "name": n, "description": ""} for i, n in enumerate(RESOLUTIONS)],
+        )
 
     def _priorities(self, call: Call) -> Out:
         return Out(200, [{"id": str(1 + i), "name": n} for i, n in enumerate(PRIORITIES)])
@@ -1092,7 +1151,7 @@ class FakeProvider:
         if self.quirks.old_search_gone:
             raise ProviderError(
                 410,
-                ["The requested API has been removed. Please migrate to the /rest/api/3/search/jql API."],
+                ["The requested API has been removed. Please migrate to /rest/api/3/search/jql."],
             )
         return self._search(call)
 
@@ -1101,19 +1160,27 @@ class FakeProvider:
         errors: list[str] = []
         for c in clauses:
             if c.field not in KNOWN_FIELDS:
-                errors.append(f"Field '{c.field}' does not exist or you do not have permission to view it.")
+                errors.append(
+                    f"Field '{c.field}' does not exist or you do not have permission to view it."
+                )
                 continue
             for v in c.values:
                 if isinstance(v, tuple):
                     if v[1].lower() not in KNOWN_FUNCTIONS:
                         errors.append(f"A function '{v[1]}' does not exist.")
-                elif c.field == "status" and c.op in {"=", "!=", "in", "not in"} and v not in STATUSES:
+                elif (
+                    c.field == "status"
+                    and c.op in {"=", "!=", "in", "not in"}
+                    and v not in STATUSES
+                ):
                     errors.append(f"The value '{v}' does not exist for the field 'status'.")
                 elif c.field == "project" and v.upper() != PROJECT:
                     errors.append(f"The value '{v}' does not exist for the field 'project'.")
         for name, _ in order:
             if name not in KNOWN_FIELDS:
-                errors.append(f"Field '{name}' does not exist or you do not have permission to view it.")
+                errors.append(
+                    f"Field '{name}' does not exist or you do not have permission to view it."
+                )
         return errors
 
     def _values(self, t: Ticket, fld: str) -> list[str]:
@@ -1160,8 +1227,12 @@ class FakeProvider:
             if when is None:
                 return False
             return {
-                "=": stamp == when, "!=": stamp != when, ">": stamp > when,
-                ">=": stamp >= when, "<": stamp < when, "<=": stamp <= when,
+                "=": stamp == when,
+                "!=": stamp != when,
+                ">": stamp > when,
+                ">=": stamp >= when,
+                "<": stamp < when,
+                "<=": stamp <= when,
             }.get(c.op, False)
         have = self._values(t, c.field)
         low = [h.lower() for h in have]
@@ -1248,7 +1319,9 @@ class FakeProvider:
         token = body.get("nextPageToken")
         if token is not None:
             try:
-                prefix, _, digits = base64.urlsafe_b64decode(str(token).encode()).decode().partition(":")
+                prefix, _, digits = (
+                    base64.urlsafe_b64decode(str(token).encode()).decode().partition(":")
+                )
                 if prefix != "page" or not digits.isdigit():
                     raise ValueError
                 start = int(digits)
@@ -1259,7 +1332,9 @@ class FakeProvider:
             "issues": [self._issue_json(t, wanted, default_all=False) for t in chunk],
         }
         if start + page < len(found):
-            out["nextPageToken"] = base64.urlsafe_b64encode(f"page:{start + page}".encode()).decode()
+            out["nextPageToken"] = base64.urlsafe_b64encode(
+                f"page:{start + page}".encode()
+            ).decode()
         return Out(200, out)
 
     def _count(self, call: Call) -> Out:
@@ -1294,7 +1369,9 @@ class FakeProvider:
 
     # -- issues --------------------------------------------------------------------------------
     def _get_issue(self, call: Call, key: str) -> Out:
-        return Out(200, self._issue_json(self._ticket(key), self._field_list(call), default_all=True))
+        return Out(
+            200, self._issue_json(self._ticket(key), self._field_list(call), default_all=True)
+        )
 
     def _editable_fields(self) -> dict[str, dict[str, Any]]:
         def meta(name: str, schema: dict[str, Any], required: bool = False) -> dict[str, Any]:
@@ -1328,15 +1405,19 @@ class FakeProvider:
             out.append(label)
         return out
 
-    def _plan_fields(self, t: Ticket | None, fields: dict[str, Any], *, creating: bool) -> dict[str, Any]:
-        """Validate ``fields`` and return the changes to apply; raises with nothing applied (V-10)."""
+    def _plan_fields(
+        self, t: Ticket | None, fields: dict[str, Any], *, creating: bool
+    ) -> dict[str, Any]:
+        """Validate ``fields``; return the changes, or raise with nothing applied (V-10)."""
         changes: dict[str, Any] = {}
         editable = self._editable_fields()
         for name, value in fields.items():
             if name in {"project", "issuetype"} and creating:
                 continue
             if name == "labels":
-                changes["labels"] = self._check_labels(value if isinstance(value, list) else [value])
+                changes["labels"] = self._check_labels(
+                    value if isinstance(value, list) else [value]
+                )
             elif name == "assignee":
                 changes["assignee"] = self._account(value)
             elif name == "parent" and creating:
@@ -1350,11 +1431,11 @@ class FakeProvider:
             else:
                 raise ProviderError(
                     400,
-                    errors={
-                        name: f"Field '{name}' cannot be set. It is not on the appropriate screen, or unknown."
-                    },
+                    errors={name: NOT_SETTABLE.format(name=name)},
                 )
-        if "summary" in changes and (not isinstance(changes["summary"], str) or not changes["summary"].strip()):
+        if "summary" in changes and (
+            not isinstance(changes["summary"], str) or not changes["summary"].strip()
+        ):
             raise ProviderError(400, errors={"summary": "You must specify a summary of the issue."})
         if "description" in changes:
             self._check_adf(changes["description"], "description")
@@ -1364,7 +1445,9 @@ class FakeProvider:
     def _check_adf(value: Any, name: str) -> None:
         if value is None:
             return
-        if not (isinstance(value, dict) and value.get("type") == "doc" and value.get("version") == 1):
+        if not (
+            isinstance(value, dict) and value.get("type") == "doc" and value.get("version") == 1
+        ):
             raise ProviderError(400, errors={name: "Operation value must be an Atlassian Document"})
         if len(json.dumps(value)) >= COMMENT_BODY_LIMIT * 8 and name != "description":
             raise ProviderError(400, errors={name: "CONTENT_LIMIT_EXCEEDED"})
@@ -1379,7 +1462,9 @@ class FakeProvider:
             raise ProviderError(400, errors={"assignee": "User does not exist."})
         return account
 
-    def _apply(self, t: Ticket, changes: dict[str, Any], label_adds: list[str], label_removes: list[str]) -> bool:
+    def _apply(
+        self, t: Ticket, changes: dict[str, Any], label_adds: list[str], label_removes: list[str]
+    ) -> bool:
         changed = False
         for name, value in changes.items():
             if name == "labels":
@@ -1424,7 +1509,9 @@ class FakeProvider:
             raise ProviderError(400, ["'update' must be an object."])
         for name, ops in update.items():
             if name != "labels":
-                raise ProviderError(400, errors={name: f"Field '{name}' cannot be set through update."})
+                raise ProviderError(
+                    400, errors={name: f"Field '{name}' cannot be set through update."}
+                )
             for op in ops if isinstance(ops, list) else []:
                 if isinstance(op, dict) and "add" in op:
                     adds += self._check_labels([op["add"]])
@@ -1438,7 +1525,9 @@ class FakeProvider:
         t = self._ticket(key)
         body = self._need_body(call)
         if call.one("notifyUsers") == "false" and self.quirks.notify_users_false_forbidden:
-            raise ProviderError(403, ["To discard the notification, you need to be an administrator."])
+            raise ProviderError(
+                403, ["To discard the notification, you need to be an administrator."]
+            )
         fields = body.get("fields") or {}
         if not isinstance(fields, dict):
             raise ProviderError(400, ["'fields' must be an object."])
@@ -1479,13 +1568,20 @@ class FakeProvider:
         subtask = ISSUE_TYPES[type_id][1]
         parent = changes.get("parent")
         if subtask and not parent:
-            raise ProviderError(400, errors={"parent": "Sub-tasks must be created with a parent."})  # V-29
+            raise ProviderError(
+                400, errors={"parent": "Sub-tasks must be created with a parent."}
+            )  # V-29
         if parent:
             ptype = self.tickets.get(parent)
             if ptype is None:
                 raise ProviderError(400, errors={"parent": "Parent issue does not exist."})
             if not subtask and ISSUE_TYPES[ptype.type_id][0] != "Epic":
-                raise ProviderError(400, errors={"parent": "Given parent issue does not belong to appropriate hierarchy."})
+                raise ProviderError(
+                    400,
+                    errors={
+                        "parent": "Given parent issue does not belong to appropriate hierarchy."
+                    },
+                )
         adds, _ = self._update_ops(body.get("update"))
         props = body.get("properties")
         key = self.next_key()
@@ -1496,7 +1592,9 @@ class FakeProvider:
         t.assignee = changes.get("assignee")
         t.description = changes.get("description")
         t.priority = (
-            changes["priority"].get("name") if isinstance(changes.get("priority"), dict) else "Medium"
+            changes["priority"].get("name")
+            if isinstance(changes.get("priority"), dict)
+            else "Medium"
         )
         t.labels = {}
         self._apply(t, {"labels": changes.get("labels", [])}, adds, [])
@@ -1533,7 +1631,9 @@ class FakeProvider:
                     "key": "resolution",
                     "schema": {"type": "resolution", "system": "resolution"},
                     "operations": ["set"],
-                    "allowedValues": [{"id": str(100 + i), "name": n} for i, n in enumerate(RESOLUTIONS)],
+                    "allowedValues": [
+                        {"id": str(100 + i), "name": n} for i, n in enumerate(RESOLUTIONS)
+                    ],
                 }
             if ISSUE_TYPES[t.type_id][1]:
                 fields["parent"] = {
@@ -1549,7 +1649,9 @@ class FakeProvider:
     def _transitions(self, call: Call, key: str) -> Out:
         t = self._ticket(key)
         expand = "transitions.fields" in (call.one("expand") or "")
-        return Out(200, {"transitions": [self._transition_obj(t, tid, expand) for tid in TRANSITIONS]})
+        return Out(
+            200, {"transitions": [self._transition_obj(t, tid, expand) for tid in TRANSITIONS]}
+        )
 
     def _transition(self, call: Call, key: str) -> Out:
         t = self._ticket(key)
@@ -1565,9 +1667,11 @@ class FakeProvider:
             if name not in allowed:
                 raise ProviderError(
                     400,
-                    errors={name: f"Field '{name}' cannot be set. It is not on the appropriate screen, or unknown."},
+                    errors={name: NOT_SETTABLE.format(name=name)},
                 )
-        resolution = (fields.get("resolution") or {}).get("name") if fields.get("resolution") else None
+        resolution = (
+            (fields.get("resolution") or {}).get("name") if fields.get("resolution") else None
+        )
         if resolution is not None and resolution not in RESOLUTIONS:
             raise ProviderError(400, errors={"resolution": "Resolution is not valid."})
         if done and resolution is None and not self.quirks.done_without_resolution:
@@ -1624,7 +1728,10 @@ class FakeProvider:
         for prop in body.get("properties") or []:
             if not isinstance(prop, dict) or not isinstance(prop.get("key"), str):
                 raise ProviderError(400, ["Invalid comment property."])
-            if len(prop["key"].encode()) > 255 or len(json.dumps(prop.get("value")).encode()) > PROPERTY_VALUE_LIMIT:
+            if (
+                len(prop["key"].encode()) > 255
+                or len(json.dumps(prop.get("value")).encode()) > PROPERTY_VALUE_LIMIT
+            ):
                 raise ProviderError(400, ["Comment property is too large."])
             props[prop["key"]] = prop.get("value")
         cid = str(self._next_comment)
@@ -1670,22 +1777,65 @@ class FakeProvider:
         if project.upper() != PROJECT or type_id not in ISSUE_TYPES:
             raise ProviderError(404, ["No issue type could be found."])
         fields = [
-            {"fieldId": "summary", "name": "Summary", "required": True, "schema": {"type": "string", "system": "summary"}, "operations": ["set"]},
-            {"fieldId": "description", "name": "Description", "required": False, "schema": {"type": "string", "system": "description"}, "operations": ["set"]},
-            {"fieldId": "priority", "name": "Priority", "required": False, "schema": {"type": "priority", "system": "priority"}, "operations": ["set"]},
-            {"fieldId": "assignee", "name": "Assignee", "required": False, "schema": {"type": "user", "system": "assignee"}, "operations": ["set"]},
+            {
+                "fieldId": "summary",
+                "name": "Summary",
+                "required": True,
+                "schema": {"type": "string", "system": "summary"},
+                "operations": ["set"],
+            },
+            {
+                "fieldId": "description",
+                "name": "Description",
+                "required": False,
+                "schema": {"type": "string", "system": "description"},
+                "operations": ["set"],
+            },
+            {
+                "fieldId": "priority",
+                "name": "Priority",
+                "required": False,
+                "schema": {"type": "priority", "system": "priority"},
+                "operations": ["set"],
+            },
+            {
+                "fieldId": "assignee",
+                "name": "Assignee",
+                "required": False,
+                "schema": {"type": "user", "system": "assignee"},
+                "operations": ["set"],
+            },
         ]
         if ISSUE_TYPES[type_id][1]:
-            fields.append({"fieldId": "parent", "name": "Parent", "required": True, "schema": {"type": "issuelink", "system": "parent"}, "operations": ["set"]})
+            fields.append(
+                {
+                    "fieldId": "parent",
+                    "name": "Parent",
+                    "required": True,
+                    "schema": {"type": "issuelink", "system": "parent"},
+                    "operations": ["set"],
+                }
+            )
         return Out(200, {"startAt": 0, "maxResults": 50, "total": len(fields), "fields": fields})
 
     # -- agile -------------------------------------------------------------------------------------
     def _boards(self, call: Call) -> Out:
         project = call.one("projectKeyOrId")
-        boards = [{"id": 1, "name": "Demo board", "type": "scrum", "location": {"projectKey": PROJECT}}]
+        boards = [
+            {"id": 1, "name": "Demo board", "type": "scrum", "location": {"projectKey": PROJECT}}
+        ]
         if project is not None and project.upper() != PROJECT:
             boards = []
-        return Out(200, {"maxResults": 50, "startAt": 0, "total": len(boards), "isLast": True, "values": boards})
+        return Out(
+            200,
+            {
+                "maxResults": 50,
+                "startAt": 0,
+                "total": len(boards),
+                "isLast": True,
+                "values": boards,
+            },
+        )
 
     def _agile_sprint(self, sid: int) -> dict[str, Any]:
         sp = self.sprints[sid]
@@ -1705,14 +1855,22 @@ class FakeProvider:
 
     def _board_sprints(self, call: Call, board: str) -> Out:
         if board != "1":
-            raise ProviderError(404, ["Board does not exist or you do not have permission to see it."])
+            raise ProviderError(
+                404, ["Board does not exist or you do not have permission to see it."]
+            )
         states = {s for v in call.query.get("state", []) for s in v.split(",") if s}
-        values = [self._agile_sprint(i) for i, sp in self.sprints.items() if not states or sp["state"] in states]
+        values = [
+            self._agile_sprint(i)
+            for i, sp in self.sprints.items()
+            if not states or sp["state"] in states
+        ]
         return Out(200, {"maxResults": 50, "startAt": 0, "isLast": True, "values": values})
 
     def _sprint(self, call: Call, sid: str) -> Out:
         if int(sid) not in self.sprints:
-            raise ProviderError(404, ["Sprint does not exist or you do not have permission to view it."])
+            raise ProviderError(
+                404, ["Sprint does not exist or you do not have permission to view it."]
+            )
         return Out(200, self._agile_sprint(int(sid)))
 
     def _issues_in(self, call: Call) -> list[Ticket]:
@@ -1724,14 +1882,18 @@ class FakeProvider:
 
     def _sprint_add(self, call: Call, sid: str) -> Out:
         if int(sid) not in self.sprints:
-            raise ProviderError(404, ["Sprint does not exist or you do not have permission to view it."])
+            raise ProviderError(
+                404, ["Sprint does not exist or you do not have permission to view it."]
+            )
         tickets = self._issues_in(call)
         if self.sprints[int(sid)]["state"] == "closed":
             raise ProviderError(400, ["Issues cannot be added to a closed sprint."])
         changed = False
         for t in tickets:
             if int(sid) not in t.sprints:
-                t.sprints = [s for s in t.sprints if self.sprints[s]["state"] == "closed"] + [int(sid)]
+                t.sprints = [s for s in t.sprints if self.sprints[s]["state"] == "closed"] + [
+                    int(sid)
+                ]
                 t.updated = self.now
                 changed = True
         return Out(204, None, applied=changed)

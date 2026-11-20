@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import ValidationError
 
 from tests import golden
 from ticketctl.errors import TicketctlError
@@ -119,7 +120,9 @@ def test_a_change_in_a_referenced_file_is_a_problem(trees: tuple[Path, Path]) ->
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["$defs"]["site_name"]["description"] = "changed"
     path.write_text(json.dumps(doc), encoding="utf-8")
-    assert any("changed since" in p for p in golden.check_tree(schemas, goldens, pending_for(schemas)))
+    assert any(
+        "changed since" in p for p in golden.check_tree(schemas, goldens, pending_for(schemas))
+    )
 
 
 def test_formatting_alone_is_not_a_schema_change(trees: tuple[Path, Path]) -> None:
@@ -129,11 +132,15 @@ def test_formatting_alone_is_not_a_schema_change(trees: tuple[Path, Path]) -> No
     assert golden.check_tree(schemas, goldens, pending_for(schemas)) == []
 
 
-def test_a_schema_with_no_golden_and_no_pending_entry_is_a_problem(trees: tuple[Path, Path]) -> None:
+def test_a_schema_with_no_golden_and_no_pending_entry_is_a_problem(
+    trees: tuple[Path, Path],
+) -> None:
     schemas, goldens = trees
     pending = pending_for(schemas)
     del pending["cli/get.json"]
-    assert any("cli/get.json: no golden file" in p for p in golden.check_tree(schemas, goldens, pending))
+    assert any(
+        "cli/get.json: no golden file" in p for p in golden.check_tree(schemas, goldens, pending)
+    )
 
 
 def test_a_stale_or_unknown_pending_entry_is_a_problem(trees: tuple[Path, Path]) -> None:
@@ -144,7 +151,9 @@ def test_a_stale_or_unknown_pending_entry_is_a_problem(trees: tuple[Path, Path])
     assert any("no such schema" in p for p in problems)
 
 
-def test_a_golden_outside_the_layout_or_without_a_schema_is_a_problem(trees: tuple[Path, Path]) -> None:
+def test_a_golden_outside_the_layout_or_without_a_schema_is_a_problem(
+    trees: tuple[Path, Path],
+) -> None:
     schemas, goldens = trees
     (goldens / "cli" / "nosuch").mkdir()
     (goldens / "cli" / "nosuch" / "x.json").write_text("{}", encoding="utf-8")
@@ -160,13 +169,17 @@ def test_a_manifest_entry_without_a_golden_is_a_problem(trees: tuple[Path, Path]
     doc = json.loads(manifest.read_text(encoding="utf-8"))
     doc["cli/get.json"] = "0" * 64
     manifest.write_text(json.dumps(doc), encoding="utf-8")
-    assert any("has no golden file" in p for p in golden.check_tree(schemas, goldens, pending_for(schemas)))
+    assert any(
+        "has no golden file" in p for p in golden.check_tree(schemas, goldens, pending_for(schemas))
+    )
 
 
 def test_assert_golden_rejects_output_that_violates_the_schema(trees: tuple[Path, Path]) -> None:
     schemas, goldens = trees
-    with pytest.raises(Exception):  # jsonschema.ValidationError
-        golden.assert_golden("cli", "error", "not-found", {"error": 1}, schemas=schemas, golden_dir=goldens)
+    with pytest.raises(ValidationError):
+        golden.assert_golden(
+            "cli", "error", "not-found", {"error": 1}, schemas=schemas, golden_dir=goldens
+        )
 
 
 def test_assert_golden_rejects_a_changed_output(trees: tuple[Path, Path]) -> None:
@@ -175,14 +188,21 @@ def test_assert_golden_rejects_a_changed_output(trees: tuple[Path, Path]) -> Non
     golden.assert_golden("cli", "error", "not-found", envelope, schemas=schemas, golden_dir=goldens)
     envelope["error"]["message"] = "a different message"
     with pytest.raises(AssertionError, match="differs"):
-        golden.assert_golden("cli", "error", "not-found", envelope, schemas=schemas, golden_dir=goldens)
+        golden.assert_golden(
+            "cli", "error", "not-found", envelope, schemas=schemas, golden_dir=goldens
+        )
 
 
 def test_assert_golden_names_a_missing_golden_file(trees: tuple[Path, Path]) -> None:
     schemas, goldens = trees
     with pytest.raises(AssertionError, match="missing golden file"):
         golden.assert_golden(
-            "cli", "error", "no-such-case", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens
+            "cli",
+            "error",
+            "no-such-case",
+            ERRORS["usage"].envelope(),
+            schemas=schemas,
+            golden_dir=goldens,
         )
 
 
@@ -191,14 +211,21 @@ def test_update_mode_writes_the_file_and_the_manifest(
 ) -> None:
     schemas, goldens = trees
     monkeypatch.setenv(golden.UPDATE_ENV, "1")
-    golden.assert_golden("cli", "error", "usage", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens)
+    golden.assert_golden(
+        "cli", "error", "usage", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens
+    )
     monkeypatch.delenv(golden.UPDATE_ENV)
     assert (goldens / "cli" / "error" / "usage.json").is_file()
     assert golden.check_tree(schemas, goldens, pending_for(schemas)) == []
-    golden.assert_golden("cli", "error", "usage", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens)
+    golden.assert_golden(
+        "cli", "error", "usage", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens
+    )
 
 
-@pytest.mark.parametrize(("kind", "name", "case"), [("cli", "../x", "a"), ("cli", "error", "A b"), ("nope", "error", "a")])
+@pytest.mark.parametrize(
+    ("kind", "name", "case"),
+    [("cli", "../x", "a"), ("cli", "error", "A b"), ("nope", "error", "a")],
+)
 def test_golden_names_are_restricted(kind: str, name: str, case: str) -> None:
     with pytest.raises(ValueError):
         golden.assert_golden(kind, name, case, {})
