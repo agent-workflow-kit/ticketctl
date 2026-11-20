@@ -23,6 +23,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `gateway` | 0 | the only HTTP boundary: requests, auth header, timeouts, retry policy, pacing, redirect and proxy rules |
 | `search_compile` | 1 | structured flags and named queries to JQL, the `ORDER BY` scanner, raw query rules (no provider calls) |
 | `sanitize` | 0 | the one sanitizer and the identifier grammars |
+| `state` | 0 | the state directory, safe opens, the `flock` helper |
 | `audit` | 0 | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | 1 | field list and identity cache with atomic replace |
 | `provider`, `jira` | 1 | the provider interface and the Jira implementation (endpoints, field discovery, JQL compile and parse check, transitions, sprints) |

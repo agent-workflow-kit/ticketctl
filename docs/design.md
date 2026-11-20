@@ -137,6 +137,7 @@ Still to verify (conservative defaults apply): how Jira reads instants either si
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
 | `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
 | `hooks` | hook execution (process groups, timeouts, payloads) |
+| `state` | the state directory: location, `0700` and ownership checks, symlink refusal, safe file opens relative to the directory descriptor, the `flock` helper (bounded wait, reopen after rotation), the tree cleaner every writer runs content through |
 | `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
 | `dedupe` | the dedupe lock and the lookups for comment and create |

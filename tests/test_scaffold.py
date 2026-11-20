@@ -20,6 +20,7 @@ MODULES = [
     "sanitize",
     "search_compile",
     "audit",
+    "state",
     "cache",
     "provider",
     "jira",
