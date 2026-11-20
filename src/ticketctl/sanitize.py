@@ -49,12 +49,20 @@ from urllib.parse import SplitResult, quote, urlencode, urlsplit
 class InputError(Exception):
     """A refusal of caller input, carrying the interface's exit code, code and reason."""
 
-    def __init__(self, exit_code: int, code: str, reason: str, message: str) -> None:
+    def __init__(
+        self,
+        exit_code: int,
+        code: str,
+        reason: str,
+        message: str,
+        details: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
         self.code = code
         self.reason = reason
         self.message = message
+        self.details = details or {}
 
 
 def _invalid_request(reason: str, message: str) -> InputError:

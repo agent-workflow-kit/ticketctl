@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ticketctl/adf.json",
   "title": "ticketctl ADF allowlist",
-  "description": "The only document shapes ticketctl sends: nodes doc, paragraph, text, heading, bulletList, orderedList, listItem, codeBlock, blockquote and hardBreak; marks strong, em, code and link (http or https, no userinfo). Every other node, mark or attribute is refused, never repaired. Depth 10 (list nesting 5) and 5000 nodes are enforced by validate_adf(), not by this schema.",
+  "description": "The only document shapes ticketctl sends: nodes doc, paragraph, text, heading, bulletList, orderedList, listItem, codeBlock, blockquote and hardBreak; marks strong, em, code and link (http or https, no userinfo). A text node has each mark type at most once, and code combines only with link; a codeBlock holds plain text nodes without marks. Every other node, mark or attribute is refused, never repaired. Depth 10 (containers: list, listItem, blockquote), 5000 nodes, the body size and the sanitizer rule for text are enforced by validate_adf() in code, not by this schema.",
   "$ref": "#/$defs/doc",
   "$defs": {
     "mark": {
@@ -66,7 +66,107 @@
           "items": {
             "$ref": "#/$defs/mark"
           },
-          "uniqueItems": true
+          "allOf": [
+            {
+              "contains": {
+                "properties": {
+                  "type": {
+                    "const": "strong"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "type": {
+                    "const": "em"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "type": {
+                    "const": "code"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "type": {
+                    "const": "link"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "minContains": 0,
+              "maxContains": 1
+            },
+            {
+              "if": {
+                "contains": {
+                  "properties": {
+                    "type": {
+                      "const": "code"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                }
+              },
+              "then": {
+                "items": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "code",
+                        "link"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "text"
+      ]
+    },
+    "codeText": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "additionalProperties": false,
@@ -168,7 +268,7 @@
         "content": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/text"
+            "$ref": "#/$defs/codeText"
           }
         }
       },
