@@ -1,4 +1,4 @@
-"""The cache store: ``cache/<site>/{fields,me,priorities,resolutions}.json`` (docs/interface.md "Files").
+"""The cache store: ``cache/<site>/{fields,me,priorities,resolutions}.json`` (interface.md "Files").
 
 Public API:
 

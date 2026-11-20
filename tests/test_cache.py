@@ -282,6 +282,8 @@ def test_discard_cache_removes_one_file_and_tolerates_a_missing_one(sd: Path) ->
 
 
 def test_resolutions_is_a_cache_name(sd: Path) -> None:
-    cache.write_cache(sd, "main", "resolutions", {"resolutions": ["Done"]}, url=URL, email=EMAIL, now=NOW)
+    cache.write_cache(
+        sd, "main", "resolutions", {"resolutions": ["Done"]}, url=URL, email=EMAIL, now=NOW
+    )
     got = cache.read_cache(sd, "main", "resolutions", url=URL, email=EMAIL, ttl=TTL, now=NOW)
     assert got is not None and got["resolutions"] == ["Done"]

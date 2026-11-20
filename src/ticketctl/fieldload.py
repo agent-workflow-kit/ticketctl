@@ -137,7 +137,9 @@ def load_fields(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> L
     try:
         parsed = parse_field_list(data)
     except FieldListError as exc:
-        raise TicketctlError("provider_changed", f"{FIELD} answered no usable list ({exc})") from None
+        raise TicketctlError(
+            "provider_changed", f"{FIELD} answered no usable list ({exc})"
+        ) from None
     if parsed.ignored:
         rt.warn(f"warning: {parsed.ignored} entries of the provider's field list were ignored")
     _write(
@@ -216,9 +218,7 @@ def _load_names(
     return NameList(names, "provider")
 
 
-def load_priorities(
-    rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool = False
-) -> NameList:
+def load_priorities(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool = False) -> NameList:
     return _load_names(
         rt, site_name, gw, name="priorities", path=PRIORITY, label="priority list", refresh=refresh
     )

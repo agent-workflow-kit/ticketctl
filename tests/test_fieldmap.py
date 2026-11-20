@@ -15,6 +15,7 @@ from ticketctl.config import FieldMapping, Fields
 from ticketctl.errors import TicketctlError
 from ticketctl.fieldmap import ProviderField, Status
 
+SYSTEM_IDS = {"summary", "labels", "assignee", "priority", "resolution", "parent", "duedate"}
 NS = "com.atlassian.jira.plugin.system.customfieldtypes"
 
 
@@ -35,7 +36,7 @@ def entry(
     return {
         "id": fid,
         "name": name,
-        "custom": fid.startswith("customfield_") if is_custom is None else is_custom,
+        "custom": fid not in SYSTEM_IDS if is_custom is None else is_custom,
         "schema": schema,
     }
 
@@ -195,7 +196,13 @@ def test_a_missing_schema_key_is_none_and_non_string_parts_are_dropped() -> None
 
 
 def test_custom_is_true_only_for_the_boolean_true() -> None:
-    for value, expected in ((True, True), (False, False), ("true", False), (1, False), (None, False)):
+    for value, expected in (
+        (True, True),
+        (False, False),
+        ("true", False),
+        (1, False),
+        (None, False),
+    ):
         raw = {"id": "customfield_1", "name": "X", "custom": value}
         assert fieldmap.parse_field_list([raw]).fields[0].custom is expected
 
@@ -226,7 +233,7 @@ def test_sprint_is_found_by_its_schema() -> None:
 
 
 def test_a_field_named_sprint_without_the_schema_is_not_the_sprint_field() -> None:
-    fields = parsed([entry("customfield_5", "Sprint", "string", custom=f"{NS}:textfield")])
+    fields = parsed([entry("cf_five", "Sprint", "string", custom=f"{NS}:textfield")])
     assert fieldmap.resolve(fields, "sprint", None).status is Status.ABSENT
 
 
@@ -241,9 +248,9 @@ def test_the_legacy_points_field_is_found_only_by_its_exact_name() -> None:
         entry(F_POINTS, "Story Points", "number", custom=f"{NS}:float"),
         entry(F_VALUE, "Business value", "number", custom=f"{NS}:float"),
         entry(F_EFFORT, "Effort days", "number", custom=f"{NS}:float"),
-        entry("customfield_90007", "story points", "number", custom=f"{NS}:float"),
-        entry("customfield_90008", "Story Points ", "number", custom=f"{NS}:float"),
-        entry("customfield_90009", "Story Points", "string", custom=f"{NS}:textfield"),
+        entry("cf_t1", "story points", "number", custom=f"{NS}:float"),
+        entry("cf_t2", "Story Points ", "number", custom=f"{NS}:float"),
+        entry("cf_t3", "Story Points", "string", custom=f"{NS}:textfield"),
     ]
     res = fieldmap.resolve(parsed(entries), "estimate", None)
     assert res.status is Status.FOUND
@@ -267,9 +274,9 @@ def test_the_legacy_name_on_a_foreign_float_namespace_is_not_the_legacy_field() 
 
 
 def test_epic_is_found_by_its_schema() -> None:
-    entries = [entry("customfield_90010", "Epic Link", "any", custom="x.y:gh-epic-link")]
+    entries = [entry("cf_epic", "Epic Link", "any", custom="x.y:gh-epic-link")]
     res = fieldmap.resolve(parsed(entries), "epic", None)
-    assert (res.status, ids(res)) == (Status.FOUND, ["customfield_90010"])
+    assert (res.status, ids(res)) == (Status.FOUND, ["cf_epic"])
 
 
 def test_acceptance_criteria_is_never_discovered() -> None:
@@ -318,7 +325,9 @@ def test_a_mapping_by_id_resolves_the_ambiguity() -> None:
 
 
 def test_a_mapping_by_schema_matches_the_custom_schema() -> None:
-    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(schema=f"{NS}:jsw-story-points"))
+    res = fieldmap.resolve(
+        parsed(site_entries()), "estimate", mapping(schema=f"{NS}:jsw-story-points")
+    )
     assert (res.status, ids(res)) == (Status.FOUND, [F_ESTIMATE])
 
 
@@ -340,7 +349,7 @@ def test_a_mapping_by_name_is_exact_and_case_sensitive() -> None:
 
 
 def test_a_mapping_naming_a_missing_field_is_missing_not_absent() -> None:
-    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(id="customfield_99999"))
+    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(id="cf_gone"))
     assert (res.status, res.fields, res.mapped) == (Status.MISSING, (), True)
 
 
@@ -352,15 +361,17 @@ def test_a_mapping_beats_discovery_even_when_it_finds_nothing() -> None:
 def test_duplicate_display_names_make_a_name_mapping_ambiguous() -> None:
     entries = [
         entry("customfield_1", "Twin", "number", custom=f"{NS}:float"),
-        entry("customfield_2", "Twin", "string", custom=f"{NS}:textfield"),
+        entry("cf_two", "Twin", "string", custom=f"{NS}:textfield"),
     ]
     res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="Twin"))
     assert res.status is Status.AMBIGUOUS
-    assert ids(res) == ["customfield_1", "customfield_2"]
+    assert ids(res) == ["cf_two", "customfield_1"]
 
 
 def test_a_mapping_to_the_acceptance_criteria_field() -> None:
-    res = fieldmap.resolve(parsed(site_entries()), "acceptance_criteria", mapping(name="Acceptance Criteria"))
+    res = fieldmap.resolve(
+        parsed(site_entries()), "acceptance_criteria", mapping(name="Acceptance Criteria")
+    )
     assert (res.status, ids(res)) == (Status.FOUND, [F_CRITERIA])
 
 
@@ -385,12 +396,12 @@ def test_need_refuses_an_ambiguous_field_with_names_not_ids() -> None:
 
 
 def test_need_refuses_a_missing_mapping_as_unknown_field() -> None:
-    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(id="customfield_99999"))
+    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(id="cf_gone"))
     with pytest.raises(TicketctlError) as info:
         res.need()
     err = info.value
     assert (err.code, err.reason, err.exit) == ("invalid_request", "unknown_field", 22)
-    assert "customfield_99999" not in err.message
+    assert "cf_gone" not in err.message
     assert err.details == {"field": "estimate"}
 
 
@@ -405,7 +416,7 @@ def test_need_refuses_an_absent_unmapped_field_as_unknown_field() -> None:
 def test_candidates_with_equal_names_are_told_apart_by_schema() -> None:
     entries = [
         entry("customfield_1", "Twin", "number", custom=f"{NS}:float"),
-        entry("customfield_2", "Twin", "string", custom=f"{NS}:textfield"),
+        entry("cf_two", "Twin", "string", custom=f"{NS}:textfield"),
     ]
     res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="Twin"))
     assert res.candidate_labels() == [
@@ -417,7 +428,7 @@ def test_candidates_with_equal_names_are_told_apart_by_schema() -> None:
 def test_candidates_that_cannot_be_told_apart_are_kept_once_each() -> None:
     entries = [
         entry("customfield_1", "Twin", "number", custom=f"{NS}:float"),
-        entry("customfield_2", "Twin", "number", custom=f"{NS}:float"),
+        entry("cf_two", "Twin", "number", custom=f"{NS}:float"),
     ]
     res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="Twin"))
     assert res.candidate_labels() == [f"Twin ({NS}:float)", f"Twin ({NS}:float)"]
@@ -427,7 +438,9 @@ def test_candidates_that_cannot_be_told_apart_are_kept_once_each() -> None:
 
 
 def test_a_huge_candidate_set_is_capped_in_the_envelope() -> None:
-    entries = [entry(f"customfield_{n}", "Twin", "number", custom=f"{NS}:float") for n in range(300)]
+    entries = [
+        entry(f"customfield_{n}", "Twin", "number", custom=f"{NS}:float") for n in range(300)
+    ]
     res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="Twin"))
     assert res.status is Status.AMBIGUOUS
     with pytest.raises(TicketctlError) as info:
@@ -439,7 +452,9 @@ def test_a_huge_candidate_set_is_capped_in_the_envelope() -> None:
 # --- SiteFields: logical names and extras -----------------------------------------------------
 
 
-def site(fields_cfg: Fields | None = None, entries: list[dict[str, Any]] | None = None) -> fieldmap.SiteFields:
+def site(
+    fields_cfg: Fields | None = None, entries: list[dict[str, Any]] | None = None
+) -> fieldmap.SiteFields:
     return fieldmap.SiteFields(parsed(entries or site_entries()), fields_cfg or Fields())
 
 
@@ -464,7 +479,7 @@ def test_a_logical_name_wins_over_a_same_named_extra() -> None:
 
 
 def test_extras_resolve_only_by_their_configured_mapping() -> None:
-    sf = site(Fields(extra={"gone": mapping(id="customfield_99999")}))
+    sf = site(Fields(extra={"gone": mapping(id="cf_gone")}))
     res = sf.resolve("gone")
     assert res.status is Status.MISSING
     assert res.logical == "gone"
@@ -480,7 +495,9 @@ def test_extra_names_are_not_confused_with_provider_display_names() -> None:
 # --- problems (used by fields check) ---------------------------------------------------------
 
 
-def problems(cfg: Fields, entries: list[dict[str, Any]] | None = None) -> list[tuple[str, str, list[str]]]:
+def problems(
+    cfg: Fields, entries: list[dict[str, Any]] | None = None
+) -> list[tuple[str, str, list[str]]]:
     return [(p.logical, p.problem, p.candidates) for p in site(cfg, entries).problems()]
 
 
@@ -493,11 +510,13 @@ def test_sound_mappings_have_no_problem_apart_from_discovery_ambiguity() -> None
 
 
 def test_the_estimate_ambiguity_is_a_problem_even_without_a_mapping() -> None:
-    assert problems(Fields()) == [("estimate", "ambiguous", ["Story Points", "Story point estimate"])]
+    assert problems(Fields()) == [
+        ("estimate", "ambiguous", ["Story Points", "Story point estimate"])
+    ]
 
 
 def test_a_mapping_naming_a_missing_field_is_the_missing_problem() -> None:
-    cfg = Fields(estimate=mapping(name="Story Points"), sprint=mapping(id="customfield_99999"))
+    cfg = Fields(estimate=mapping(name="Story Points"), sprint=mapping(id="cf_gone"))
     assert problems(cfg) == [("sprint", "missing", [])]
 
 
@@ -514,14 +533,16 @@ def test_absent_unmapped_fields_are_not_problems() -> None:
 @pytest.mark.parametrize(
     ("logical", "bad_entry"),
     [
-        ("estimate", entry("customfield_7", "Text points", "string", custom=f"{NS}:textfield")),
-        ("sprint", entry("customfield_7", "Not a sprint", "string", custom=f"{NS}:textfield")),
-        ("acceptance_criteria", entry("customfield_7", "Number", "number", custom=f"{NS}:float")),
-        ("due_date", entry("customfield_7", "Not a date", "string", custom=f"{NS}:textfield")),
+        ("estimate", entry("cf_seven", "Text points", "string", custom=f"{NS}:textfield")),
+        ("sprint", entry("cf_seven", "Not a sprint", "string", custom=f"{NS}:textfield")),
+        ("acceptance_criteria", entry("cf_seven", "Number", "number", custom=f"{NS}:float")),
+        ("due_date", entry("cf_seven", "Not a date", "string", custom=f"{NS}:textfield")),
     ],
 )
-def test_a_mapped_field_of_the_wrong_type_is_a_type_mismatch(logical: str, bad_entry: dict[str, Any]) -> None:
-    cfg = Fields(**{logical: mapping(id="customfield_7")})
+def test_a_mapped_field_of_the_wrong_type_is_a_type_mismatch(
+    logical: str, bad_entry: dict[str, Any]
+) -> None:
+    cfg = Fields.model_validate({logical: {"id": "cf_seven"}})
     got = problems(cfg, [*site_entries(), bad_entry])
     assert (logical, "type_mismatch", []) in got
 
@@ -529,36 +550,38 @@ def test_a_mapped_field_of_the_wrong_type_is_a_type_mismatch(logical: str, bad_e
 @pytest.mark.parametrize(
     ("logical", "good_entry"),
     [
-        ("estimate", entry("customfield_7", "N", "number", custom=f"{NS}:float")),
-        ("sprint", entry("customfield_7", "S", "array", items="json", custom="x:gh-sprint")),
-        ("acceptance_criteria", entry("customfield_7", "T", "string", custom=f"{NS}:textarea")),
-        ("due_date", entry("customfield_7", "D", "date", custom=f"{NS}:datepicker")),
+        ("estimate", entry("cf_seven", "N", "number", custom=f"{NS}:float")),
+        ("sprint", entry("cf_seven", "S", "array", items="json", custom="x:gh-sprint")),
+        ("acceptance_criteria", entry("cf_seven", "T", "string", custom=f"{NS}:textarea")),
+        ("due_date", entry("cf_seven", "D", "date", custom=f"{NS}:datepicker")),
     ],
 )
-def test_a_mapped_field_of_the_right_type_is_sound(logical: str, good_entry: dict[str, Any]) -> None:
-    cfg = Fields(**{logical: mapping(id="customfield_7")})
+def test_a_mapped_field_of_the_right_type_is_sound(
+    logical: str, good_entry: dict[str, Any]
+) -> None:
+    cfg = Fields.model_validate({logical: {"id": "cf_seven"}})
     entries = [e for e in site_entries() if e["id"] not in (F_ESTIMATE, F_POINTS)]
     assert problems(cfg, [*entries, good_entry]) == []
 
 
 def test_a_mapped_field_without_a_schema_is_a_type_mismatch() -> None:
-    bare = {"id": "customfield_7", "name": "Bare", "custom": True}
-    cfg = Fields(estimate=mapping(id="customfield_7"))
+    bare = {"id": "cf_seven", "name": "Bare", "custom": True}
+    cfg = Fields(estimate=mapping(id="cf_seven"))
     assert ("estimate", "type_mismatch", []) in problems(cfg, [*site_entries(), bare])
 
 
 def test_the_fields_without_a_type_rule_never_mismatch() -> None:
-    odd = entry("customfield_7", "Odd", "string", custom=f"{NS}:textfield")
-    cfg = Fields(epic=mapping(id="customfield_7"), labels=mapping(id="customfield_7"))
+    odd = entry("cf_seven", "Odd", "string", custom=f"{NS}:textfield")
+    cfg = Fields(epic=mapping(id="cf_seven"), labels=mapping(id="cf_seven"))
     got = problems(cfg, [*site_entries(), odd])
     assert [p for p in got if p[1] == "type_mismatch"] == []
 
 
 def test_problems_are_ordered_by_logical_name_then_extras() -> None:
     cfg = Fields(
-        sprint=mapping(id="customfield_99998"),
-        due_date=mapping(id="customfield_99997"),
-        extra={"zeta": mapping(id="customfield_99996"), "alpha": mapping(id="customfield_99995")},
+        sprint=mapping(id="cf_gone2"),
+        due_date=mapping(id="cf_gone3"),
+        extra={"zeta": mapping(id="cf_gone4"), "alpha": mapping(id="cf_gone5")},
     )
     names = [p[0] for p in problems(cfg)]
     assert names == ["estimate", "sprint", "due_date", "alpha", "zeta"]
@@ -572,7 +595,9 @@ def test_an_ambiguous_mapping_reports_candidates_without_ids() -> None:
 
 
 def test_problem_candidate_lists_are_capped() -> None:
-    entries = [entry(f"customfield_{n}", "Twin", "number", custom=f"{NS}:float") for n in range(300)]
+    entries = [
+        entry(f"customfield_{n}", "Twin", "number", custom=f"{NS}:float") for n in range(300)
+    ]
     cfg = Fields(estimate=mapping(name="Twin"))
     ((_, kind, cands),) = problems(cfg, entries)
     assert kind == "ambiguous"

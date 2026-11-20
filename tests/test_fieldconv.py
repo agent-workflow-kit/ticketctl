@@ -41,7 +41,11 @@ ADF = {
         (S("option"), {"value": "High", "id": "1"}, "High"),
         (S("array", "string"), ["a", "b"], ["a", "b"]),
         (S("array", "option"), [{"value": "A"}, {"value": "B"}], ["A", "B"]),
-        (S("array", "json"), [{"name": "Sprint 1"}, {"name": "Sprint 2"}], ["Sprint 1", "Sprint 2"]),
+        (
+            S("array", "json"),
+            [{"name": "Sprint 1"}, {"name": "Sprint 2"}],
+            ["Sprint 1", "Sprint 2"],
+        ),
         (S("array", "version"), [{"name": "1.0"}], ["1.0"]),
         (S("array", "string"), [], []),
     ],

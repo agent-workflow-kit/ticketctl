@@ -1,4 +1,4 @@
-"""Fetching and caching the field, priority and resolution lists (issue #12), via the fake provider."""
+"""Fetching and caching the field, priority and resolution lists (issue #12), with the fake."""
 
 from __future__ import annotations
 
@@ -179,7 +179,9 @@ def test_a_future_dated_cache_is_refetched(h: Harness) -> None:
         {},
     ],
 )
-def test_a_poisoned_cache_body_is_discarded_and_refetched(h: Harness, tamper: dict[str, Any]) -> None:
+def test_a_poisoned_cache_body_is_discarded_and_refetched(
+    h: Harness, tamper: dict[str, Any]
+) -> None:
     rt = h.runtime()
     fieldload.load_fields(rt, "main", h.gw, refresh=False)
     doc = json.loads(h.cache_file().read_text())
@@ -256,7 +258,12 @@ def test_a_hostile_list_is_cached_sanitized(h: Harness) -> None:
 
 def test_a_huge_but_valid_list_round_trips_through_the_cache(h: Harness) -> None:
     h.fake.extra_fields = [
-        {"id": f"customfield_{n}", "name": f"Field {n}", "custom": True, "schema": {"type": "string"}}
+        {
+            "id": f"customfield_{n}",
+            "name": f"Field {n}",
+            "custom": True,
+            "schema": {"type": "string"},
+        }
         for n in range(2000, 7000)
     ]
     rt = h.runtime()
@@ -291,16 +298,21 @@ def test_a_missing_mapping_from_a_cached_list_refetches_once(h: Harness) -> None
     assert sf.resolve("late").status is Status.MISSING
     assert h.field_calls() == 1  # the list was fresh from the provider: nothing to retry
     h.fake.extra_fields = [
-        {"id": "customfield_90100", "name": "Late field", "custom": True, "schema": {"type": "string"}}
+        {
+            "id": "cf_late",
+            "name": "Late field",
+            "custom": True,
+            "schema": {"type": "string"},
+        }
     ]
     sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["late"])
     assert sf.source == "provider" and h.field_calls() == 2
-    assert sf.resolve("late").need().id == "customfield_90100"
+    assert sf.resolve("late").need().id == "cf_late"
     assert fieldload.load_site_fields(rt, "main", h.gw, needs=["late"]).source == "cache"
 
 
 def test_a_persistent_missing_mapping_refetches_at_most_once_per_load(h: Harness) -> None:
-    rt = h.runtime("    fields:\n      sprint:\n        id: customfield_99999\n")
+    rt = h.runtime("    fields:\n      sprint:\n        id: cf_gone\n")
     fieldload.load_site_fields(rt, "main", h.gw)
     before = h.field_calls()
     sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint"])
@@ -319,10 +331,16 @@ def test_a_list_that_changes_between_reads_is_seen_after_refresh(h: Harness) -> 
     rt = h.runtime()
     fieldload.load_site_fields(rt, "main", h.gw)
     h.fake.field_list_body = [
-        {"id": F_ESTIMATE, "name": "Story point estimate", "custom": True,
-         "schema": {"type": "number", "custom": f"{NS}:jsw-story-points"}},
+        {
+            "id": F_ESTIMATE,
+            "name": "Story point estimate",
+            "custom": True,
+            "schema": {"type": "number", "custom": f"{NS}:jsw-story-points"},
+        },
     ]
-    assert fieldload.load_site_fields(rt, "main", h.gw).resolve("estimate").status is Status.AMBIGUOUS
+    assert (
+        fieldload.load_site_fields(rt, "main", h.gw).resolve("estimate").status is Status.AMBIGUOUS
+    )
     sf = fieldload.load_site_fields(rt, "main", h.gw, refresh=True)
     assert sf.resolve("estimate").need().id == F_ESTIMATE
 
@@ -357,7 +375,11 @@ def test_the_rank_of_a_priority_is_its_position(h: Harness) -> None:
 
 
 def test_a_duplicate_priority_name_ranks_at_its_first_position(h: Harness) -> None:
-    h.fake.priority_list_body = [{"id": "1", "name": "A"}, {"id": "2", "name": "B"}, {"id": "3", "name": "A"}]
+    h.fake.priority_list_body = [
+        {"id": "1", "name": "A"},
+        {"id": "2", "name": "B"},
+        {"id": "3", "name": "A"},
+    ]
     got = fieldload.load_priorities(h.runtime(), "main", h.gw)
     assert got.names == ("A", "B", "A") and got.rank("A") == 0
 
