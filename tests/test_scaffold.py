@@ -69,6 +69,22 @@ def test_import_package() -> None:
     assert ticketctl.__version__ == importlib.metadata.version("ticketctl")
 
 
+def test_version_falls_back_when_metadata_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ticketctl
+
+    def missing(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    try:
+        importlib.reload(ticketctl)
+        assert ticketctl.__version__ == "0+unknown"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(ticketctl)
+    assert ticketctl.__version__ == importlib.metadata.version("ticketctl")
+
+
 def _is_os_process(name: str) -> bool:
     return name.startswith(OS_PROCESS_NAMES)
 
