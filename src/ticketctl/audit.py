@@ -55,6 +55,7 @@ MAX_RECORD_BYTES = 64 * 1024
 _TAIL_BYTES = 64 * 1024
 _SCAN_LINE = 1024 * 1024
 _ROTATION_TRIES = 5
+MAX_SEQ = 2**53
 
 # --- the schemas, mirrored (tests/test_audit.py compares each to schemas/) ----------------------
 
@@ -140,8 +141,10 @@ def _enum(value: object, allowed: tuple[str, ...], what: str) -> None:
         raise _bad(what)
 
 
-def _list_of(value: object, what: str, check: Callable[[object], None], maximum: int) -> None:
-    if not isinstance(value, list) or len(value) > maximum:
+def _list_of(
+    value: object, what: str, check: Callable[[object], None], maximum: int | None = None
+) -> None:
+    if not isinstance(value, list) or (maximum is not None and len(value) > maximum):
         raise _bad(what)
     for item in value:
         check(item)
@@ -173,7 +176,7 @@ def _validate_inputs(value: object) -> None:
             if not _is_int(b["bytes"]):
                 raise _bad("inputs.bodies")
 
-        _list_of(inputs["bodies"], "inputs.bodies", body, 64)
+        _list_of(inputs["bodies"], "inputs.bodies", body)
     if "dedupe_key" in inputs:
         _nullable(inputs["dedupe_key"], lambda v: _text(v, DECISION_ID, "inputs.dedupe_key"))
     if inputs["override_escalation"] not in (None, "ticketctl"):
@@ -187,13 +190,13 @@ def _validate_inputs(value: object) -> None:
         raise _bad("inputs.config.path")
     _list_of(
         config["files_sha256"], "inputs.config.files_sha256",
-        lambda v: _text(v, SHA256, "inputs.config.files_sha256"), 64,
+        lambda v: _text(v, SHA256, "inputs.config.files_sha256"),
     )  # fmt: skip
     _text(config["sha256"], SHA256, "inputs.config.sha256")
     _text(inputs["hooks_sha256"], SHA256, "inputs.hooks_sha256")
     _text(inputs["site_host"], LOG_HOST, "inputs.site_host", 300)
     hooks = inputs["cli_hooks"]
-    _list_of(hooks, "inputs.cli_hooks", lambda v: _enum(v, HOOK_NAMES, "inputs.cli_hooks"), 16)
+    _list_of(hooks, "inputs.cli_hooks", lambda v: _enum(v, HOOK_NAMES, "inputs.cli_hooks"))
     assert isinstance(hooks, list)
     if len(set(hooks)) != len(hooks):
         raise _bad("inputs.cli_hooks")
@@ -225,7 +228,7 @@ def _validate_audit(record: Mapping[str, object]) -> None:
     result = record["result"]
     _enum(result, RESULTS, "result")
     ids = record["provider_ids"]
-    _list_of(ids, "provider_ids", lambda v: _text(v, PROVIDER_ID, "provider_ids"), 64)
+    _list_of(ids, "provider_ids", lambda v: _text(v, PROVIDER_ID, "provider_ids"))
     changed = record["changed"]
     if result in ("attempted", "unknown"):
         if changed is not None:
@@ -294,7 +297,7 @@ def _seq_of(line: bytes) -> int | None:
     except (ValueError, RecursionError):
         return None
     seq = doc.get("seq") if isinstance(doc, dict) else None
-    return seq if _is_int(seq, 1) else None
+    return seq if _is_int(seq, 1, MAX_SEQ) else None
 
 
 def _scan_max_seq(fd: int) -> int:
@@ -326,9 +329,11 @@ def _next_seq(fd: int, size: int) -> tuple[int, bytes]:
     cut = body.rfind(b"\n")
     last = None if cut == -1 and start > 0 else body[cut + 1 :]
     seq = _seq_of(last) if last is not None else None
-    if seq is not None:
-        return seq + 1, prefix
-    return _scan_max_seq(fd) + 1, prefix
+    if seq is None:
+        seq = _scan_max_seq(fd)
+    if seq >= MAX_SEQ:
+        raise StateError("state_io", "the audit sequence is exhausted")
+    return seq + 1, prefix
 
 
 def append_audit(
@@ -342,8 +347,10 @@ def append_audit(
     _validate_audit(record)
     cleaned = state.clean_tree(record)
     assert isinstance(cleaned, dict)
+    _validate_audit(cleaned)  # scrubbing and rendering must not break the schema
     dir_fd = state.open_dir(state_dir)
-    assert dir_fd is not None
+    if dir_fd is None:
+        raise StateError("state_io", "cannot open the state directory")
     try:
         with state.locked_append_file(dir_fd, AUDIT_FILE, timeout=lock_timeout) as fd:
             size = os.fstat(fd).st_size
@@ -396,22 +403,31 @@ def _rotate(dir_fd: int) -> None:
     os.rename(LOG_FILE, f"{LOG_FILE}.1", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
 
 
+def _last_byte(fd: int, size: int) -> bytes:
+    try:
+        return os.pread(fd, 1, size - 1)
+    except OSError as exc:
+        raise StateError("state_io", "cannot read the request log tail") from exc
+
+
 def _append_log_line(state_dir: Path, line: bytes, max_bytes: int, lock_timeout: float) -> None:
     dir_fd = state.open_dir(state_dir)
-    assert dir_fd is not None
+    if dir_fd is None:
+        raise StateError("state_io", "cannot open the state directory")
     try:
         for _ in range(_ROTATION_TRIES):
             rotated = False
             with state.locked_append_file(dir_fd, LOG_FILE, timeout=lock_timeout) as fd:
                 size = os.fstat(fd).st_size
-                if size > 0 and size + len(line) > max_bytes:
+                prefix = b"" if size == 0 or _last_byte(fd, size) == b"\n" else b"\n"
+                if size > 0 and size + len(prefix) + len(line) > max_bytes:
                     try:
                         _rotate(dir_fd)
                     except OSError as exc:
                         raise StateError("state_io", "cannot rotate the request log") from exc
                     rotated = True
                 else:
-                    state.write_all(fd, line)
+                    state.write_all(fd, prefix + line)
                     return
             if not rotated:  # pragma: no cover - the with body always returns or rotates
                 return
@@ -434,6 +450,7 @@ def append_log(
         _validate_log(record)
         cleaned = state.clean_tree(record)
         assert isinstance(cleaned, dict)
+        _validate_log(cleaned)  # scrubbing and rendering must not break the schema
         first: dict[str, object] = {"v": 1, "ts": cleaned.get("ts") or _timestamp(now)}
         line = _encode(_ordered(LOG_KEYS, cleaned, first))
         if len(line) > MAX_RECORD_BYTES:
@@ -441,7 +458,7 @@ def append_log(
         _append_log_line(state_dir, line, max_bytes, lock_timeout)
     except StateError as exc:
         return _warn(warn, exc.reason)
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # the sink never fails the command, whatever went wrong
         return _warn(warn, type(exc).__name__)
     return None
 

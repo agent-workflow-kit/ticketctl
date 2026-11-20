@@ -32,7 +32,7 @@ from typing import Any
 
 from ticketctl import state
 from ticketctl.audit import TS
-from ticketctl.sanitize import GRAMMARS
+from ticketctl.sanitize import GRAMMARS, InputError
 from ticketctl.state import StateError
 
 SCHEMA_VERSION = 1
@@ -49,7 +49,10 @@ def email_sha256(email: str | None) -> str:
 
 
 def _check(site: str, name: str) -> str:
-    GRAMMARS["site_name"].check(site)
+    try:
+        GRAMMARS["site_name"].check(site)
+    except InputError as exc:
+        raise StateError("state_type", "invalid cache site name") from exc
     if name not in NAMES:
         raise StateError("state_type", "unknown cache file")
     return f"{name}.json"
@@ -69,8 +72,13 @@ def _stamp(now: datetime | None) -> datetime:
     return (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
 
 
-def _discard(site_fd: int, filename: str) -> None:
+def _discard(site_fd: int, filename: str, ident: tuple[int, int] | None = None) -> None:
+    """Delete ``filename``; with ``ident`` (dev, inode) only if it is still that very file."""
     try:
+        if ident is not None:
+            now = os.stat(filename, dir_fd=site_fd, follow_symlinks=False)
+            if (now.st_dev, now.st_ino) != ident:
+                return
         os.unlink(filename, dir_fd=site_fd)
     except OSError:
         pass
@@ -120,7 +128,9 @@ def read_cache(
         if fd is None:
             return None
         try:
-            size = os.fstat(fd).st_size
+            info = os.fstat(fd)
+            ident = (info.st_dev, info.st_ino)
+            size = info.st_size
             raw = os.read(fd, MAX_CACHE_BYTES + 1) if size <= MAX_CACHE_BYTES else b""
         except OSError as exc:
             raise StateError("state_io", "cannot read the cache file") from exc
@@ -136,7 +146,7 @@ def read_cache(
             fetched = _valid(doc, site, url, email_sha256(email))
         current = _stamp(now)
         if fetched is None or fetched > current + _CLOCK_SKEW or current - fetched > ttl:
-            _discard(site_fd, filename)
+            _discard(site_fd, filename, ident)
             return None
         return doc
     finally:
@@ -192,12 +202,14 @@ def write_cache(
     if len(body) > MAX_CACHE_BYTES:
         raise StateError("record_too_large", "cache data is too large")
     root = state.open_dir(state_dir)
-    assert root is not None
+    if root is None:
+        raise StateError("state_io", "cannot open the state directory")
     try:
         site_fd = _open_site_dir(root, site, create=True)
     finally:
         os.close(root)
-    assert site_fd is not None
+    if site_fd is None:
+        raise StateError("state_io", "cannot open the cache directory")
     try:
         _sweep_orphans(site_fd)
         _replace(site_fd, filename, body)
@@ -225,6 +237,8 @@ def _replace(site_fd: int, filename: str, body: bytes) -> None:
             pass
         if existing is not None and stat.S_ISLNK(existing.st_mode):
             raise StateError("state_symlink", "state file is a symlink")
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            raise StateError("state_type", "state file is not a regular file")
         os.replace(temp, filename, src_dir_fd=site_fd, dst_dir_fd=site_fd)
         os.fsync(site_fd)
     except OSError as exc:

@@ -71,7 +71,7 @@ def _euid() -> int:
 
 def _home(env: Mapping[str, str]) -> str:
     home = env.get("HOME")
-    if home:
+    if home and os.path.isabs(home):
         return home
     try:
         return pwd.getpwuid(os.geteuid()).pw_dir
@@ -179,6 +179,21 @@ def _check_name(name: str) -> None:
         raise StateError("state_type", "invalid state file name")
 
 
+def _open_at(name: str, flags: int, dir_fd: int) -> int:
+    """``os.open``; on EACCES a regular file the user owns (mode 000, say) is tightened first."""
+    try:
+        return os.open(name, flags, 0o600, dir_fd=dir_fd)
+    except PermissionError as first:
+        try:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != _euid():
+                raise first from None
+            os.chmod(name, 0o600, dir_fd=dir_fd)
+        except OSError:
+            raise first from None
+    return os.open(name, flags, 0o600, dir_fd=dir_fd)
+
+
 def open_file(dir_fd: int, name: str, *, create: bool, read_only: bool = False) -> int | None:
     """Open a state file safely; None when missing and not created. The caller closes it."""
     _check_name(name)
@@ -187,7 +202,7 @@ def open_file(dir_fd: int, name: str, *, create: bool, read_only: bool = False) 
     if create:
         flags |= os.O_CREAT
     try:
-        fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
+        fd = _open_at(name, flags, dir_fd)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -245,7 +260,8 @@ def locked_append_file(dir_fd: int, name: str, *, timeout: float = LOCK_TIMEOUT)
     deadline = time.monotonic() + timeout
     for _ in range(_REOPEN_LIMIT):
         fd = open_file(dir_fd, name, create=True)
-        assert fd is not None
+        if fd is None:
+            raise StateError("state_io", "cannot open the state file")
         try:
             _lock(fd, deadline)
             current = _is_current(fd, dir_fd, name)

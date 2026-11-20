@@ -450,10 +450,13 @@ def test_log_timeout_warns(sd: Path) -> None:
             proc.join(10)
 
 
-def test_log_sentinel_in_an_allowed_field_is_scrubbed(sd: Path) -> None:
+def test_log_sentinel_in_an_allowed_field_is_refused_not_written(sd: Path) -> None:
     sanitize.configure_scrubber(["example.test"])
-    audit.append_log(sd, w.log_record("a", 1) | {"host": "example.test"}, warn=pytest.fail)
-    assert b"example.test" not in (sd / "log.jsonl").read_bytes()
+    warning = audit.append_log(
+        sd, w.log_record("a", 1) | {"host": "example.test"}, warn=lambda m: None
+    )
+    assert warning is not None and "record_invalid" in warning
+    assert not (sd / "log.jsonl").exists() or b"example.test" not in (sd / "log.jsonl").read_bytes()
 
 
 # --- rotation --------------------------------------------------------------------------------
