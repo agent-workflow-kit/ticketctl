@@ -48,7 +48,7 @@ HOSTS_OK = {
 # included) is synthetic.
 RESERVED_TLDS = {"example", "test", "invalid", "localhost"}
 # Generic hostile-input samples (cut-short or lookalike hosts) the parsing tests use, not sites.
-HOSTS_OK |= {"x.co", "evil.com", "good.com", "a", "b", "fa", "xn--"}
+HOSTS_OK |= {"x.co", "evil.com", "good.com", "a", "b", "fa", "ab", "xn--"}
 LOOPBACK = re.compile(r"^(127\.\d+\.\d+\.\d+|0\.0\.0\.0|::\d?|10\.0\.0\.\d+)$")
 # Project key prefixes the fixtures may use. Add one here only when it is invented.
 PROJECTS = {
