@@ -42,8 +42,8 @@ from urllib.parse import SplitResult, quote, urlencode, urlsplit
 # Errors
 # --------------------------------------------------------------------------------------------
 
-# TODO(#5): the CLI owns the exit-code table and the error envelope; it maps InputError (which
-# carries exit_code, code and reason exactly as in the interface's table) onto its envelope.
+# The CLI (errors.from_exception) maps InputError, which carries exit_code, code and reason
+# exactly as in the interface's table, onto the error envelope.
 
 
 class InputError(Exception):
@@ -203,8 +203,8 @@ def configure_scrubber(secrets: Iterable[str], *, basic_values: Iterable[str] = 
     without safe characters) and its JSON-escaped form are registered, each also in its
     sanitized form since the scrub runs after the sanitizer.
 
-    TODO(#6): the CLI and the config loader must resolve the ``token_env`` values and call this
-    once before any output; until it is called the scrub is the identity and fails open.
+    The CLI resolves the selected site's token and Basic value (``runtime.open_gateway``) and calls
+    this before any output; until it is called the scrub is the identity and fails open.
     """
     global _scrub_values
     values: set[str] = set()
@@ -321,6 +321,7 @@ GRAMMARS: dict[str, Grammar] = {
         _g("dedupe_key", r"[A-Za-z0-9._:@/-]{1,128}", "flag"),
         _g("actor", r"(?:human|auto):[A-Za-z0-9._@-]{1,64}", "flag"),
         _g("time_zone", r"[A-Za-z0-9_+/-]{1,64}", "value"),
+        _g("sha256", r"[0-9a-f]{64}", "flag"),
     )
 }
 

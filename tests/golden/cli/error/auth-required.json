@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "auth_required",
+    "details": {
+      "token_env": "TICKETCTL_TEST_TOKEN"
+    },
+    "key": null,
+    "message": "the environment variable TICKETCTL_TEST_TOKEN is unset or empty",
+    "outcome_unknown": false,
+    "reason": null,
+    "retry_after_s": null,
+    "retryable": false,
+    "site": "main"
+  }
+}

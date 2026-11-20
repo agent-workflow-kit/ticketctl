@@ -6,11 +6,10 @@ import argparse
 import json
 import os
 import sys
-import traceback
 from typing import Any
 
 from .commands import REGISTRY, CommandSpec
-from .errors import TicketctlError, clean_message, internal_error, usage_error
+from .errors import TicketctlError, clean_message, from_exception, internal_error, usage_error
 from .flags import (
     GLOBAL_HELP,
     PROG,
@@ -22,6 +21,8 @@ from .flags import (
     extract_globals,
     wants_json,
 )
+from .output import write as _write
+from .sanitize import format_traceback
 
 DESCRIPTION = "Normalized ticket access (Jira first; other providers later)."
 # Options whose value `-` reads stdin; `--set` and `--field` take `name=-`.
@@ -105,16 +106,6 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 
 
-def _write(stream: Any, text: str) -> None:
-    # TODO(#7): the output scrub (token redaction, sanitizer) is applied here, the one output path.
-    try:
-        stream.write(text + "\n")
-        stream.flush()
-    except (OSError, ValueError, AttributeError):
-        # A full disk, a broken pipe, a closed or missing stream: the exit code still stands.
-        pass
-
-
 def _report(err: TicketctlError, as_json: bool) -> int:
     if as_json:
         _write(sys.stdout, json.dumps(err.envelope(), ensure_ascii=True, sort_keys=True))
@@ -132,10 +123,19 @@ def run(argv: list[str]) -> int:
         raise usage_error("invalid_argument", clean_message(str(e))) from None
     spec = REGISTRY[_command_path(ns)]
     check_command(g, spec, ns)
-    result = REGISTRY[spec.path].handler(g, ns)
-    if g.json and result is not None:
-        _write(sys.stdout, json.dumps(result, ensure_ascii=True, sort_keys=True))
+    result = spec.handler(g, ns)
+    if result is not None:
+        if g.json:
+            _write(sys.stdout, json.dumps(result, ensure_ascii=True, sort_keys=True))
+        elif spec.human is not None:
+            _write(sys.stdout, spec.human(result))
     return 0
+
+
+def _debug_traceback(exc: BaseException) -> None:
+    """The traceback of `TICKETCTL_DEBUG`, sanitized and scrubbed like every other output."""
+    if os.environ.get("TICKETCTL_DEBUG"):
+        _write(sys.stderr, format_traceback(exc).rstrip("\n"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -143,14 +143,13 @@ def main(argv: list[str] | None = None) -> int:
     as_json = wants_json(args)
     try:
         return run(args)
-    except KeyboardInterrupt:
-        if os.environ.get("TICKETCTL_DEBUG"):
-            traceback.print_exc()
+    except KeyboardInterrupt as exc:
+        _debug_traceback(exc)
         _write(sys.stderr, f"{PROG}: interrupted")
         return 130
-    except TicketctlError as err:
-        return _report(err, as_json)
     except Exception as exc:
-        if os.environ.get("TICKETCTL_DEBUG"):
-            traceback.print_exc()
-        return _report(internal_error(exc), as_json)
+        err = from_exception(exc)
+        if err is None:
+            _debug_traceback(exc)
+            err = internal_error(exc)
+        return _report(err, as_json)

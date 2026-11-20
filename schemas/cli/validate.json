@@ -11,6 +11,15 @@
     "probe": {
       "type": "boolean"
     },
+    "warnings": {
+      "type": "array",
+      "description": "Advisory problems of the configuration itself (for example an ignored nested TICKETCTL_ variable); empty when there is nothing to say. A consumer shows a non-empty list as a warning.",
+      "items": {
+        "type": "string",
+        "maxLength": 512,
+        "x-untrusted": true
+      }
+    },
     "sites": {
       "type": "array",
       "items": {
@@ -105,6 +114,7 @@
   "additionalProperties": false,
   "required": [
     "valid",
-    "probe"
+    "probe",
+    "warnings"
   ]
 }

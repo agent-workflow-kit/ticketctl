@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "ambiguous_site",
+    "details": {
+      "candidates": [
+        "one",
+        "two"
+      ]
+    },
+    "key": null,
+    "message": "project AB is claimed by several sites; name one with --site",
+    "outcome_unknown": false,
+    "reason": null,
+    "retry_after_s": null,
+    "retryable": false,
+    "site": null
+  }
+}

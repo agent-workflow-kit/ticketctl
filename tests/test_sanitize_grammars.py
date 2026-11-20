@@ -18,6 +18,7 @@ VALID = {
     "dedupe_key": ["run-2024/01@host:1", "x" * 128],
     "actor": ["human:alice", "auto:bot.1@x-y_z", "auto:" + "x" * 64],
     "time_zone": ["UTC", "America/Port-au-Prince", "Etc/GMT+5", "x" * 64],
+    "sha256": ["0" * 64, "abcdef0123456789" * 4],
 }
 
 INVALID = {
@@ -66,6 +67,7 @@ INVALID = {
         ":x",
     ],
     "time_zone": ["", "a b", "x" * 65, "A..B?", "a%2f"],
+    "sha256": ["", "0" * 63, "0" * 65, "A" * 64, "g" * 64, "٠" * 64],
 }
 
 

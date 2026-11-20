@@ -71,7 +71,7 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 class ConfigError(Exception):
     """An invalid configuration: exit 2, code ``invalid_config``.
 
-    TODO(#5): map to the error envelope (code, reason, message) in cli.py.
+    ``errors.from_exception`` maps it onto the error envelope (code, reason, message).
     """
 
     code = "invalid_config"

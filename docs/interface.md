@@ -385,11 +385,11 @@ Lists the transitions available now, with required fields: `{key, site, transiti
 
 ### `sites`
 
-Prints the configured sites and their `projects`; `sites resolve KEY` prints `{key, site, rule}`, where `rule` is `site_flag`, `url`, `project`, `default_site` or `only_site` (see [Site selection](#site-selection)). Offline: no network and no credentials are read. Schemas `schemas/cli/sites.json` and `schemas/cli/sites-resolve.json`.
+Prints the configured sites and their `projects`; `sites resolve KEY` (a key or a browse URL) prints `{key, site, rule}`, where `rule` is `site_flag`, `url`, `project`, `default_site` or `only_site` (see [Site selection](#site-selection)). Offline: no network and no credentials are read. Schemas `schemas/cli/sites.json` and `schemas/cli/sites-resolve.json`.
 
 ### `validate`
 
-`validate` checks the configuration offline (shape only, plus the loader checks under [Config](#config); exit 2 on invalid config, naming the key) and prints `{valid, probe, sites?}`. `validate --probe` also makes read-only calls: it authenticates, compares the account with any configured expectation, runs the same routine as `fields check` and parses every named query, and prints the problems per site under `sites[].problems`; it exits 0 whenever it ran, `valid` meaning only that the configuration is valid. Schema `schemas/cli/validate.json`.
+`validate` checks the configuration offline (shape only, plus the loader checks under [Config](#config); exit 2 on invalid config, naming the key) and prints `{valid, probe, warnings, sites?}`, where `warnings` is a list of advisory problems of the configuration itself (an ignored nested `TICKETCTL_` variable, for example; empty when there is nothing to say) that a consumer shows as a warning. A configuration with no site is exit 2 `no_sites`. `validate --probe` also makes read-only calls: it authenticates, compares the account with any configured expectation, runs the same routine as `fields check` and parses every named query, and prints the problems per site under `sites[].problems`; it exits 0 whenever it ran, `valid` meaning only that the configuration is valid. Schema `schemas/cli/validate.json`.
 
 ### `transition KEY`
 

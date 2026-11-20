@@ -67,7 +67,7 @@ _RATE_HEADERS = ("retry-after", "x-ratelimit-limit", "x-ratelimit-remaining")
 # Errors
 # --------------------------------------------------------------------------------------------
 
-# TODO(#5): the CLI maps GatewayError onto the error envelope and exit code; ``exit_code``,
+# ``errors.from_exception`` maps GatewayError onto the error envelope and exit code; ``exit_code``,
 # ``code``, ``retryable``, ``outcome_unknown`` and ``retry_after_s`` are exactly the envelope's.
 
 
@@ -652,8 +652,8 @@ class Response:
 class Gateway:
     """The HTTP boundary for one site; one instance per command (pacing state is per command).
 
-    TODO(#9): ``log_sink`` receives each request-log line (the schema of schemas/log.json); the
-    state directory owner supplies the flock-guarded appender. The default drops lines.
+    ``log_sink`` receives each request-log line (the schema of schemas/log.json); the CLI wires it
+    to ``audit.append_log`` (``runtime.open_gateway``). The default drops lines.
     """
 
     def __init__(
