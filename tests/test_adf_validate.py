@@ -210,6 +210,19 @@ def test_node_bomb_stops_early_and_is_fast() -> None:
     assert time.monotonic() - start < 2
 
 
+def test_a_million_valid_children_are_refused_after_bounded_work() -> None:
+    wide = doc(*[para() for _ in range(1_000_000)])
+    start = time.monotonic()
+    refused(wide, "body_too_large")
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5, elapsed  # about 5 ms locally; the unbounded queue took about 1.7 s
+
+
+def test_a_wide_container_of_exactly_the_limit_is_accepted() -> None:
+    validate_adf(doc(*[para() for _ in range(adf_validate.MAX_NODES - 1)]))
+    refused(doc(*[para() for _ in range(adf_validate.MAX_NODES)]), "body_too_large")
+
+
 def test_the_validator_agrees_with_the_converters_node_count() -> None:
     md = "\n\n".join("p" for _ in range(2400))  # 2400 paragraphs + 2400 text + doc = 4801
     d = markdown_to_adf(md)

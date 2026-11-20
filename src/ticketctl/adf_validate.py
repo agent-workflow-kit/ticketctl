@@ -174,9 +174,12 @@ def validate_adf(
     chars = 0
     # (node, path, depth, allowed child kinds); the root's children are queued below. A node is
     # counted when it is popped and checked, so the first violation in encounter order wins over
-    # the node limit; a cyclic or shared document still stops at the limit.
+    # the node limit; a cyclic or shared document still stops at the limit. A parent queues at most
+    # ``node_budget - count + 1`` children: the next pops are those children, so the limit trips on
+    # the last of them at the latest and the rest could never be reached. That bounds a node bomb
+    # to O(limit) work.
     stack: list[tuple[Any, _Path, int, str]] = []
-    _queue(doc, None, 0, "block", stack)
+    _queue(doc, None, 0, "block", stack, node_budget - count + 1)
     while stack:
         node, path, depth, kind = stack.pop()
         if type(node) is not dict:
@@ -185,7 +188,7 @@ def validate_adf(
         count += 1
         if count > node_budget:
             raise _too_large("too many nodes")
-        _queue_children(node, path, depth, stack)
+        _queue_children(node, path, depth, stack, node_budget - count + 1)
 
 
 def _queue(
@@ -194,12 +197,13 @@ def _queue(
     depth: int,
     kind: str,
     stack: list[tuple[Any, _Path, int, str]],
+    room: int,
 ) -> None:
     content = parent.get("content")
     if type(content) is not list:
         raise _fail("node_not_allowed", "content must be an array", path, "content")
     seg_path: _Path = (path, "content")
-    for i in range(len(content) - 1, -1, -1):
+    for i in range(min(len(content), max(room, 0)) - 1, -1, -1):
         stack.append((content[i], (seg_path, i), depth, kind))
 
 
@@ -208,6 +212,7 @@ def _queue_children(
     path: _Path,
     depth: int,
     stack: list[tuple[Any, _Path, int, str]],
+    room: int,
 ) -> None:
     t = node["type"]
     if t not in _KEYS or t in ("text", "hardBreak") or "content" not in node:
@@ -221,7 +226,7 @@ def _queue_children(
         "bulletList": "item",
         "orderedList": "item",
     }.get(t, "block")
-    _queue(node, path, depth, kind, stack)
+    _queue(node, path, depth, kind, stack, room)
 
 
 def _check_keys(
