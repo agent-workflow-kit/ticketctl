@@ -1,0 +1,21 @@
+{
+  "problems": [
+    {
+      "candidates": [
+        "Story Points",
+        "Story point estimate"
+      ],
+      "logical": "estimate",
+      "problem": "ambiguous"
+    },
+    {
+      "logical": "acceptance_criteria",
+      "problem": "missing"
+    },
+    {
+      "logical": "gone",
+      "problem": "missing"
+    }
+  ],
+  "site": "main"
+}

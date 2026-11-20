@@ -10,8 +10,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from . import identity, selection
-from .errors import TicketctlError
+from . import identity, probe, selection
 from .flags import Globals
 from .runtime import for_site, load_runtime, open_gateway
 
@@ -78,17 +77,18 @@ def human_sites_resolve(r: dict[str, Any]) -> str:
 
 
 def validate(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
-    if a.probe:
-        # TODO(#19): --probe authenticates, compares the account, runs the `fields check` routine
-        # and parses the named queries (needs #17 and #19); only the offline form exists.
-        raise TicketctlError("internal", "validate --probe is not implemented yet")
     rt = load_runtime(g, show_warnings=False)  # they are part of the result
     # A configuration with no site validates nothing a command could use: `no_sites`.
     rt.config.require_sites()
-    return {"valid": True, "probe": False, "warnings": list(rt.loaded.warnings)}
+    result: dict[str, Any] = {"valid": True, "probe": a.probe, "warnings": list(rt.loaded.warnings)}
+    if a.probe:
+        result["sites"] = probe.probe(rt)
+    return result
 
 
 def human_validate(r: dict[str, Any]) -> str:
     lines = ["the configuration is valid"]
     lines += [f"warning: {w}" for w in r["warnings"]]
+    for site in r.get("sites", []):
+        lines += probe.human_site(site)
     return "\n".join(lines)

@@ -622,14 +622,6 @@ def test_validate_missing_config_file_is_config_invalid(env: Env) -> None:
     assert (code, err_of(out)["reason"]) == (2, "config_invalid")
 
 
-def test_validate_probe_is_not_implemented_yet(env: Env) -> None:
-    env.write(TWO)
-    code, out, err = env.run("--json", "validate", "--probe")
-    assert code == 1 and err_of(out)["code"] == "internal"
-    assert err_of(out)["message"] == "validate --probe is not implemented yet"
-    assert "NotImplementedError" not in out + err and "Traceback" not in err
-
-
 def test_config_file_contents_are_never_echoed(env: Env) -> None:
     env.write("sites: [unterminated SENTINEL-s3cr3t-value-9f2c\n  : :\n")
     code, out, err = env.run("--json", "sites")

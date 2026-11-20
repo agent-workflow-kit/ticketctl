@@ -1,0 +1,200 @@
+{
+  "fields": [
+    {
+      "custom": false,
+      "id": "assignee",
+      "logical": "assignee",
+      "name": "Assignee",
+      "schema": {
+        "type": "user"
+      }
+    },
+    {
+      "custom": true,
+      "id": "customfield_90001",
+      "logical": null,
+      "name": "Story Points",
+      "schema": {
+        "custom": "com.atlassian.jira.plugin.system.customfieldtypes:float",
+        "type": "number"
+      }
+    },
+    {
+      "custom": true,
+      "id": "customfield_90002",
+      "logical": null,
+      "name": "Story point estimate",
+      "schema": {
+        "custom": "com.atlassian.jira.plugin.system.customfieldtypes:jsw-story-points",
+        "type": "number"
+      }
+    },
+    {
+      "custom": true,
+      "id": "customfield_90003",
+      "logical": "sprint",
+      "name": "Sprint",
+      "schema": {
+        "custom": "com.pyxis.greenhopper.jira:gh-sprint",
+        "items": "json",
+        "type": "array"
+      }
+    },
+    {
+      "custom": true,
+      "id": "customfield_90004",
+      "logical": null,
+      "name": "Acceptance Criteria",
+      "schema": {
+        "custom": "com.atlassian.jira.plugin.system.customfieldtypes:textarea",
+        "type": "string"
+      }
+    },
+    {
+      "custom": true,
+      "id": "customfield_90005",
+      "logical": null,
+      "name": "Business value",
+      "schema": {
+        "custom": "com.atlassian.jira.plugin.system.customfieldtypes:float",
+        "type": "number"
+      }
+    },
+    {
+      "custom": true,
+      "id": "customfield_90006",
+      "logical": null,
+      "name": "Effort days",
+      "schema": {
+        "custom": "com.atlassian.jira.plugin.system.customfieldtypes:float",
+        "type": "number"
+      }
+    },
+    {
+      "custom": false,
+      "id": "description",
+      "logical": null,
+      "name": "Description",
+      "schema": {
+        "type": "string"
+      }
+    },
+    {
+      "custom": false,
+      "id": "duedate",
+      "logical": "due_date",
+      "name": "Due date",
+      "schema": {
+        "type": "date"
+      }
+    },
+    {
+      "custom": false,
+      "id": "issuelinks",
+      "logical": null,
+      "name": "Linked Issues",
+      "schema": {
+        "items": "issuelinks",
+        "type": "array"
+      }
+    },
+    {
+      "custom": false,
+      "id": "labels",
+      "logical": "labels",
+      "name": "Labels",
+      "schema": {
+        "items": "string",
+        "type": "array"
+      }
+    },
+    {
+      "custom": false,
+      "id": "parent",
+      "logical": "parent",
+      "name": "Parent",
+      "schema": {
+        "type": "issuelink"
+      }
+    },
+    {
+      "custom": false,
+      "id": "priority",
+      "logical": "priority",
+      "name": "Priority",
+      "schema": {
+        "type": "priority"
+      }
+    },
+    {
+      "custom": false,
+      "id": "reporter",
+      "logical": null,
+      "name": "Reporter",
+      "schema": {
+        "type": "user"
+      }
+    },
+    {
+      "custom": false,
+      "id": "resolution",
+      "logical": "resolution",
+      "name": "Resolution",
+      "schema": {
+        "type": "resolution"
+      }
+    },
+    {
+      "custom": false,
+      "id": "status",
+      "logical": null,
+      "name": "Status",
+      "schema": {
+        "type": "status"
+      }
+    },
+    {
+      "custom": false,
+      "id": "summary",
+      "logical": null,
+      "name": "Summary",
+      "schema": {
+        "type": "string"
+      }
+    }
+  ],
+  "mapping": {
+    "acceptance_criteria": null,
+    "assignee": {
+      "id": "assignee",
+      "name": "Assignee"
+    },
+    "due_date": {
+      "id": "duedate",
+      "name": "Due date"
+    },
+    "epic": null,
+    "estimate": null,
+    "labels": {
+      "id": "labels",
+      "name": "Labels"
+    },
+    "parent": {
+      "id": "parent",
+      "name": "Parent"
+    },
+    "priority": {
+      "id": "priority",
+      "name": "Priority"
+    },
+    "resolution": {
+      "id": "resolution",
+      "name": "Resolution"
+    },
+    "sprint": {
+      "id": "customfield_90003",
+      "name": "Sprint"
+    }
+  },
+  "site": "main"
+}
