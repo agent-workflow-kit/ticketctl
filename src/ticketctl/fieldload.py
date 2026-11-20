@@ -6,7 +6,8 @@
 follow ``identity.load_me``: a cache that cannot be read or written only costs a fetch and a
 warning; a cache whose header is valid but whose body is not a usable list is deleted and
 refetched (the cache is a state file, so its content is as untrusted as the provider's). The
-provider's own answer that is not a usable list is exit 12 ``provider_changed``.
+provider's own answer that is not a usable list, or an empty field list (a site always has
+system fields), is exit 12 ``provider_changed`` and never replaces a cache.
 
 ``load_site_fields(rt, site, gw, refresh=False, needs=())`` adds the site's ``fields`` config
 (:class:`fieldmap.SiteFields`). When the list came from the cache and a name in ``needs`` is mapped
@@ -147,6 +148,9 @@ def load_fields(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> L
         raise TicketctlError(
             "provider_changed", f"{FIELD} answered no usable list ({exc})"
         ) from None
+    if not parsed.fields:
+        # A site always has system fields, so an empty list is not an answer worth caching.
+        raise TicketctlError("provider_changed", f"{FIELD} answered an empty list")
     if parsed.ignored:
         rt.warn(f"warning: {parsed.ignored} entries of the provider's field list were ignored")
     _write(

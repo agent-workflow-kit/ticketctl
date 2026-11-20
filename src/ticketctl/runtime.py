@@ -25,7 +25,7 @@ from .config import Config, LoadedConfig, load_config
 from .errors import from_exception
 from .flags import Globals
 from .gateway import Deadline, Gateway, Target
-from .sanitize import basic_auth_value, configure_scrubber
+from .sanitize import add_secrets, basic_auth_value
 from .state import state_dir_path
 
 
@@ -68,17 +68,19 @@ def load_runtime(
     return rt
 
 
-def open_gateway(rt: Runtime, site_name: str) -> Gateway:
+def open_gateway(rt: Runtime, site_name: str, *, deadline: Deadline | None = None) -> Gateway:
     """Resolve the site's credentials, arm the output scrub and return its gateway.
 
     Raises ``auth_required`` (naming the variable) for an unset or empty ``token_env`` or
-    ``email_env``. Nothing is printed before the scrub knows the token.
+    ``email_env``. Nothing is printed before the scrub knows the token. The token is added to the
+    registered secrets (a command that opens several sites scrubs all of them); ``deadline`` lets
+    such a command share one clock across its gateways.
     """
     site = rt.config.sites[site_name]
     target = Target.from_site(
         site_name, site, rt.env, rt.config.limits.retry_after_max.total_seconds()
     )
-    configure_scrubber([target.token], basic_values=[basic_auth_value(target.email, target.token)])
+    add_secrets([target.token], basic_values=[basic_auth_value(target.email, target.token)])
     state_dir = rt.state_dir
 
     def log_sink(record: dict[str, object]) -> None:
@@ -92,7 +94,7 @@ def open_gateway(rt: Runtime, site_name: str) -> Gateway:
 
     return Gateway(
         target,
-        deadline=Deadline(rt.timeout_s()),
+        deadline=deadline or Deadline(rt.timeout_s()),
         env=rt.env,
         log_sink=log_sink,
         verbose=verbose if rt.g.verbose else None,

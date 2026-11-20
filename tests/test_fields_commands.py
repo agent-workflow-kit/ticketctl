@@ -6,10 +6,10 @@ directory. Provider field ids are the synthetic ``customfield_90001..90006`` one
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +25,14 @@ from tests.fake_provider import (
     SITE_TOKEN,
     FakeProvider,
     Fault,
+    Quirks,
 )
 from tests.golden import assert_golden
 from ticketctl import probe as probe_module
-from ticketctl import sanitize
+from ticketctl import runtime, sanitize
 from ticketctl.cli import main
+from ticketctl.flags import Globals
+from ticketctl.gateway import Gateway
 
 TOKEN_VAR = "TICKETCTL_TEST_TOKEN"
 IDS = re.compile(r"customfield_[0-9]+")
@@ -52,11 +55,13 @@ class Env:
         monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
         monkeypatch.setenv(TOKEN_VAR, SITE_TOKEN)
 
-    def site(self, fake: FakeProvider, name: str = "main", extra: str = "") -> str:
+    def site(
+        self, fake: FakeProvider, name: str = "main", extra: str = "", token_var: str = TOKEN_VAR
+    ) -> str:
         lines = [
             f"url: {fake.url}",
             f"email: {SITE_EMAIL}",
-            f"token_env: {TOKEN_VAR}",
+            f"token_env: {token_var}",
             "allow_http: true",
             *([extra] if extra else []),
         ]
@@ -85,6 +90,31 @@ class Env:
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> Env:
     return Env(tmp_path, monkeypatch, capsys)
+
+
+def answer_parse(mp: pytest.MonkeyPatch, data: Any, status: int = 200) -> list[str]:
+    """Replace the answer of every parse request; returns the queries sent, in order."""
+    sent: list[str] = []
+
+    class Resp:
+        def __init__(self) -> None:
+            self.status = status
+            self.data = data
+
+    real = Gateway.request
+
+    def request(self: Any, method: str, path: str, **kw: Any) -> Any:
+        if path.endswith("/jql/parse"):
+            sent.extend(kw["body"]["queries"])
+            return Resp()
+        return real(self, method, path, **kw)
+
+    mp.setattr(Gateway, "request", request)
+    return sent
+
+
+def one_query(env: Env, fake: FakeProvider) -> None:
+    env.use(fake, "queries: {open: 'project = DEMO'}")
 
 
 def paths(fake: FakeProvider) -> list[str]:
@@ -454,29 +484,12 @@ def test_probe_human_output(env: Env, fake: FakeProvider) -> None:
 
 
 def test_probe_scrubs_every_sites_token_in_a_two_site_run(
-    env: Env, fake_factory: Callable[[Any], FakeProvider], monkeypatch: pytest.MonkeyPatch
+    env: Env, fake_factory: Callable[[Any], FakeProvider]
 ) -> None:
-    a, b = fake_factory(None), fake_factory(None)
-    env.write("sites:\n" + env.site(a, "alpha") + env.site(b, "beta"))
+    a, b = fake_factory(None), fake_factory(Quirks(credentials=None))
     other = "another-token-value-77"
-    real_open = probe_module.open_gateway
-
-    class Proxy:
-        """The second site's gateway, reporting a different token than the fake accepts."""
-
-        def __init__(self, gw: Any) -> None:
-            self._gw = gw
-            self.target = dataclasses.replace(gw.target, token=other)
-
-        def __getattr__(self, name: str) -> Any:
-            return getattr(self._gw, name)
-
-    def opener(rt: Any, name: str) -> Any:
-        gw = real_open(rt, name)
-        return Proxy(gw) if name == "beta" else gw
-
-    monkeypatch.setattr(probe_module, "open_gateway", opener)
-    # opening the second gateway replaces the registered secrets; both must stay scrubbed
+    env.mp.setenv(BETA_VAR, other)
+    two_sites(env, a, b, ("alpha", "beta"))
     code, out, err = env.run("--json", "validate", "--probe")
     assert code == 0, err
     assert [s["site"] for s in json.loads(out)["sites"]] == ["alpha", "beta"]
@@ -555,3 +568,271 @@ def test_a_token_in_a_parse_error_is_redacted(
     monkeypatch.setattr("ticketctl.gateway.Gateway.request", request)
     code, out, err = env.run("--json", "validate", "--probe")
     assert code == 0 and SITE_TOKEN not in out + err and "<redacted>" in out
+
+
+# --- review round 1 ---------------------------------------------------------------------------
+
+BETA_VAR = "TICKETCTL_TEST_BETA_TOKEN"
+
+
+def two_sites(env: Env, a: FakeProvider, b: FakeProvider, order: tuple[str, str]) -> None:
+    sites = {"alpha": env.site(a, "alpha"), "beta": env.site(b, "beta", token_var=BETA_VAR)}
+    env.write("sites:\n" + "".join(sites[n] for n in order))
+
+
+def test_probe_site_flag_probes_only_that_site(
+    env: Env, fake_factory: Callable[[Any], FakeProvider]
+) -> None:
+    a, b = fake_factory(None), fake_factory(None)
+    two_sites(env, a, b, ("alpha", "beta"))  # beta's token variable is unset
+    code, out, err = env.run("--json", "--site", "alpha", "validate", "--probe")
+    assert code == 0, err
+    assert [s["site"] for s in json.loads(out)["sites"]] == ["alpha"]
+    assert b.calls == []
+
+
+def test_probe_unknown_site_flag_is_exit_22_and_offline(
+    env: Env, fake_factory: Callable[[Any], FakeProvider]
+) -> None:
+    a, b = fake_factory(None), fake_factory(None)
+    two_sites(env, a, b, ("alpha", "beta"))
+    code, out, _ = env.run("--json", "--site", "nowhere", "validate", "--probe")
+    assert code == 22 and err_of(out)["code"]
+    assert a.calls == [] and b.calls == []
+
+
+def test_probe_without_site_flag_probes_every_site_sorted_not_in_config_order(
+    env: Env, fake_factory: Callable[[Any], FakeProvider]
+) -> None:
+    a, b = fake_factory(None), fake_factory(None)
+    env.mp.setenv(BETA_VAR, SITE_TOKEN)
+    two_sites(env, a, b, ("beta", "alpha"))
+    code, out, err = env.run("--json", "validate", "--probe")
+    assert code == 0, err
+    assert [s["site"] for s in json.loads(out)["sites"]] == ["alpha", "beta"]
+
+
+def test_probe_a_site_without_a_token_fails_the_whole_probe_with_no_partial_output(
+    env: Env, fake_factory: Callable[[Any], FakeProvider]
+) -> None:
+    a, b = fake_factory(None), fake_factory(None)
+    two_sites(env, a, b, ("alpha", "beta"))  # beta has no token
+    code, out, _ = env.run("--json", "validate", "--probe")
+    error = err_of(out)
+    assert (code, error["code"], error["site"]) == (12, "auth_required", "beta")
+    assert "sites" not in out
+
+
+def test_probe_a_400_from_the_parse_endpoint_is_provider_changed(
+    env: Env, fake: FakeProvider
+) -> None:
+    fake.inject(Fault("status", path="jql/parse", status=400, body="bad request"))
+    one_query(env, fake)
+    code, out, _ = env.run("--json", "validate", "--probe")
+    assert (code, err_of(out)["code"]) == (12, "provider_changed")
+
+
+def test_probe_an_entry_without_errors_is_a_valid_query(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one_query(env, fake)
+    answer_parse(monkeypatch, {"queries": [{"query": "x"}]})
+    code, out, _ = env.run("--json", "validate", "--probe")
+    assert code == 0
+    queries = json.loads(out)["sites"][0]["queries"]
+    assert queries == [{"name": "open", "valid": True, "error": None}]
+
+
+@pytest.mark.parametrize(
+    "entry", [{"errors": "oops"}, {"errors": [1]}, {"errors": None}, [], "x"], ids=repr
+)
+def test_probe_errors_that_are_not_a_list_of_strings_are_provider_changed(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch, entry: Any
+) -> None:
+    one_query(env, fake)
+    answer_parse(monkeypatch, {"queries": [entry]})
+    code, out, _ = env.run("--json", "validate", "--probe")
+    assert (code, err_of(out)["code"]) == (12, "provider_changed")
+
+
+def test_probe_blank_error_strings_are_dropped(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one_query(env, fake)
+    answer_parse(monkeypatch, {"queries": [{"errors": ["", "  \t"]}]})
+    _, out, _ = env.run("--json", "validate", "--probe")
+    assert json.loads(out)["sites"][0]["queries"][0]["valid"] is True
+    answer_parse(monkeypatch, {"queries": [{"errors": ["", "real problem"]}]})
+    _, out, _ = env.run("--json", "validate", "--probe")
+    query = json.loads(out)["sites"][0]["queries"][0]
+    assert (query["valid"], query["error"]) == (False, "real problem")
+
+
+def test_probe_parse_errors_never_carry_a_field_id(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one_query(env, fake)
+    text = "Field 'customfield_90001' and 'cf[90002]' are unknown"
+    answer_parse(monkeypatch, {"queries": [{"errors": [text]}]})
+    for argv in (["--json", "validate", "--probe"], ["validate", "--probe"]):
+        _, out, err = env.run(*argv)
+        assert not re.search(r"customfield_[0-9]+|cf\[[0-9]+\]", out + err)
+        assert "<id>" in out
+
+
+def test_probe_sends_one_parse_request_per_query(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.use(fake, "queries: {c: 'project = C', a: 'project = A', b: 'project = B'}")
+    sent = answer_parse(monkeypatch, {"queries": [{"errors": []}]})
+    code, out, _ = env.run("--json", "validate", "--probe")
+    assert code == 0 and len(sent) == 3 and [q[-2] for q in sent] == ["A", "B", "C"]
+    assert [q["name"] for q in json.loads(out)["sites"][0]["queries"]] == ["a", "b", "c"]
+
+
+def test_probe_joins_several_errors_with_a_semicolon(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one_query(env, fake)
+    answer_parse(monkeypatch, {"queries": [{"errors": ["first", "second"]}]})
+    _, out, _ = env.run("--json", "validate", "--probe")
+    assert json.loads(out)["sites"][0]["queries"][0]["error"] == "first; second"
+
+
+def test_probe_caps_an_oversized_error(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one_query(env, fake)
+    answer_parse(monkeypatch, {"queries": [{"errors": ["x" * 5000]}]})
+    _, out, _ = env.run("--json", "validate", "--probe")
+    error = json.loads(out)["sites"][0]["queries"][0]["error"]
+    assert len(error) <= probe_module.MAX_ERROR and error.startswith("xxx")
+
+
+def test_probe_sanitizes_control_characters_in_an_error(
+    env: Env, fake: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one_query(env, fake)
+    answer_parse(monkeypatch, {"queries": [{"errors": ["a\x1b[31mred\x00\u202eflip\x07"]}]})
+    for argv in (["--json", "validate", "--probe"], ["validate", "--probe"]):
+        _, out, err = env.run(*argv)
+        assert not re.search("[\x00-\x08\x0b-\x1f\x7f\u202e]", out + err)
+        assert "red" in out
+
+
+def test_probe_fetches_myself_and_the_field_list_fresh_despite_a_fresh_cache(
+    env: Env, fake: FakeProvider
+) -> None:
+    env.use(fake)
+    env.run("--json", "whoami")
+    env.run("--json", "fields", "list")
+    before = paths(fake)
+    assert "/rest/api/3/myself" in before and "/rest/api/3/field" in before
+    env.run("--json", "validate", "--probe")
+    after = paths(fake)[len(before) :]
+    assert after.count("/rest/api/3/myself") == 1 and after.count("/rest/api/3/field") == 1
+
+
+def test_probe_a_503_on_parse_is_retried_like_a_read(env: Env, fake: FakeProvider) -> None:
+    fake.inject(Fault("status", path="jql/parse", status=503, times=1))
+    one_query(env, fake)
+    code, out, err = env.run("--json", "validate", "--probe")
+    assert code == 0, err
+    assert json.loads(out)["sites"][0]["queries"][0]["valid"] is True
+
+
+def test_probe_shares_one_deadline_across_the_sites(
+    env: Env, fake_factory: Callable[[Any], FakeProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a, b = fake_factory(None), fake_factory(None)
+    env.mp.setenv(BETA_VAR, SITE_TOKEN)
+    two_sites(env, a, b, ("alpha", "beta"))
+    deadlines: list[Any] = []
+    real_open = probe_module.open_gateway
+
+    def opener(rt: Any, name: str, **kw: Any) -> Any:
+        gw = real_open(rt, name, **kw)
+        deadlines.append(gw.deadline)
+        return gw
+
+    monkeypatch.setattr(probe_module, "open_gateway", opener)
+    code, _, err = env.run("--json", "validate", "--probe")
+    assert code == 0, err
+    assert len(deadlines) == 2 and deadlines[0] is deadlines[1]
+
+
+def test_open_gateway_adds_every_sites_token_to_the_scrub(
+    env: Env, fake_factory: Callable[[Any], FakeProvider]
+) -> None:
+    a, b = fake_factory(None), fake_factory(Quirks(credentials=None))
+    other = "another-token-value-88"
+    env.mp.setenv(BETA_VAR, other)
+    two_sites(env, a, b, ("alpha", "beta"))
+    rt = runtime.load_runtime(Globals(config=str(env.config)))
+    runtime.open_gateway(rt, "alpha")
+    runtime.open_gateway(rt, "beta")
+    assert sanitize.scrub(SITE_TOKEN) == "<redacted>" and sanitize.scrub(other) == "<redacted>"
+
+
+def test_add_secrets_unions_and_configure_scrubber_resets() -> None:
+    sanitize.configure_scrubber(["first-secret-value"])
+    sanitize.add_secrets(["second-secret-value"], basic_values=["third-secret-value"])
+    for value in ("first-secret-value", "second-secret-value", "third-secret-value"):
+        assert sanitize.scrub(value) == "<redacted>"
+    sanitize.configure_scrubber([])
+    assert sanitize.scrub("first-secret-value") == "first-secret-value"
+
+
+def test_an_empty_field_list_keeps_the_old_cache_and_is_provider_changed(
+    env: Env, fake: FakeProvider
+) -> None:
+    env.use(fake)
+    env.run("--json", "fields", "list")
+    before = env.files()["cache/main/fields.json"]
+    fake.field_list_body = []
+    code, out, _ = env.run("--json", "fields", "refresh")
+    assert (code, err_of(out)["code"]) == (12, "provider_changed")
+    assert env.files()["cache/main/fields.json"] == before
+
+
+def test_an_empty_field_list_is_never_cached_on_a_cold_load(env: Env, fake: FakeProvider) -> None:
+    fake.field_list_body = []
+    env.use(fake)
+    code, out, _ = env.run("--json", "fields", "list")
+    assert (code, err_of(out)["code"]) == (12, "provider_changed")
+    assert "cache/main/fields.json" not in env.files()
+
+
+def test_fields_refresh_with_no_cache_ttl_still_reports_refreshed(
+    env: Env, fake: FakeProvider
+) -> None:
+    env.use(fake, "cache_ttl: 0")
+    code, out, err = env.run("--json", "fields", "refresh")
+    assert (code, json.loads(out)) == (0, {"site": "main", "refreshed": True}), err
+    assert "cache/main/fields.json" not in env.files()
+
+
+def test_fields_list_human_output_ends_with_the_mapping(env: Env, fake: FakeProvider) -> None:
+    env.use(fake, f"fields: {{estimate: {{id: {F_ESTIMATE}}}}}")
+    code, out, _ = env.run("fields", "list")
+    assert code == 0
+    lines = out.splitlines()
+    assert re.search(rf"^estimate: {F_ESTIMATE} \S", "\n".join(lines), re.M)
+    assert "acceptance_criteria: -" in lines
+
+
+def test_fields_check_refetches_a_missing_extra_name_when_the_cache_is_old(
+    env: Env, fake: FakeProvider
+) -> None:
+    env.use(fake, "fields: {extra: {late: {name: Late Field}}}")
+    env.run("--json", "fields", "list")
+    cache_file = env.state / "cache" / "main" / "fields.json"
+    doc = json.loads(cache_file.read_text())
+    doc["fetched_at"] = (datetime.now(UTC) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cache_file.write_text(json.dumps(doc))
+    fake.extra_fields = [
+        {"id": "cf_late", "name": "Late Field", "custom": True, "schema": {"type": "string"}}
+    ]
+    code, out, _ = env.run("--json", "fields", "check")
+    assert code == 0 and not [p for p in json.loads(out)["problems"] if p["logical"] == "late"]
+    assert paths(fake).count("/rest/api/3/field") == 2

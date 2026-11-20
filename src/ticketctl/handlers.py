@@ -82,7 +82,7 @@ def validate(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     rt.config.require_sites()
     result: dict[str, Any] = {"valid": True, "probe": a.probe, "warnings": list(rt.loaded.warnings)}
     if a.probe:
-        result["sites"] = probe.probe(rt)
+        result["sites"] = probe.probe(rt, g.site)
     return result
 
 

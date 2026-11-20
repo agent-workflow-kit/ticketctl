@@ -73,6 +73,9 @@ def human_fields_list(r: dict[str, Any]) -> str:
         kind = "-" if schema is None else schema.get("custom") or schema["type"]
         mapped = f" -> {f['logical']}" if f["logical"] else ""
         lines.append(f"{f['id']}  {f['name']}  [{kind}]{mapped}")
+    for logical, target in r["mapping"].items():
+        shown = "-" if target is None else f"{target['id']} {target['name']}"
+        lines.append(f"{logical}: {shown}")
     return "\n".join(lines)
 
 

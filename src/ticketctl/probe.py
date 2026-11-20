@@ -12,28 +12,35 @@ A named query is compiled exactly as ``search`` would compile it with no other f
 (``search_compile.compile_search``), so a query that ``search --query`` would refuse is reported
 invalid without a request. Provider text (a parse error) is sanitized, scrubbed and capped.
 
-Each site opens its own gateway, and ``open_gateway`` replaces the registered secrets, so after
-each site the probe registers every token and Basic value opened so far: the final output, written
-after the last site, must still scrub the first one.
+Each site opens its own gateway, and ``open_gateway`` adds the site's token and Basic value to
+the registered secrets, so the final output, written after the last site, still scrubs the first.
+All sites share one deadline: ``--timeout`` bounds the whole probe, not each site.
+
+``--site`` probes only that site (an unknown name is exit 22 and no other site is contacted).
 
 Unverified against a real site (the fake provider is the only evidence): that ``POST
 /rest/api/3/jql/parse?validation=strict`` answers 200 with ``{"queries": [{"errors": [...]}]}``
-for a bad query, with one entry per query sent and strings in ``errors``.
+for a bad query, with one entry per query sent and strings in ``errors``, and that the entry of a
+valid query may omit ``errors`` (taken as no errors). A non-2xx or wrong-shaped answer is exit 12
+``provider_changed``.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from . import fieldload, fieldscmd, identity
+from . import fieldload, fieldscmd, identity, selection
 from .errors import TicketctlError
-from .gateway import Gateway
+from .fieldmap import _FIELD_ID, ID_MARKER
+from .gateway import Deadline, Gateway
 from .runtime import Runtime, for_site, open_gateway
-from .sanitize import InputError, basic_auth_value, configure_scrubber, sanitize_field
+from .sanitize import InputError, sanitize_field
 from .search_compile import compile_search
 
 PARSE = "/rest/api/3/jql/parse"
 MAX_ERROR = 1024  # schemas/cli/validate.json: sites[].queries[].error
+_FIELD_REF = re.compile(r"cf\[[0-9]+\]")  # the id form of a custom field in JQL error text
 
 
 def _parse_errors(gw: Gateway, jql: str) -> list[str]:
@@ -49,14 +56,14 @@ def _parse_errors(gw: Gateway, jql: str) -> list[str]:
     data = response.data
     results = data.get("queries") if isinstance(data, dict) else None
     entry = results[0] if isinstance(results, list) and len(results) == 1 else None
-    errors = entry.get("errors") if isinstance(entry, dict) else None
+    errors = entry.get("errors", []) if isinstance(entry, dict) else None
     if (
         not 200 <= response.status < 300
         or not isinstance(errors, list)
         or not all(isinstance(e, str) for e in errors)
     ):
         raise TicketctlError("provider_changed", f"unexpected answer from {PARSE}")
-    return errors
+    return [e for e in errors if e.strip()]
 
 
 def _query_result(gw: Gateway, name: str, text: str) -> dict[str, Any]:
@@ -71,16 +78,15 @@ def _query_result(gw: Gateway, name: str, text: str) -> dict[str, Any]:
 
 
 def _error_text(text: str) -> str:
-    return sanitize_field(text, cap=MAX_ERROR)[0]
+    masked = _FIELD_REF.sub(ID_MARKER, _FIELD_ID.sub(ID_MARKER, text))
+    return sanitize_field(masked, cap=MAX_ERROR)[0]
 
 
-def probe_site(rt: Runtime, site_name: str, secrets: list[tuple[str, str]]) -> dict[str, Any]:
-    """The ``sites[]`` object of one site; ``secrets`` collects (token, basic value) pairs."""
+def probe_site(rt: Runtime, site_name: str, deadline: Deadline | None = None) -> dict[str, Any]:
+    """The ``sites[]`` object of one site."""
     site = rt.config.sites[site_name]
     with for_site(site_name):
-        gw = open_gateway(rt, site_name)
-        secrets.append((gw.target.token, basic_auth_value(gw.target.email, gw.target.token)))
-        configure_scrubber([t for t, _ in secrets], basic_values=[b for _, b in secrets])
+        gw = open_gateway(rt, site_name, deadline=deadline)
         me = identity.load_me(rt, site_name, gw, refresh=True)
         problems: list[dict[str, Any]] = []
         expected = identity.expected_account(rt.config, site_name)
@@ -99,9 +105,14 @@ def probe_site(rt: Runtime, site_name: str, secrets: list[tuple[str, str]]) -> d
     }
 
 
-def probe(rt: Runtime) -> list[dict[str, Any]]:
-    secrets: list[tuple[str, str]] = []
-    return [probe_site(rt, name, secrets) for name in sorted(rt.config.sites)]
+def probe(rt: Runtime, site_flag: str | None = None) -> list[dict[str, Any]]:
+    """Probe every site (sorted by name), or only ``site_flag`` when it is given."""
+    if site_flag is None:
+        names = sorted(rt.config.sites)
+    else:
+        names = [selection.select_site(rt.config, site_flag=site_flag).site]
+    deadline = Deadline(rt.timeout_s())
+    return [probe_site(rt, name, deadline) for name in names]
 
 
 def human_site(site: dict[str, Any]) -> list[str]:
