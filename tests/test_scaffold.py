@@ -37,6 +37,8 @@ MODULES = [
     "writeflow",
     "hooks",
     "dedupe",
+    "setspec",
+    "setconvert",
 ]
 
 # Modules that open a connection or start a process; only gateway.py may use them.
