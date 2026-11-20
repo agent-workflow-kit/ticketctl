@@ -267,3 +267,68 @@ def test_unserializable_data_is_refused(sd: Path) -> None:
 def test_email_hash_helper() -> None:
     assert cache.email_sha256(EMAIL) == hashlib.sha256(EMAIL.encode()).hexdigest()
     assert cache.email_sha256(None) == hashlib.sha256(b"").hexdigest()
+
+
+def test_discard_cache_removes_one_file_and_tolerates_a_missing_one(sd: Path) -> None:
+    cache.discard_cache(sd, "main", "fields")  # no state, no cache directory: fine
+    put(sd)
+    cache.write_cache(sd, "main", "me", {"time_zone": "UTC"}, url=URL, email=EMAIL, now=NOW)
+    cache.discard_cache(sd, "main", "fields")
+    assert not file_of(sd).exists()
+    assert (sd / "cache" / "main" / "me.json").exists()
+    cache.discard_cache(sd, "main", "fields")
+    with pytest.raises(StateError):
+        cache.discard_cache(sd, "main", "../x")
+
+
+def test_resolutions_is_a_cache_name(sd: Path) -> None:
+    cache.write_cache(
+        sd, "main", "resolutions", {"resolutions": ["Done"]}, url=URL, email=EMAIL, now=NOW
+    )
+    got = cache.read_cache(sd, "main", "resolutions", url=URL, email=EMAIL, ttl=TTL, now=NOW)
+    assert got is not None and got["resolutions"] == ["Done"]
+
+
+def test_read_entry_reports_the_fetch_time_and_the_file_identity(sd: Path) -> None:
+    put(sd, now=NOW - timedelta(seconds=90))
+    entry = cache.read_entry(sd, "main", "fields", url=URL, email=EMAIL, ttl=TTL, now=NOW)
+    assert entry is not None
+    assert entry.fetched_at == NOW - timedelta(seconds=90)
+    info = file_of(sd).stat()
+    assert entry.ident == (info.st_dev, info.st_ino)
+    assert entry.doc == get(sd)
+
+
+def test_discard_with_the_read_identity_deletes_the_file_that_was_read(sd: Path) -> None:
+    put(sd)
+    entry = cache.read_entry(sd, "main", "fields", url=URL, email=EMAIL, ttl=TTL, now=NOW)
+    assert entry is not None
+    cache.discard_cache(sd, "main", "fields", ident=entry.ident)
+    assert not file_of(sd).exists()
+
+
+def test_discard_with_a_stale_identity_keeps_a_file_written_since(sd: Path) -> None:
+    put(sd)
+    entry = cache.read_entry(sd, "main", "fields", url=URL, email=EMAIL, ttl=TTL, now=NOW)
+    assert entry is not None
+    put(sd, {"fields": [2]})  # a concurrent writer replaces the file (a new inode)
+    cache.discard_cache(sd, "main", "fields", ident=entry.ident)
+    assert get(sd) == json.loads(file_of(sd).read_text())
+    assert file_of(sd).exists()
+
+
+def test_an_oversized_cache_file_is_discarded(sd: Path) -> None:
+    put(sd)
+    text = file_of(sd).read_text()
+    file_of(sd).write_text(text + " " * (cache.MAX_CACHE_BYTES + 1 - len(text)))
+    assert file_of(sd).stat().st_size == cache.MAX_CACHE_BYTES + 1
+    assert get(sd) is None
+    assert not file_of(sd).exists()
+
+
+def test_a_cache_file_at_the_size_limit_is_read(sd: Path) -> None:
+    put(sd)
+    body = json.loads(file_of(sd).read_text())
+    text = json.dumps(body)
+    file_of(sd).write_text(text + " " * (cache.MAX_CACHE_BYTES - len(text)))
+    assert get(sd) is not None
