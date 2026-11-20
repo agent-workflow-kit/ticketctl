@@ -25,6 +25,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `search_cursor`, `searchcmd` | 1 | the `search` cursor and command (parse check, paging, caps, count) |
 | `timestamps` | 1 | provider timestamp and date normalization (UTC `Z`, offsets without a colon) |
 | `normalize` | 1 | the `--fields` vocabulary, the provider field request and the issue to ticket object conversion |
+| `comment_object` | 1 | the comment object and the `get --comments N` comment page (pure logic) |
 | `sanitize` | 0 | the one sanitizer and the identifier grammars |
 | `state` | 0 | the state directory, safe opens, the `flock` helper |
 | `audit` | 0 | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |

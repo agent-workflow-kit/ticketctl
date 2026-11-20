@@ -678,7 +678,12 @@ class Gateway:
         self._config_sha256 = config_sha256
         self._sleep = sleep
         self._rng = rng
+        # Pacing state is shared by the threads of a multi-key command; every access holds the
+        # lock. ``_hold_until`` (monotonic) is the end of a pacing or Retry-After sleep in
+        # progress: a request of another thread waits for it too. It is None when nobody sleeps.
+        self._lock = threading.Lock()
         self._pace_pending = False
+        self._hold_until: float | None = None
         self.warnings: list[str] = []
 
     # request ---------------------------------------------------------------------------------
@@ -844,9 +849,24 @@ class Gateway:
         self._sleep_for_retry(call, delay)
 
     def _sleep_for_retry(self, call: _Call, delay: float) -> None:
+        until = self._hold(delay)
         self._sleep(delay)
         call.retries += 1
-        self._pace_pending = False
+        with self._lock:
+            self._pace_pending = False
+        self._release(until)
+
+    def _hold(self, delay: float) -> float:
+        """Open (or extend) the shared sleep window by ``delay`` seconds; returns its end."""
+        with self._lock:
+            until = max(time.monotonic() + delay, self._hold_until or 0.0)
+            self._hold_until = until
+            return until
+
+    def _release(self, until: float) -> None:
+        with self._lock:
+            if self._hold_until == until:
+                self._hold_until = None
 
     def _handle_failure(
         self, call: _Call, attempt: _Attempt, proxy: Proxy | None, max_retries: int
@@ -939,9 +959,22 @@ class Gateway:
             raise GatewayError("timeout", "the command timed out before the request was sent")
 
     def _pace(self) -> None:
-        if self._pace_pending and self.deadline.remaining() > PACING_SLEEP_S:
+        with self._lock:
+            pending = self._pace_pending
+            self._pace_pending = False
+            held = self._hold_until
+        remaining = self.deadline.remaining()
+        if pending and remaining > PACING_SLEEP_S:
+            until = self._hold(PACING_SLEEP_S)
             self._sleep(PACING_SLEEP_S)
-        self._pace_pending = False
+            self._release(until)
+        elif held is not None:
+            wait = held - time.monotonic()
+            if wait >= remaining:
+                # Another thread's hold outlasts this command: never send during it.
+                raise GatewayError("timeout", "the command timed out while waiting for a hold")
+            if wait > 0:
+                self._sleep(wait)  # another thread is sleeping for pacing or a Retry-After
 
     def _response(self, attempt: _Attempt, call: _Call) -> Response:
         status = attempt.status or 0
@@ -1006,9 +1039,9 @@ class Gateway:
                     f"rate_limit_limit={limit}"
                 )
             )
-        self._pace_pending = bool(
-            call.rate_limit and call.rate_limit["remaining"] * 10 < call.rate_limit["limit"]
-        )
+        if call.rate_limit and call.rate_limit["remaining"] * 10 < call.rate_limit["limit"]:
+            with self._lock:  # a late healthy answer never clears what another thread set
+                self._pace_pending = True
 
 
 @dataclass

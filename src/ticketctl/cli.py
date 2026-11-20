@@ -126,6 +126,10 @@ def _report(err: TicketctlError, as_json: bool) -> int:
         _write(sys.stdout, json.dumps(err.envelope(), ensure_ascii=True, sort_keys=True))
     detail = f" [{err.reason}]" if err.reason else ""
     _write(sys.stderr, f"{PROG}: error: {err.code}{detail}: {clean_message(err.message)}")
+    # None of the keys of a multi-key `get` was read: one line per key, as `get` prints them.
+    for item in [] if as_json else (err.details or {}).get("errors") or []:
+        body = item["error"]
+        _write(sys.stderr, f"error {item['key']}: {body['code']}: {clean_message(body['message'])}")
     return err.exit
 
 

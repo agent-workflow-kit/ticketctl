@@ -36,7 +36,8 @@ Rules of this module that the interface leaves open (see docs/interface.md, Tick
   for it by name (``--fields``), never in a default read.
 * A list the provider did not send at all (``labels``, ``links``, ``attachments``) is unknown, not
   empty; a missing scalar is null.
-* ``comments`` is not built here: the comment page is its own call, TODO(#18).
+* ``comments`` is not built here: the comment page is its own call that ``get`` attaches through
+  ``comment_object`` (``comment_list``); #18 adds paging, ``--since``, ``--own`` and ordering.
 
 Unverified against a real site: that ``hierarchyLevel`` is embedded in a parent's ``issuetype`` and
 that the epic level is 1, that an issue link names the other end under ``inwardIssue`` and
@@ -798,7 +799,7 @@ def _prop_resolved(st: _State) -> Any:
 
 
 def _prop_comments(st: _State) -> Any:
-    return _OMIT  # TODO(#18): the comment page is its own provider call
+    return _OMIT  # the comment page is its own provider call: getcmd attaches it (#18: paging)
 
 
 def _prop_attachments(st: _State) -> Any:

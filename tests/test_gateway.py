@@ -658,6 +658,56 @@ def test_pacing_below_ten_percent(serve, limit, remaining, paced) -> None:
     assert rig.logs[0]["rate_limit_remaining"] == int(remaining)
 
 
+def test_a_retry_wait_of_one_thread_holds_back_the_requests_of_the_others(serve) -> None:
+    server = serve([reply(429, "", {"Retry-After": "2"}), json_reply()])
+    rig = make_rig(server.url)
+    parked, release = threading.Event(), threading.Event()
+
+    def sleep(seconds: float) -> None:
+        rig.sleeps.append(seconds)
+        if len(rig.sleeps) == 1:
+            parked.set()
+            assert release.wait(10)
+
+    rig.gw._sleep = sleep
+    first = threading.Thread(target=rig.get)
+    first.start()
+    assert parked.wait(10)
+    try:
+        rig.get()  # a second thread's request while the first waits out the Retry-After
+    finally:
+        release.set()
+        first.join(10)
+    assert rig.sleeps[0] == 2.0
+    assert len(rig.sleeps) == 2 and 0 < rig.sleeps[1] <= 2.0
+
+
+def test_pacing_is_one_state_shared_by_every_thread(serve) -> None:
+    headers = {"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "1"}
+    server = serve(json_reply("{}", headers=headers))
+    rig = make_rig(server.url)
+    rig.get()
+    parked, release = threading.Event(), threading.Event()
+
+    def sleep(seconds: float) -> None:
+        rig.sleeps.append(seconds)
+        if len(rig.sleeps) == 1:
+            parked.set()
+            assert release.wait(10)
+
+    rig.gw._sleep = sleep
+    first = threading.Thread(target=rig.get)
+    first.start()
+    assert parked.wait(10)
+    try:
+        rig.get()
+    finally:
+        release.set()
+        first.join(10)
+    assert rig.sleeps[0] == 1.0
+    assert len(rig.sleeps) == 2 and 0 < rig.sleeps[1] <= 1.0
+
+
 @pytest.mark.parametrize(
     "headers",
     [
@@ -685,6 +735,17 @@ def test_rate_limit_values_are_in_verbose_output_and_the_error(serve) -> None:
     assert exc.value.details["rate_limit"] == {"limit": 100, "remaining": 3}
     assert any("remaining=3" in line for line in rig.verbose)
     assert any("rate_limit_limit=100" in line for line in rig.verbose)
+
+
+def test_a_hold_longer_than_the_remaining_deadline_sends_nothing(serve) -> None:
+    server = serve(json_reply())
+    rig = make_rig(server.url, budget=5.0)
+    with rig.gw._lock:
+        rig.gw._hold_until = time.monotonic() + 100  # another thread's Retry-After
+    with pytest.raises(GatewayError) as exc:
+        rig.get()
+    assert exc.value.code == "timeout"
+    assert server.requests == [] and rig.sleeps == []
 
 
 # ---------------------------------------------------------------------------------------------

@@ -357,7 +357,7 @@ def test_traceback_only_with_debug(
 
 
 def test_stub_handler_is_exit_one(capsys: pytest.CaptureFixture[str]) -> None:
-    status, out, _ = run(capsys, "--json", "get", "AB-1")  # owned by #15
+    status, out, _ = run(capsys, "--json", "export")  # owned by #36
     assert status == 1
     assert _check_envelope(out)["code"] == "internal"
 
@@ -427,7 +427,7 @@ def test_json_after_double_dash_is_not_the_flag(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     seen: list[Any] = []
-    patch_handler(monkeypatch, ("get",), lambda g, a: seen.append((g, a)) or {"x": 1})
+    patch_handler(monkeypatch, ("get",), lambda g, a: seen.append((g, a)))
     status, out, _ = run(capsys, "get", "--", "--json")
     assert (status, out) == (0, "")
     assert seen[0][0].json is False and seen[0][1].keys == ["--json"]
@@ -755,7 +755,6 @@ BAD_NUMBERS = ["abc", "1_0", "\u0663", " 5", "5 ", "-5", "+5", "5\n", "9" * 29, 
 @pytest.mark.parametrize(
     "argv",
     [
-        ["get", "AB-1", "--comments"],
         ["search", "--limit"],
         ["comments", "AB-1", "--limit"],
         ["sprints", "list", "--limit"],
@@ -770,6 +769,26 @@ def test_bad_number_is_invalid_argument(
 ) -> None:
     status, out, _ = run(capsys, "--json", *argv, value)
     assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
+
+
+@pytest.mark.parametrize("value", ["abc", "1_0", "\u0663", " 5", "5 ", "+5", "5\n", ""], ids=repr)
+def test_get_comments_non_integer_text_is_invalid_argument(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, out, _ = run(capsys, "--json", "get", "AB-1", "--comments", value)
+    assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
+
+
+@pytest.mark.parametrize("value", ["-5", "9" * 29], ids=repr)
+def test_get_comments_out_of_range_integer_is_invalid_value(
+    value: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ticketctl import getcmd
+
+    patch_handler(monkeypatch, ("get",), lambda g, a: getcmd.comment_count(a.comments))
+    status, out, _ = run(capsys, "--json", "get", "AB-1", "--comments", value)
+    doc = _check_envelope(out)
+    assert status == 22 and doc["code"] == "invalid_request" and doc["reason"] == "invalid_value"
 
 
 @pytest.mark.parametrize("argv", [["sprints", "show"], ["sprints", "show", "x1"]])
@@ -897,9 +916,9 @@ def test_process_usage_error_exit_two_with_envelope(tmp_path: Path) -> None:
 
 
 def test_process_unexpected_exception_exit_one_without_traceback(tmp_path: Path) -> None:
-    r = _proc(tmp_path, "get", "AB-1", "--json")  # a stub (#15)
+    r = _proc(tmp_path, "export", "--json")  # a stub (#36)
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
     assert _check_envelope(r.stdout)["code"] == "internal"
-    r = _proc(tmp_path, "get", "AB-1", debug=True)
+    r = _proc(tmp_path, "export", debug=True)
     assert r.returncode == 1 and "Traceback" in r.stderr

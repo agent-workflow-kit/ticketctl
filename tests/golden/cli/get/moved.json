@@ -1,0 +1,54 @@
+{
+  "errors": [],
+  "tickets": [
+    {
+      "acceptance_criteria": null,
+      "assignee": null,
+      "attachments": [],
+      "blocked": {
+        "by": [],
+        "value": false
+      },
+      "created": "2026-03-04T15:00:00Z",
+      "description": null,
+      "due_date": null,
+      "epic": null,
+      "estimate": null,
+      "fields": {},
+      "id": "10000",
+      "incomplete": [
+        "estimate"
+      ],
+      "key": "DEMO-40",
+      "labels": [
+        "alpha"
+      ],
+      "links": [],
+      "parent": null,
+      "priority": {
+        "name": "Medium",
+        "rank": 2
+      },
+      "reporter": {
+        "account_id": "acct-0001",
+        "display_name": "Fake Me"
+      },
+      "requested_key": "DEMO-1",
+      "resolution": null,
+      "resolved": null,
+      "site": "main",
+      "sprints": [],
+      "status": {
+        "category": "new",
+        "name": "Backlog"
+      },
+      "title": "Seeded backlog task",
+      "type": {
+        "name": "Task",
+        "subtask": false
+      },
+      "updated": "2026-03-04T15:00:00Z",
+      "url": "https://tracker.example.test/browse/DEMO-40"
+    }
+  ]
+}
