@@ -129,9 +129,9 @@ Still to verify (conservative defaults apply): how Jira reads instants either si
 | `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
 | `provider` | the internal provider interface and normalized objects |
 | `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
-| `adf` | the one `validate_adf()` allowlist (the renderer is `adf_render`, the converter is `adf_from_markdown`) |
-| `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
+| `adf_validate` | the one `validate_adf()` allowlist (nodes, marks, attributes, link URL rule, depth, node and size limits) and the `--format adf` input parser; `schemas/adf.json` needs a Draft 2019-09 or later validator for its mark rules, and the code validator is the authority |
 | `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
+| `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
 | `search_compile` | structured flags and named queries compiled to one JQL string: string escaping, the time grammar, the string-aware `ORDER BY` scanner and balance proof; no provider calls (the jira module sends the parse check) |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
@@ -183,7 +183,7 @@ The user-facing list is [Residual risks](interface.md#residual-risks); the desig
 
 ## Platforms
 
-Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
+Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. `jsonschema` is a development-only dependency: a test generates documents from `schemas/adf.json` and checks that the code allowlist and the schema accept the same documents. Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
 
 ## Architecture constraints this design adds
 
