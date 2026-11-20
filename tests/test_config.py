@@ -737,6 +737,22 @@ def test_queries_and_extra_name_grammar_rejects(home: Home, name: str) -> None:
     )
 
 
+def test_extra_names_are_at_most_47_characters_but_query_names_64(home: Home) -> None:
+    home.main(
+        site_text(
+            queries="queries: {" + "q" * 64 + ": 'a = b'}",
+            fields="fields: {extra: {" + "x" * 47 + ": {name: X}}}",
+        )
+    )
+    site = home.load().config.sites["main"]
+    assert "x" * 47 in site.fields.extra and "q" * 64 in site.queries
+    expect_error(
+        home,
+        site_text(fields="fields: {extra: {" + "x" * 48 + ": {name: X}}}"),
+        "sites.main.fields.extra." + "x" * 48,
+    )
+
+
 def test_query_text_limits(home: Home) -> None:
     home.main(site_text(queries="queries: {q: '" + "a" * 4096 + "'}"))
     assert len(home.load().config.sites["main"].queries["q"]) == 4096
@@ -1433,6 +1449,14 @@ def test_schema_queries_exclude_logical_names_like_fields_extra() -> None:
     extra = site["fields"]["properties"]["extra"]["propertyNames"]["not"]["enum"]
     queries = site["queries"]["propertyNames"]["not"]["enum"]
     assert queries == extra == list(config_module.LOGICAL_FIELDS)
+
+
+def test_schema_name_patterns_match_the_loader() -> None:
+    site = _schema()["$defs"]["site"]["properties"]
+    extra = site["fields"]["properties"]["extra"]["propertyNames"]["pattern"]
+    queries = site["queries"]["propertyNames"]["pattern"]
+    assert extra == f"^{config_module.EXTRA_NAME}$"
+    assert queries == f"^{config_module.SNAKE_NAME}$"
 
 
 def test_schema_documents_caps_and_normalized_url() -> None:

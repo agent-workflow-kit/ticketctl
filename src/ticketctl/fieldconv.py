@@ -20,25 +20,19 @@ Unverified against a real site: the value shapes of option, user and array items
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
 from typing import Any
 
 from .adf_render import render_adf
 from .fieldmap import FieldSchema
 from .sanitize import CAPS, GRAMMARS, cap_text, sanitize_field
+from .timestamps import normalize_date, normalize_ts
 
 TEXT_CAP = CAPS["title"]
 BODY_CAP = CAPS["body"]
 MAX_INT = 2**63
 MAX_ITEMS = 1000
 UNKNOWN_USER = "unknown user"
-_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-_DATETIME = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?"
-    r"(?:Z|[+-][0-9]{2}:?[0-9]{2})"
-)
 
 
 @dataclass(frozen=True)
@@ -83,25 +77,17 @@ def _number(raw: object) -> int | float:
 
 
 def _date(raw: object) -> str:
-    if not isinstance(raw, str) or _DATE.fullmatch(raw) is None:
+    out = normalize_date(raw)
+    if out is None:
         raise _NoFit
-    try:
-        date.fromisoformat(raw)
-    except ValueError:
-        raise _NoFit from None
-    return raw
+    return out
 
 
 def _datetime(raw: object) -> str:
-    if not isinstance(raw, str) or _DATETIME.fullmatch(raw) is None:
+    out = normalize_ts(raw)
+    if out is None:
         raise _NoFit
-    try:
-        parsed = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
-    except ValueError:
-        raise _NoFit from None
-    if parsed.tzinfo is None:
-        raise _NoFit
-    return parsed.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return out
 
 
 def _user(raw: object, cut: _Cut) -> dict[str, Any]:

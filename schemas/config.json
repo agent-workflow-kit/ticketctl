@@ -632,7 +632,7 @@
             "extra": {
               "type": "object",
               "propertyNames": {
-                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "pattern": "^[a-z][a-z0-9_]{0,46}$",
                 "not": {
                   "enum": [
                     "estimate",
@@ -652,7 +652,7 @@
                 "$ref": "#/$defs/field_mapping"
               },
               "default": {},
-              "description": "Extra fields added to the output under fields.<name>."
+              "description": "Extra fields added to the output under fields.<name>. Names are at most 47 characters, so fields.<name>.truncated fits an incomplete item."
             }
           },
           "additionalProperties": false,
