@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import handlers
+from . import fieldscmd, handlers
 from .flags import (
     Globals,
     count_arg,
@@ -206,9 +206,30 @@ def _specs() -> list[CommandSpec]:
         CommandSpec(("transitions",), r, "list available transitions", _stub(18), _key),
         CommandSpec(("sprints", "list"), r, "list sprints", _stub(18), _sprints_list),
         CommandSpec(("sprints", "show"), r, "show one sprint", _stub(18), _sprints_show),
-        CommandSpec(("fields", "list"), r, "list discovered fields", _stub(19), _none),
-        CommandSpec(("fields", "check"), r, "check the field mappings", _stub(19), _none),
-        CommandSpec(("fields", "refresh"), r, "replace the field cache", _stub(19), _none),
+        CommandSpec(
+            ("fields", "list"),
+            r,
+            "list discovered fields",
+            fieldscmd.fields_list,
+            _none,
+            fieldscmd.human_fields_list,
+        ),
+        CommandSpec(
+            ("fields", "check"),
+            r,
+            "check the field mappings",
+            fieldscmd.fields_check,
+            _none,
+            fieldscmd.human_fields_check,
+        ),
+        CommandSpec(
+            ("fields", "refresh"),
+            r,
+            "replace the field cache",
+            fieldscmd.fields_refresh,
+            _none,
+            fieldscmd.human_fields_refresh,
+        ),
         CommandSpec(
             ("sites",), r, "list configured sites", handlers.sites, _none, handlers.human_sites
         ),

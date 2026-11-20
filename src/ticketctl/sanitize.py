@@ -8,7 +8,8 @@ Text:
     cap_text(text, cap), sanitize_field(...)   over-long text cut with the ``<truncated>`` marker
     CAPS                                        the documented per-field caps
 Output scrub (last step of the one output path):
-    configure_scrubber(secrets, basic_values)  register the configured token values
+    configure_scrubber(secrets, basic_values)  replace the registered token values
+    add_secrets(secrets, basic_values=())      add to them (one call per opened site)
     basic_auth_value(email, token)             the base64 value of the Basic header
     scrub(text), render(text, body=False)      ``render`` = sanitize, then scrub
     format_traceback(exc)                      a scrubbed, sanitized traceback
@@ -208,6 +209,19 @@ def configure_scrubber(secrets: Iterable[str], *, basic_values: Iterable[str] = 
     """
     global _scrub_values
     values: set[str] = set()
+    for value in list(secrets) + list(basic_values):
+        values |= _secret_forms(value)
+    _scrub_values = sorted(values, key=lambda v: (-len(v), v))
+
+
+def add_secrets(secrets: Iterable[str], *, basic_values: Iterable[str] = ()) -> None:
+    """Register more secrets without dropping the ones already registered.
+
+    Same forms and 8-character minimum as ``configure_scrubber``. A command that opens several
+    sites calls this once per site so the output scrub knows every site's token.
+    """
+    global _scrub_values
+    values: set[str] = set(_scrub_values)
     for value in list(secrets) + list(basic_values):
         values |= _secret_forms(value)
     _scrub_values = sorted(values, key=lambda v: (-len(v), v))
