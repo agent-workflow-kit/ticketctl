@@ -1,0 +1,202 @@
+"""The search cursor: encode, decode and the validation rules (issue #17).
+
+The cursor is untrusted input: every decoding failure is exit 22 ``cursor_invalid``, never exit 1,
+and the message never echoes the cursor.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from typing import Any
+
+import pytest
+
+from ticketctl.errors import TicketctlError
+from ticketctl.search_cursor import (
+    MAX_CURSOR,
+    MAX_TOKEN,
+    Cursor,
+    check,
+    decode,
+    encode,
+    jql_digest,
+    valid_token,
+)
+
+DIGEST = jql_digest("project = DEMO ORDER BY key")
+
+
+def b64(raw: bytes | str) -> str:
+    data = raw.encode() if isinstance(raw, str) else raw
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def doc(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {"v": 1, "site": "main", "jql_sha256": DIGEST, "page_token": "tok-1"}
+    base.update(over)
+    return base
+
+
+def cursor_of(document: Any) -> str:
+    return b64(json.dumps(document))
+
+
+def refused(text: str) -> TicketctlError:
+    with pytest.raises(TicketctlError) as info:
+        decode(text)
+    err = info.value
+    assert (err.exit, err.code, err.reason) == (22, "invalid_request", "cursor_invalid")
+    assert len(text) < 8 or text not in err.message
+    return err
+
+
+def test_round_trip() -> None:
+    text = encode("main", DIGEST, "tok-1")
+    assert decode(text) == Cursor("main", DIGEST, "tok-1")
+    assert text == text.strip() and "=" not in text and len(text) <= MAX_CURSOR
+
+
+def test_the_digest_is_sha256_hex_of_the_compiled_query() -> None:
+    assert len(DIGEST) == 64 and DIGEST == DIGEST.lower()
+    assert jql_digest("a") != jql_digest("a ")
+
+
+def test_encoded_shape_is_documented() -> None:
+    raw = base64.urlsafe_b64decode(encode("main", DIGEST, "t") + "==")
+    assert json.loads(raw) == {"v": 1, "site": "main", "jql_sha256": DIGEST, "page_token": "t"}
+
+
+def test_the_widest_token_with_escapes_still_fits() -> None:
+    token = '"\\' * (MAX_TOKEN // 2)
+    assert len(token) == MAX_TOKEN
+    assert decode(encode("s" * 64, DIGEST, token)).page_token == token
+
+
+@pytest.mark.parametrize(
+    "token", ["", "x" * (MAX_TOKEN + 1), "café", "a\nb", "a\x7fb", "a\x00b", "١", None, 5]
+)
+def test_unusable_tokens_are_not_valid(token: Any) -> None:
+    assert not valid_token(token)
+
+
+def test_a_provider_token_we_cannot_encode_is_provider_changed() -> None:
+    with pytest.raises(TicketctlError) as info:
+        encode("main", DIGEST, "café")
+    assert info.value.code == "provider_changed"
+
+
+def test_over_4096_bytes() -> None:
+    refused("A" * (MAX_CURSOR + 1))
+
+
+def test_exactly_at_the_cap_is_judged_on_content() -> None:
+    refused("A" * MAX_CURSOR)  # not a document, but refused for that, not for length
+
+
+def test_nested_100000_deep() -> None:
+    refused(b64("[" * 100_000))  # also over the size cap
+    refused(b64("[" * 3000 + "]" * 3000))  # inside the size cap, over the depth cap
+
+
+def test_depth_over_four_is_refused_before_parsing() -> None:
+    refused(cursor_of(doc(page_token=[[[[["x"]]]]])))
+    refused(cursor_of({"a": {"a": {"a": {"a": {"a": 1}}}}}))
+
+
+def test_brackets_inside_strings_do_not_count_as_depth() -> None:
+    assert decode(cursor_of(doc(page_token="[[[[[[[[[[")))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "!!!!",
+        "a b",
+        "café",  # non-ASCII
+        "١٢",  # non-ASCII digits
+        "AAAA\n",
+        "A",  # a lone sextet
+    ],
+)
+def test_garbage_text(text: str) -> None:
+    refused(text)
+
+
+def test_padding_is_tolerated_only_in_its_canonical_form() -> None:
+    text = encode("main", DIGEST, "tok-1")
+    assert decode(text + "=" * (-len(text) % 4)).page_token == "tok-1"
+    refused(text + "=" * 3)
+    refused(text + "=" * (-len(text) % 4) + "=")
+
+
+def test_non_canonical_trailing_bits_are_refused() -> None:
+    text = encode("main", DIGEST, "tok-1")
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last = alphabet.index(text[-1])
+    tampered = text[:-1] + alphabet[last ^ 1]
+    if len(text) % 4 in (2, 3):  # only then are there unused bits to flip
+        refused(tampered)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        None,
+        1,
+        "x",
+        [],
+        {},
+        doc(v=2),
+        doc(v=0),
+        doc(v=True),
+        doc(v=1.0),
+        doc(v="1"),
+        doc(site=None),
+        doc(site=5),
+        doc(jql_sha256=5),
+        doc(page_token=None),
+        doc(page_token=""),
+        doc(page_token="x" * (MAX_TOKEN + 1)),
+        doc(page_token="café"),
+        doc(page_token="a\nb"),
+        doc(page_token={"a": 1}),
+        {**doc(), "extra": 1},
+        {k: v for k, v in doc().items() if k != "site"},
+    ],
+    ids=lambda d: json.dumps(d)[:50],
+)
+def test_bad_documents(document: Any) -> None:
+    refused(cursor_of(document))
+
+
+def test_duplicate_keys_are_refused() -> None:
+    raw = f'{{"v":1,"v":1,"site":"main","jql_sha256":"{DIGEST}","page_token":"t"}}'
+    refused(b64(raw))
+
+
+@pytest.mark.parametrize("raw", ["NaN", '{"v":NaN}', '{"v":1', b"\xff\xfe", "﻿{}", "{" * 3])
+def test_bad_json(raw: Any) -> None:
+    refused(b64(raw))
+
+
+def test_check_site_and_digest() -> None:
+    c = decode(encode("main", DIGEST, "tok-1"))
+    check(c, "main", DIGEST)
+    for site, digest in (("other", DIGEST), ("main", jql_digest("project = FAKE"))):
+        with pytest.raises(TicketctlError) as info:
+            check(c, site, digest)
+        assert (info.value.exit, info.value.reason) == (22, "cursor_invalid")
+
+
+def test_a_digest_of_the_wrong_shape_never_matches() -> None:
+    c = decode(cursor_of(doc(jql_sha256="x")))
+    with pytest.raises(TicketctlError):
+        check(c, "main", DIGEST)
+
+
+def test_the_message_never_echoes_the_cursor() -> None:
+    marker = "ZZZSECRETZZZ"
+    err = refused(b64(json.dumps(doc(page_token=marker, v=9))))
+    assert marker not in err.message and marker not in str(err.details)
