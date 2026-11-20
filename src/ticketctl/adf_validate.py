@@ -30,8 +30,8 @@ Type checks are exact (``type(x) is dict``): a ``bool`` is never an int, a float
 and a subclass is never accepted. The error message and ``details`` never echo the rejected value,
 only a sanitized, capped path.
 
-TODO(#22): the attribution paragraph is added by the write flow before the final validation;
-callers pass nothing special (the final document already contains it).
+The attribution paragraph is added by ``attribution.prepare_rich_text`` before the final
+validation; the final document already contains it, so that call passes no reserve.
 TODO(#23): every rich-text write path (body, description, ``--set``/``--field``) calls
 ``validate_adf()`` on the final document right before the gateway; the write flow owns the test
 that nothing unvalidated reaches the gateway.

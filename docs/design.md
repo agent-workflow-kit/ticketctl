@@ -131,6 +131,7 @@ Still to verify (conservative defaults apply): how Jira reads instants either si
 | `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
 | `adf_validate` | the one `validate_adf()` allowlist (nodes, marks, attributes, link URL rule, depth, node and size limits) and the `--format adf` input parser; `schemas/adf.json` needs a Draft 2019-09 or later validator for its mark rules, and the code validator is the authority |
 | `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
+| `attribution` | the attribution paragraph (one sanitized plain text node, first block), the rich-text path rules for `auto:` and `human:` actors, the `ticketctl.meta` comment property value and the default actor with its `actor_source` |
 | `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
 | `search_compile` | structured flags and named queries compiled to one JQL string: string escaping, the time grammar, the string-aware `ORDER BY` scanner and balance proof; no provider calls (the jira module sends the parse check) |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
