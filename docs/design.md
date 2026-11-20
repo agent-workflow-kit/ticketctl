@@ -133,6 +133,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `hooks` | hook execution (process groups, timeouts, payloads) |
 | `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
+| `dedupe` | the dedupe lock and the lookups for comment and create |
 
 Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway.
 
@@ -173,7 +174,7 @@ The user-facing list is [Residual risks](interface.md#residual-risks); the desig
 
 ## Platforms
 
-Pure standard library; Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
+Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
 
 ## Architecture constraints this design adds
 

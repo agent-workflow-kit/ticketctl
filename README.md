@@ -42,7 +42,7 @@ ticketctl transition ABC-123 --to Done --dry-run
 
 ## Dependencies
 
-- Jira Cloud REST API v3 and the agile API: reached directly through ticketctl's own standard-library client (no other tool or CLI is needed).
+- Jira Cloud REST API v3 and the agile API: reached directly through ticketctl's own client built on the standard library (no other tool or CLI is needed).
 - Python packages: `pyyaml`, `pydantic`.
 
 ## Install
