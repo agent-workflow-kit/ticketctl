@@ -20,6 +20,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `cli` | 0 | argparse subcommands, global flags, exit codes, human and `--json` output |
 | `config` | 0 | load and validate config (Pydantic), drop-ins, env overrides for top-level scalars, loader checks |
 | `gateway` | 0 | the only HTTP boundary: requests, auth header, timeouts, retry policy, pacing, redirect and proxy rules |
+| `search_compile` | 1 | structured flags and named queries to JQL, the `ORDER BY` scanner, raw query rules (no provider calls) |
 | `sanitize` | 0 | the one sanitizer and the identifier grammars |
 | `audit` | 0 | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | 1 | field list and identity cache with atomic replace |
