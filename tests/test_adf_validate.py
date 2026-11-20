@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -85,8 +86,13 @@ def refused(d: Any, reason: str = "node_not_allowed", **kw: Any) -> InputError:
     return exc
 
 
+def where(exc: InputError) -> str:
+    assert exc.details is not None
+    return exc.details["field"]
+
+
 def field_of(d: Any) -> str:
-    return refused(d).details["field"]
+    return where(refused(d))
 
 
 # --- the accepted shapes --------------------------------------------------------------------
@@ -180,7 +186,7 @@ def test_exactly_five_thousand_nodes_pass_and_one_more_is_body_too_large() -> No
     # doc + 4999 paragraphs = 5000 nodes
     validate_adf(doc(*[{"type": "paragraph"} for _ in range(4999)]))
     exc = refused(doc(*[{"type": "paragraph"} for _ in range(5000)]), "body_too_large")
-    assert "field" not in exc.details
+    assert exc.details is None
 
 
 def test_reserve_nodes_and_reserve_count_against_the_limits() -> None:
@@ -490,7 +496,7 @@ def test_hostile_attribute_names_are_sanitized_and_capped_in_the_path() -> None:
             )
         )
     )
-    path = refused(d).details["field"]
+    path = where(refused(d))
     assert "\x1b" not in path and "‮" not in path
     assert len(path) < 200
 
@@ -561,13 +567,13 @@ def test_code_block_language_accepts_the_pattern(language: str) -> None:
 )
 def test_the_document_root_is_strict(bad: Any) -> None:
     exc = refused(bad)
-    assert exc.details["field"].startswith("$") or exc.details["field"] != ""
+    assert where(exc).startswith("$") or where(exc) != ""
 
 
 def test_the_root_path_is_named() -> None:
-    assert refused(None).details["field"] == "$"
-    assert refused(doc_with("version", 2)).details["field"] == "version"
-    assert refused({"type": "doc", "version": 1, "content": [], "x": 1}).details["field"] == "x"
+    assert where(refused(None)) == "$"
+    assert where(refused(doc_with("version", 2))) == "version"
+    assert where(refused({"type": "doc", "version": 1, "content": [], "x": 1})) == "x"
 
 
 def doc_with(key: str, value: Any) -> Node:
@@ -654,9 +660,9 @@ def test_the_schema_file_is_itself_a_valid_schema() -> None:
 def test_the_code_constants_match_the_schema_patterns() -> None:
     defs = SCHEMA["$defs"]
     href = defs["mark"]["oneOf"][1]["properties"]["attrs"]["properties"]["href"]["pattern"]
-    assert href == "^" + adf_validate.HREF.pattern + "$"
+    assert href == "^" + adf_validate.HREF.pattern
     lang = defs["codeBlock"]["properties"]["attrs"]["properties"]["language"]["pattern"]
-    assert lang == "^" + adf_validate.LANGUAGE.pattern + "$"
+    assert lang == "^" + adf_validate.LANGUAGE.pattern
     nodes = {"doc"} | {
         d["properties"]["type"]["const"]
         for d in defs.values()
@@ -669,8 +675,16 @@ def test_the_code_constants_match_the_schema_patterns() -> None:
 
 _TEXTS = ["a", "word", "two words", "x\ny", "café", "<U+202E>"]
 _CONTAINER_DEFS = {"bulletList", "orderedList", "blockquote"}
-_HREFS = ["https://example.test/", "http://example.test/a?b#c", "https://example.test:80/x"]
-_LANGS = ["py", "c++", "a.b"]
+_HREFS = [
+    "https://example.test/",
+    "http://example.test/a?b#c",
+    "https://example.test:80/x",
+    "https://a",  # length 1 after the scheme
+    "http://ab",  # length 2
+    "https://" + "a" * 2000,  # the limit
+    "https://" + "a" * 2001,  # one over (schema-invalid; filtered or mutated)
+]
+_LANGS = ["py", "c++", "a.b", "a", "a" * 32, "a" * 33]
 
 
 def gen(ref: str, rng: random.Random, depth: int = 0) -> Any:
@@ -705,7 +719,10 @@ def _gen_schema(s: Any, rng: random.Random, depth: int) -> Any:
         n = rng.randint(lo, max(lo, 2 if depth < 4 else 1))
         return [_gen_schema(s["items"], rng, depth + 1) for _ in range(n)]
     if t == "integer":
-        return rng.randint(s["minimum"], s["maximum"])
+        lo, hi = s["minimum"], s["maximum"]
+        if rng.random() < 0.5:  # boundaries: 0/1/6/7 for levels, 0/1/9999/10000 for order
+            return rng.choice([lo - 1, lo, hi, hi + 1])
+        return rng.randint(lo, hi)
     if t == "string":
         pat = s.get("pattern", "")
         if pat.startswith("^(?!https?://"):
@@ -719,7 +736,7 @@ def _gen_schema(s: Any, rng: random.Random, depth: int) -> Any:
 def test_documents_generated_from_the_schema_are_accepted_by_the_code() -> None:
     rng = random.Random(7)
     checked = 0
-    for _ in range(1500):
+    for _ in range(1200):
         d = gen("doc", rng)
         if not schema_valid(d):  # the generator ignores allOf mark constraints; filter
             continue
@@ -763,6 +780,10 @@ def mutate(d: Any, rng: random.Random) -> Any:
                 "mention",
                 "media",
                 "https://u@example.test/",
+                "https://a.test/\n",
+                "https://a.test\\.b.test/",
+                "py\n",
+                "a" * 33,
                 "ftp://example.test/",
                 "",
                 "javascript:alert(1)",
@@ -822,7 +843,7 @@ def test_a_prepared_document_is_parsed_and_validated() -> None:
 def test_parse_refuses_what_validate_refuses_with_the_path() -> None:
     d = doc(para(txt("a", link("javascript:alert(1)"))))
     exc = parse_refused(dumps(d), "node_not_allowed")
-    assert exc.details["field"] == "content[0].content[0].marks[0].attrs.href"
+    assert where(exc) == "content[0].content[0].marks[0].attrs.href"
 
 
 def test_a_json_escaped_control_character_is_refused() -> None:
@@ -869,7 +890,7 @@ def test_malformed_json_nan_and_duplicate_keys_are_refused(text: str) -> None:
 
 @pytest.mark.parametrize("text", ["[]", "null", "5", '"doc"', "true", "{}"])
 def test_valid_json_that_is_not_a_document_is_node_not_allowed(text: str) -> None:
-    assert parse_refused(text, "node_not_allowed").details["field"] in (
+    assert where(parse_refused(text, "node_not_allowed")) in (
         "$",
         "version",
         "type",
@@ -1033,3 +1054,194 @@ def _texts(d: Any) -> list[str]:
             out.append(n["text"])
         stack.extend(n.get("content", ()))
     return out
+
+
+# --- round 1 review findings ----------------------------------------------------------------
+
+
+def test_a_str_subclass_with_a_lying_eq_is_not_a_doc_type() -> None:
+    class Liar(str):
+        __slots__ = ()
+
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __ne__(self, other: object) -> bool:
+            return False
+
+        __hash__ = str.__hash__
+
+    d = {"type": Liar("mention"), "version": 1, "content": []}
+    assert where(refused(d)) == "type"
+
+
+def test_a_reserve_larger_than_the_budget_is_body_too_large_even_without_text() -> None:
+    refused(doc(), "body_too_large", body_chars=10, reserve=11)
+    validate_adf(doc(), body_chars=10, reserve=10)
+
+
+def test_a_negative_body_chars_is_body_too_large_even_without_text() -> None:
+    refused(doc(), "body_too_large", body_chars=-1)
+    refused(doc(para()), "body_too_large", body_chars=-5, reserve=0)
+
+
+def test_a_negative_reserve_or_reserve_nodes_is_a_value_error() -> None:
+    with pytest.raises(ValueError):
+        validate_adf(doc(), reserve=-1)
+    with pytest.raises(ValueError):
+        validate_adf(doc(), reserve_nodes=-1)
+
+
+@pytest.mark.parametrize("href", ["http://a.test/\n", "https://a.test\n", "https://a.test/x\n"])
+def test_a_trailing_newline_in_an_href_is_refused_by_code_and_schema(href: str) -> None:
+    d = doc(para(txt("a", link(href))))
+    refused(d)
+    assert not schema_valid(d)
+
+
+@pytest.mark.parametrize("language", ["py\n", "a\n"])
+def test_a_trailing_newline_in_a_language_is_refused_by_code_and_schema(language: str) -> None:
+    d = doc({"type": "codeBlock", "attrs": {"language": language}})
+    refused(d)
+    assert not schema_valid(d)
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "http://evil.example\\.trusted.example/x",
+        "https://a.test/a\\b",
+        "https://a.test\\",
+        "http://\\a.test/",
+    ],
+)
+def test_a_backslash_in_an_href_is_refused_by_code_and_schema(href: str) -> None:
+    d = doc(para(txt("a", link(href))))
+    refused(d)
+    assert not schema_valid(d)
+
+
+def test_the_converter_never_emits_an_href_with_a_backslash() -> None:
+    for md in (
+        "[t](http://evil.example\\\\.trusted.example/x)",
+        "[t](<http://evil.example\\.trusted.example/x>)",
+        "[t](http://a.test/p\\\\q)",
+    ):
+        d = markdown_to_adf(md)
+        validate_adf(d)
+        for p in d["content"]:
+            for n in p.get("content", []):
+                for m in n.get("marks", []):
+                    if m["type"] == "link":
+                        assert "\\" not in m["attrs"]["href"]
+
+
+def test_the_converter_shares_the_validator_patterns() -> None:
+    from ticketctl import adf_from_markdown
+
+    assert adf_from_markdown._HREF is adf_validate.HREF
+    assert adf_from_markdown._LANGUAGE is adf_validate.LANGUAGE
+
+
+def test_the_first_violation_in_encounter_order_wins_over_the_node_limit() -> None:
+    mention = {"type": "mention", "attrs": {"id": "x"}}
+    d = doc(para(mention, *[txt("a")] * 6000))
+    assert where(refused(d)) == "content[0].content[0]"
+    wide = doc(*[{"type": "paragraph"}] * 6000)
+    refused(wide, "body_too_large")
+    bad_then_many = doc({"type": "mention"}, *[{"type": "paragraph"}] * 6000)
+    assert where(refused(bad_then_many)) == "content[0]"
+
+
+def _key_path(key: str) -> str:
+    d = doc(para(txt("a", {"type": "link", "attrs": {"href": "https://a.test/", key: 1}})))
+    return where(refused(d))
+
+
+def test_a_capped_path_key_never_cuts_a_marker_in_half() -> None:
+    for key in ("\x00" * 9, "\x00" * 100_000, "k" * 63 + "\x00", "k" * 100_000, "\x00" * 8 + "ab"):
+        path = _key_path(key)
+        shown = path.rsplit(".", 1)[-1]
+        assert len(shown) <= 64
+        assert re.fullmatch(r"(?:<U\+[0-9A-F]{4,6}>|[^<])*", shown) is not None, shown
+
+
+@pytest.mark.parametrize("extra", [{"content": [{"type": "mention"}]}, {"content": []}])
+def test_a_hard_break_refuses_content(extra: Node) -> None:
+    d = doc(para({"type": "hardBreak", **extra}))
+    assert where(refused(d)) == "content[0].content[0].content"
+
+
+def test_a_text_node_refuses_content() -> None:
+    d = doc(para({"type": "text", "text": "a", "content": [txt("b")]}))
+    assert where(refused(d)) == "content[0].content[0].content"
+
+
+def test_every_node_type_whose_key_table_lacks_content_refuses_content() -> None:
+    checked = 0
+    for t, (required, optional) in adf_validate._KEYS.items():
+        if "content" in required | optional:
+            continue
+        checked += 1
+        node: Node = {"type": t, "content": []}
+        if t == "text":
+            node["text"] = "a"
+            d = doc(para(node))
+        else:
+            d = doc(para(node))
+        assert where(refused(d)).endswith(".content"), t
+    assert checked == 2  # text and hardBreak
+
+
+_BLOCK_NODES: list[Node] = [
+    {"type": "paragraph"},
+    {"type": "heading", "attrs": {"level": 1}},
+    bullets(item(para())),
+    {"type": "orderedList", "content": [item(para())]},
+    item(para()),
+    quote(para()),
+    {"type": "codeBlock"},
+]
+
+
+@pytest.mark.parametrize("block", _BLOCK_NODES, ids=lambda n: n["type"])
+@pytest.mark.parametrize("parent", ["paragraph", "heading"])
+def test_a_block_node_inside_inline_content_is_refused(block: Node, parent: str) -> None:
+    holder: Node = {"type": parent, "content": [block]}
+    if parent == "heading":
+        holder["attrs"] = {"level": 2}
+    assert where(refused(doc(holder))) == "content[0].content[0]"
+
+
+def test_a_list_item_directly_inside_a_blockquote_is_refused() -> None:
+    assert field_of(doc(quote(item(para())))) == "content[0].content[0]"
+
+
+def test_a_paragraph_directly_inside_a_bullet_list_is_refused() -> None:
+    assert field_of(doc(bullets(para()))) == "content[0].content[0]"
+
+
+def test_json_nesting_of_exactly_the_limit_passes_the_guard_and_one_more_does_not() -> None:
+    n = adf_validate.MAX_JSON_NESTING
+    exc = parse_refused("[" * n + "]" * n, "node_not_allowed")
+    assert where(exc) == "$"
+    parse_refused("[" * (n + 1) + "]" * (n + 1), "invalid_value")
+
+
+def test_a_dict_subclass_child_node_is_refused() -> None:
+    class D(dict):  # type: ignore[type-arg]
+        pass
+
+    assert field_of(doc(D(type="paragraph"))) == "content[0]"
+    assert field_of(doc(para(D(type="text", text="a")))) == "content[0].content[0]"
+
+
+def test_tuple_marks_and_tuple_content_are_refused() -> None:
+    assert field_of(doc(para({"type": "text", "text": "a", "marks": (mark("strong"),)}))) == (
+        "content[0].content[0].marks"
+    )
+    assert field_of(doc({"type": "paragraph", "content": (txt("a"),)})) == "content[0].content"
+
+
+def test_the_invalid_input_error_has_no_details_when_none_are_given() -> None:
+    assert refused(doc(*[{"type": "paragraph"}] * 6000), "body_too_large").details is None

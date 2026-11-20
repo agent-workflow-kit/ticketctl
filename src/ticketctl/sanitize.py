@@ -35,7 +35,7 @@ import traceback
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import SplitResult, quote, urlencode, urlsplit
 
 # --------------------------------------------------------------------------------------------
@@ -55,14 +55,14 @@ class InputError(Exception):
         code: str,
         reason: str,
         message: str,
-        details: dict[str, str] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
         self.code = code
         self.reason = reason
         self.message = message
-        self.details = details or {}
+        self.details = details
 
 
 def _invalid_request(reason: str, message: str) -> InputError:

@@ -126,7 +126,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `gateway` | the only HTTP boundary: request, auth header, connect phase, timeouts, retry policy, rate-limit pacing, redirect refusal, response cap, proxy tunnel |
 | `provider` | the internal provider interface and normalized objects |
 | `jira` | the Jira implementation: endpoint calls, field discovery, JQL compile and parse check, transitions, sprints |
-| `adf_validate` | the one `validate_adf()` allowlist (nodes, marks, attributes, link and card URL rule, depth, node and size limits) and the `--format adf` input parser |
+| `adf_validate` | the one `validate_adf()` allowlist (nodes, marks, attributes, link URL rule, depth, node and size limits) and the `--format adf` input parser; `schemas/adf.json` needs a Draft 2019-09 or later validator for its mark rules, and the code validator is the authority |
 | `adf_from_markdown` | the Markdown to ADF converter (the dialect, link target normalization, the size and emptiness rules) |
 | `adf_render` | the ADF to Markdown renderer with its depth, node and output budgets (`render_adf()`); sanitizes at the leaf |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |

@@ -22,6 +22,10 @@ The walk is iterative (a 200000-deep document gets no ``RecursionError``), stops
 violation, and counts nodes as they are queued, so a node bomb is refused before it is walked.
 Depth is counted like the converter does: over ``bulletList``, ``orderedList``, ``listItem`` and
 ``blockquote`` nodes only, so five nested lists are depth 10 and a paragraph inside is fine.
+Known gaps between the code and ``schemas/adf.json`` (the code is stricter, never looser): a float
+such as ``1.0`` counts as an integer for a schema validator, and lone surrogates and carriage
+returns in text are refused by the code only (they are sanitizer rules). The ``href`` and
+``language`` patterns end in ``(?![\\s\\S])``, not ``$``, so a trailing newline never passes.
 Type checks are exact (``type(x) is dict``): a ``bool`` is never an int, a float is never an int
 and a subclass is never accepted. The error message and ``details`` never echo the rejected value,
 only a sanitized, capped path.
@@ -50,8 +54,11 @@ MAX_JSON_NESTING = 64  # arrays and objects in the JSON text; a legal document n
 _MAX_INT_LITERAL = 20  # characters of an integer literal; the allowlist has no number above 9999
 _MAX_KEY_SHOWN = 64
 
-HREF = re.compile(r"(?!https?://[^/?#]*@)https?://[\x21-\x7e]{1,2000}")
-LANGUAGE = re.compile(r"[A-Za-z0-9+#._-]{1,32}")
+# ``(?![\s\S])`` is "end of string" in Python and in ECMAScript; ``$`` would also match before a
+# trailing newline under the schema validators' ``search``. Printable ASCII without backslash:
+# browsers read ``\`` as ``/``, so ``http://evil.example\.trusted.example/`` would change host.
+HREF = re.compile(r"(?!https?://[^/?#]*@)https?://[\x21-\x5b\x5d-\x7e]{1,2000}(?![\s\S])")
+LANGUAGE = re.compile(r"[A-Za-z0-9+#._-]{1,32}(?![\s\S])")
 
 NODE_TYPES = (
     "doc",
@@ -109,9 +116,26 @@ def _format_path(path: _Path, extra: tuple[str, ...]) -> str:
         if isinstance(seg, int):
             out.append(f"[{seg}]")
         else:
-            shown = sanitize_line(str(seg))[:_MAX_KEY_SHOWN]
+            shown = _cap_key(sanitize_line(str(seg)[:_MAX_KEY_SHOWN]))
             out.append(shown if not out else f".{shown}")
     return "".join(out) or "$"
+
+
+_MARKER_OR_CHAR = re.compile(r"<U\+[0-9A-F]{4,6}>|[\s\S]")
+
+
+def _cap_key(shown: str) -> str:
+    """Cut a sanitized key to ``_MAX_KEY_SHOWN`` characters, never inside a ``<U+XXXX>`` marker."""
+    if len(shown) <= _MAX_KEY_SHOWN:
+        return shown
+    out: list[str] = []
+    size = 0
+    for m in _MARKER_OR_CHAR.finditer(shown):
+        size += len(m.group())
+        if size > _MAX_KEY_SHOWN:
+            break
+        out.append(m.group())
+    return "".join(out)
 
 
 def _too_large(what: str) -> InputError:
@@ -135,10 +159,12 @@ def validate_adf(
         raise ValueError("reserve and reserve_nodes must not be negative")
     node_budget = MAX_NODES - reserve_nodes
     char_budget = body_chars - reserve
+    if char_budget < 0:
+        raise _too_large("too much text")
     if type(doc) is not dict:
         raise _fail("node_not_allowed", "the document must be an object", None)
     _check_keys(doc, frozenset({"type", "version", "content"}), frozenset(), None)
-    if doc["type"] != "doc":
+    if type(doc["type"]) is not str or doc["type"] != "doc":
         raise _fail("node_not_allowed", "the document type must be doc", None, "type")
     version = doc.get("version")
     if type(version) is not int or version != 1:
@@ -146,15 +172,20 @@ def validate_adf(
 
     count = 1
     chars = 0
-    # (node, path, depth, allowed child kinds); the root's children are queued below
+    # (node, path, depth, allowed child kinds); the root's children are queued below. A node is
+    # counted when it is popped and checked, so the first violation in encounter order wins over
+    # the node limit; a cyclic or shared document still stops at the limit.
     stack: list[tuple[Any, _Path, int, str]] = []
-    count = _queue(doc, None, 0, "block", stack, count, node_budget)
+    _queue(doc, None, 0, "block", stack)
     while stack:
         node, path, depth, kind = stack.pop()
         if type(node) is not dict:
             raise _fail("node_not_allowed", "a node must be an object", path)
-        chars = _check_node(node, path, depth, kind, chars, char_budget, stack)
-        count = _queue_children(node, path, depth, stack, count, node_budget)
+        chars = _check_node(node, path, depth, kind, chars, char_budget)
+        count += 1
+        if count > node_budget:
+            raise _too_large("too many nodes")
+        _queue_children(node, path, depth, stack)
 
 
 def _queue(
@@ -163,19 +194,13 @@ def _queue(
     depth: int,
     kind: str,
     stack: list[tuple[Any, _Path, int, str]],
-    count: int,
-    node_budget: int,
-) -> int:
+) -> None:
     content = parent.get("content")
     if type(content) is not list:
         raise _fail("node_not_allowed", "content must be an array", path, "content")
-    count += len(content)
-    if count > node_budget:
-        raise _too_large("too many nodes")
     seg_path: _Path = (path, "content")
     for i in range(len(content) - 1, -1, -1):
         stack.append((content[i], (seg_path, i), depth, kind))
-    return count
 
 
 def _queue_children(
@@ -183,12 +208,10 @@ def _queue_children(
     path: _Path,
     depth: int,
     stack: list[tuple[Any, _Path, int, str]],
-    count: int,
-    node_budget: int,
-) -> int:
+) -> None:
     t = node["type"]
     if t not in _KEYS or t in ("text", "hardBreak") or "content" not in node:
-        return count
+        return
     if t in _CONTAINERS:
         depth += 1
     kind = {
@@ -198,7 +221,7 @@ def _queue_children(
         "bulletList": "item",
         "orderedList": "item",
     }.get(t, "block")
-    return _queue(node, path, depth, kind, stack, count, node_budget)
+    _queue(node, path, depth, kind, stack)
 
 
 def _check_keys(
@@ -221,7 +244,6 @@ def _check_node(
     kind: str,
     chars: int,
     char_budget: int,
-    stack: list[tuple[Any, _Path, int, str]],
 ) -> int:
     t = node.get("type")
     if type(t) is not str:
