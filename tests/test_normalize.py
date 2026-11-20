@@ -409,8 +409,8 @@ def test_title_is_single_line_and_sanitized() -> None:
 
 def test_a_title_that_is_not_text_is_unknown() -> None:
     t = get(issue(summary=5), "title,incomplete")
-    assert "title" not in t or t["title"] is None
-    assert "title" in t["incomplete"]
+    assert "title" not in t
+    assert t["incomplete"] == ["title"]
 
 
 def test_type_status_and_resolution() -> None:
@@ -500,7 +500,7 @@ def test_accounts_never_carry_an_email() -> None:
     user = {"accountId": "acct-1", "displayName": "Fake One", "emailAddress": "x@example.test"}
     t = get(issue(assignee=user, reporter=user), "assignee,reporter")
     assert t["assignee"] == {"account_id": "acct-1", "display_name": "Fake One"}
-    assert "example.test" not in json.dumps(t)
+    assert not re.search(r"@|emailAddress", json.dumps(t))
 
 
 def test_an_account_without_id_or_name_is_the_unknown_user() -> None:
@@ -609,7 +609,7 @@ def test_description_adf_is_passed_through_only_when_requested() -> None:
     assert t["description_adf"] == doc
     assert "description_adf" not in get(issue(description=doc), "description")
     t = get(issue(description="str"), "description_adf,incomplete", include_adf=True)
-    assert t["description_adf"] is None and t["incomplete"] == ["description_adf"]
+    assert "description_adf" not in t and t["incomplete"] == ["description_adf"]
 
 
 def test_description_adf_is_a_sanitized_copy_without_non_finite_numbers() -> None:
@@ -1184,6 +1184,7 @@ def test_a_property_that_raises_becomes_incomplete_not_an_abort(
     monkeypatch.setattr(mod, "_prop_title", boom)
     t = get(issue(), "title,status,incomplete")
     assert t["incomplete"] == ["title"]
+    assert "title" not in t
     assert t["status"]["name"] == "In Progress"
 
 
@@ -1429,3 +1430,374 @@ def test_fuzz_hostile_payloads_never_raise_and_keep_their_shape() -> None:
         for label in out.ticket.get("labels", []):
             assert not re.fullmatch(r"tc-[0-9a-f]{16}", label)
     assert runs > 50
+
+
+# --- review round 1 ------------------------------------------------------------------------
+
+ALL_NAMES = ",".join(p for p in PROPERTIES if p != "comments")
+
+
+def _full_issue() -> dict[str, Any]:
+    user = {"accountId": "acct-1", "displayName": "Fake One"}
+    return issue(
+        description=adf("Hello"),
+        resolution=None,
+        assignee=user,
+        reporter=user,
+        priority={"name": "High"},
+        labels=["a", "b"],
+        parent=_epic_parent(),
+        issuelinks=[link("Blocks", "DEMO-2", inward=True, cat="new")],
+        attachment=[{"id": "5", "filename": "a.txt", "size": 12, "mimeType": "text/plain"}],
+        created="2026-03-02T09:00:00.000-0600",
+        updated="2026-03-02T09:00:00.000+0000",
+        resolutiondate=None,
+        duedate="2026-04-01",
+        customfield_90002=3,
+        customfield_90003=[_sprint(1)],
+        customfield_90004=adf("c"),
+        customfield_90006="note",
+    )
+
+
+def _full_ctx() -> Context:
+    extra = [custom("customfield_90006", "Notes", "string", "com.example:textfield")]
+    sf = site_fields(
+        Fields(
+            acceptance_criteria=fm(id="customfield_90004"),
+            extra={"notes": fm(id="customfield_90006")},
+        ),
+        extra,
+    )
+    names = NameList(("Low", "High"), "cache")
+    return ctx(ALL_NAMES, sf=sf, priorities=names, include_adf=True)
+
+
+def _ticket_validator() -> Any:
+    from jsonschema import Draft202012Validator
+
+    from tests.golden import format_checker, registry
+
+    return Draft202012Validator(
+        {"$ref": "ticketctl/defs.json#/$defs/ticket"},
+        registry=registry(),
+        format_checker=format_checker(),
+    )
+
+
+def _assert_valid(ticket: dict[str, Any]) -> None:
+    errors = [e.message[:200] for e in _ticket_validator().iter_errors(ticket)]
+    assert errors == []
+
+
+def test_normalized_output_validates_against_the_ticket_schema() -> None:
+    c = _full_ctx()
+    out = normalize_issue(_full_issue(), c)
+    assert out is not None
+    _assert_valid(out.ticket)
+    assert out.ticket["description_adf"]["type"] == "doc"
+    for names in ("title", "key", "incomplete", "url,id,type,status"):
+        got = normalize_issue(_full_issue(), ctx(names))
+        assert got is not None
+        _assert_valid(got.ticket)
+    stub = normalize_issue({"key": "DEMO-1", "fields": 5}, c, requested_key="DEMO-2")
+    assert stub is not None
+    _assert_valid(stub.ticket)
+    assert get(issue(description=None), "description_adf", include_adf=True) == {
+        "key": "DEMO-1",
+        "site": SITE,
+        "description_adf": None,
+    }
+    _assert_valid(get(issue(description=None), "description_adf", include_adf=True))
+
+
+_JUNK: list[Any] = [
+    None,
+    5,
+    -1,
+    2**80,
+    1.5,
+    float("nan"),
+    True,
+    "",
+    "x" * 5000,
+    "a‮b\x00\n",
+    [],
+    [None, 5, "x", {}],
+    {},
+    {"name": 5},
+    {"key": "demo", "fields": 3},
+    {"accountId": "a b", "displayName": 4},
+    {"type": {"name": 1}, "inwardIssue": 4},
+]
+
+
+def test_hostile_payloads_always_validate_against_the_ticket_schema() -> None:
+    rng = random.Random(1307)
+    c = _full_ctx()
+    base = _full_issue()
+    names = list(base["fields"])
+    for _ in range(300):
+        raw = copy.deepcopy(base)
+        for name in rng.sample(names, rng.randint(1, 6)):
+            raw["fields"][name] = copy.deepcopy(rng.choice(_JUNK))
+        if rng.random() < 0.2:
+            raw["id"] = rng.choice(_JUNK)
+        out = normalize_issue(raw, c)
+        assert out is not None
+        _assert_valid(out.ticket)
+
+
+def test_an_unreadable_title_is_omitted_even_when_the_builder_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ticketctl.normalize as mod
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "_prop_title", boom)
+    monkeypatch.setattr(mod, "_clean_json", boom)
+    t = get(issue(description=adf("x")), "title,description_adf,incomplete", include_adf=True)
+    assert "title" not in t and "description_adf" not in t
+    assert t["incomplete"] == ["description_adf", "title"]
+
+
+def test_a_description_adf_that_cannot_be_copied_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ticketctl.normalize as mod
+
+    monkeypatch.setattr(mod, "ADF_NODE_LIMIT", 5)
+    doc = {"type": "doc", "content": [{"type": "text", "text": str(i)} for i in range(20)]}
+    t = get(issue(description=doc), "description_adf,incomplete", include_adf=True)
+    assert "description_adf" not in t
+    assert t["incomplete"] == ["description_adf.truncated"]
+
+
+# --- accounts ---
+
+
+def test_an_account_with_no_usable_id_is_the_unknown_user() -> None:
+    t = get(issue(assignee={"displayName": "Named"}), "assignee,incomplete")
+    assert t["assignee"] == {"account_id": None, "display_name": "unknown user"}
+    assert t["incomplete"] == []
+
+
+def test_an_account_id_outside_the_grammar_is_named_and_shown_as_unknown() -> None:
+    raw = issue(
+        assignee={"accountId": "a b/../", "displayName": "N"},
+        reporter={"accountId": 5, "displayName": "M"},
+    )
+    t = get(raw, "assignee,reporter,incomplete")
+    assert t["assignee"] == {"account_id": None, "display_name": "unknown user"}
+    assert t["reporter"] == {"account_id": None, "display_name": "unknown user"}
+    assert t["incomplete"] == ["assignee.invalid_id", "reporter.invalid_id"]
+
+
+# --- stubs ---
+
+
+def test_a_non_dict_payload_with_a_requested_key_is_a_stub() -> None:
+    for raw in (None, [], "x", 5):
+        out = normalize_issue(raw, ctx("title"), requested_key="DEMO-4")
+        assert out is not None
+        assert out.ticket == {"key": "DEMO-4", "site": SITE, "incomplete": ["ticket"]}
+        assert normalize_issue(raw, ctx("title")) is None
+
+
+def test_a_stub_carries_requested_key_when_the_canonical_key_differs() -> None:
+    out = normalize_issue({"key": "DEMO-9", "fields": None}, ctx("title"), requested_key="DEMO-4")
+    assert out is not None
+    assert out.ticket == {
+        "key": "DEMO-9",
+        "site": SITE,
+        "requested_key": "DEMO-4",
+        "incomplete": ["ticket"],
+    }
+    same = normalize_issue({"key": "DEMO-9", "fields": None}, ctx("title"), requested_key="DEMO-9")
+    assert same is not None and "requested_key" not in same.ticket
+
+
+# --- the opaque ADF copy ---
+
+
+def _adf_copy(doc: Any) -> dict[str, Any]:
+    return get(issue(description=doc), "description_adf,incomplete", include_adf=True)
+
+
+def test_description_adf_keeps_the_key_order() -> None:
+    doc = {"type": "doc", "zeta": 1, "alpha": [{"b": 1, "a": 2, "c": 3}], "mid": "m"}
+    t = _adf_copy(doc)
+    assert list(t["description_adf"]) == ["type", "zeta", "alpha", "mid"]
+    assert list(t["description_adf"]["alpha"][0]) == ["b", "a", "c"]
+
+
+def test_a_key_collision_after_sanitizing_is_named() -> None:
+    t = _adf_copy({"type": "doc", "k‮": 1, "k<U+202E>": 2})
+    assert t["incomplete"] == ["description_adf"]
+    assert len(t["description_adf"]) == 2
+
+
+def test_description_adf_strings_are_cut_at_the_body_cap_and_named() -> None:
+    t = _adf_copy({"type": "doc", "text": "y" * 1_050_000})
+    assert len(t["description_adf"]["text"]) <= 1_000_000
+    assert t["incomplete"] == ["description_adf.truncated"]
+
+
+def test_description_adf_keeps_line_breaks_and_scrubs_secrets() -> None:
+    from ticketctl import sanitize
+
+    secret = "s3cr3t-token-value"
+    sanitize.configure_scrubber([secret])
+    try:
+        t = _adf_copy({"type": "doc", "text": f"a\nb {secret}", f"k{secret}": 1})
+        assert t["description_adf"]["text"] == "a\nb <redacted>"
+        assert "<redacted>" in "".join(t["description_adf"])
+        t = get(issue(description=adf(f"x {secret}")), "description")
+        assert t["description"] == "x <redacted>"
+    finally:
+        sanitize.configure_scrubber([])
+
+
+def test_description_adf_bounds_huge_integers() -> None:
+    t = _adf_copy({"type": "doc", "a": 2**70, "b": -(2**70), "c": 2**63, "d": True})
+    node = t["description_adf"]
+    assert node["a"] is None and node["b"] is None
+    assert node["c"] == 2**63 and node["d"] is True
+    assert t["incomplete"] == ["description_adf"]
+
+
+def test_description_adf_node_budget_stops_cyclic_wide_and_shared_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ticketctl.normalize as mod
+
+    monkeypatch.setattr(mod, "ADF_NODE_LIMIT", 1000)
+    cyclic: dict[str, Any] = {"type": "doc"}
+    cyclic["self"] = cyclic
+    wide = {"type": "doc", "content": list(range(5000))}
+    shared: Any = {"type": "text"}
+    for _ in range(40):
+        shared = {"type": "doc", "content": [shared, shared]}
+    for doc in (cyclic, wide, shared):
+        t = _adf_copy(doc)
+        assert "description_adf" not in t
+        assert t["incomplete"] == ["description_adf.truncated"]
+    monkeypatch.setattr(mod, "ADF_NODE_LIMIT", 6)
+    assert "description_adf" in _adf_copy({"type": "doc", "content": [1, 2]})
+    assert "description_adf" not in _adf_copy({"type": "doc", "content": [1, 2, 3, 4, 5]})
+
+
+# --- names that are cut ---
+
+
+def test_a_cut_name_is_named_truncated() -> None:
+    long = "n" * 400
+    c = ctx("type,status,resolution,priority,parent,links,incomplete")
+    raw = issue(
+        issuetype={"name": long, "subtask": False},
+        status=status(long),
+        resolution={"name": long},
+        priority={"name": long},
+        parent={"key": "DEMO-7", "fields": {"issuetype": {"name": long}}},
+        issuelinks=[link(long, "DEMO-2", inward=False)],
+    )
+    t = one(raw, c)
+    assert t["incomplete"] == [
+        "links.truncated",
+        "parent.truncated",
+        "priority.truncated",
+        "resolution.truncated",
+        "status.truncated",
+        "type.truncated",
+    ]
+
+
+# --- extra names ---
+
+
+def test_incomplete_parts_of_the_longest_extra_name_fit_the_schema_pattern() -> None:
+    from ticketctl.config import EXTRA_NAME
+
+    name = "x" * 47
+    assert re.fullmatch(EXTRA_NAME, name) and not re.fullmatch(EXTRA_NAME, name + "x")
+    extra = [custom("customfield_90001", "Notes", "string", "com.example:textfield")]
+    sf = site_fields(Fields(extra={name: fm(id="customfield_90001")}), extra)
+    t = get(issue(customfield_90001="q" * 5000), "fields,incomplete", sf=sf)
+    assert t["incomplete"] == [f"fields.{name}.truncated"]
+    assert all(re.fullmatch(r"[a-z][a-z0-9_.]{0,63}", p) for p in t["incomplete"])
+
+
+# --- warnings name the logical field ---
+
+
+def test_the_sprint_warning_names_the_logical_sprint_field() -> None:
+    twin = custom("customfield_90001", "Sprint", "array", "com.example:gh-sprint", "json")
+    out = normalize_issue(issue(), ctx("sprints,incomplete", sf=site_fields(extra_fields=[twin])))
+    assert out is not None
+    assert out.ticket["incomplete"] == ["sprints"]
+    (warning,) = out.warnings
+    assert re.search(rf"sites\.{SITE}\.fields\.sprint\b(?!s)", warning)
+    assert not re.search(r"sprints", warning)
+
+
+def test_the_sprint_not_mapped_is_named_only_when_asked_for_as_sprints() -> None:
+    sf = SiteFields(system_fields(), Fields())
+    assert get(issue(), "sprints,incomplete", sf=sf)["incomplete"] == ["sprints"]
+
+
+# --- links cache and dispatch ---
+
+
+def test_a_bad_blocking_link_types_context_makes_blocked_unknown() -> None:
+    raw = issue(issuelinks=[link("Blocks", "DEMO-2", inward=True, cat="new")])
+    for names in ("blocked,incomplete", "links,blocked,incomplete"):
+        t = get(raw, names, blocking=(5,))  # type: ignore[arg-type]
+        assert t["blocked"] == {"value": None, "by": []}
+        assert "blocked" in t["incomplete"] or "links" in t["incomplete"]
+
+
+def test_an_unknown_property_name_never_raises_out_of_normalize() -> None:
+    from ticketctl.normalize import Properties
+
+    c = Context(
+        site=SITE,
+        base_url=BASE,
+        props=Properties(("title", "nope", "__class__", "status")),
+        site_fields=site_fields(),
+    )
+    out = normalize_issue(issue(), c)
+    assert out is not None
+    assert out.ticket["title"] == "A title" and out.ticket["status"]["name"] == "In Progress"
+    assert set(out.ticket) == {"key", "site", "title", "status"}
+    assert normalize_issues([issue(), issue("DEMO-2")], c).skipped == 0
+
+
+# --- pinned limits and sanitizing (mutation guards) ---
+
+
+def test_max_links_is_five_hundred() -> None:
+    assert MAX_LINKS == 500
+    many = [link("Relates", f"DEMO-{i + 10}", inward=False) for i in range(501)]
+    t = get(issue(issuelinks=many), "links,incomplete")
+    assert len(t["links"]) == 500 and t["incomplete"] == ["links"]
+    t = get(issue(issuelinks=many[:500]), "links,incomplete")
+    assert len(t["links"]) == 500 and t["incomplete"] == []
+
+
+def test_link_type_status_name_and_attachment_mime_are_sanitized() -> None:
+    raw = issue(
+        status=status("a‮b\n", "done"),
+        issuelinks=[link("T‮x\n", "DEMO-2", inward=False)],
+        attachment=[{"id": "5", "filename": "n", "size": 1, "mimeType": "x‮/y\n"}],
+    )
+    t = get(raw, "status,links,attachments")
+    assert t["status"]["name"] == "a<U+202E>b "
+    assert t["links"][0]["type"] == "T<U+202E>x "
+    assert t["attachments"][0]["mime"] == "x<U+202E>/y "
+
+
+def test_a_boolean_hierarchy_level_is_not_the_epic_level() -> None:
+    t = get(issue(parent=_epic_parent(True)), "epic,incomplete")
+    assert t["epic"] is None and t["incomplete"] == ["epic"]

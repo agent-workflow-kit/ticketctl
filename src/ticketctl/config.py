@@ -65,6 +65,8 @@ HOOK_NAMES = tuple(
 
 SITE_NAME = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 SNAKE_NAME = r"[a-z][a-z0-9_]{0,63}"
+# `fields.<name>.truncated` must fit the 64 characters of an `incomplete` item (schemas/defs.json)
+EXTRA_NAME = r"[a-z][a-z0-9_]{0,46}"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -731,7 +733,7 @@ def _check(config: Config) -> None:
         for qname in site.queries:
             _check_name(qname, f"{base}.queries")
         for xname in site.fields.extra:
-            _check_name(xname, f"{base}.fields.extra")
+            _check_name(xname, f"{base}.fields.extra", EXTRA_NAME)
     for hname, hooks in config.hooks.items():
         if hname not in HOOK_NAMES:
             raise ConfigError("unknown hook name", key=f"hooks.{_seg(hname)}")
@@ -742,10 +744,10 @@ def _check(config: Config) -> None:
                 )
 
 
-def _check_name(name: str, parent: str) -> None:
+def _check_name(name: str, parent: str, grammar: str = SNAKE_NAME) -> None:
     key = f"{parent}.{_seg(name)}"
-    if re.fullmatch(SNAKE_NAME, name) is None:
-        raise ConfigError(f"name must match {SNAKE_NAME}", key=key)
+    if re.fullmatch(grammar, name) is None:
+        raise ConfigError(f"name must match {grammar}", key=key)
     if name in LOGICAL_FIELDS:
         raise ConfigError("name must not be a logical field name", key=key)
 

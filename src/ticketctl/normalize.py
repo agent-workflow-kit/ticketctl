@@ -20,9 +20,11 @@ Public API:
 
 ``normalize_issue(raw, ctx, requested_key=None) -> Normalized | None``
     One payload. It never raises: a property that cannot be read is null (or an empty list, or
-    omitted where the schema has no null: ``type`` and ``status``) and named in ``incomplete``;
-    a payload with no usable ``fields`` is a stub (``key``, ``site``, ``incomplete: ["ticket"]``);
-    a payload with no usable key at all (and no ``requested_key``) is None. ``normalize_issues``
+    omitted where the schema has no null: ``id``, ``type``, ``title``, ``status``, ``url`` and
+    an unreadable ``description_adf``) and named in ``incomplete``; a payload with no usable
+    ``fields`` (or that is not an object) is a stub (``key``, ``site``, ``incomplete:
+    ["ticket"]``, plus ``requested_key`` when it differs); a payload with no usable key at all
+    (and no ``requested_key``) is None. ``normalize_issues``
     maps a page and counts the skipped ones.
 
 Rules of this module that the interface leaves open (see docs/interface.md, Ticket object):
@@ -54,10 +56,10 @@ from typing import Any, Literal
 
 from .adf_render import render_adf
 from .errors import TicketctlError
-from .fieldconv import convert
+from .fieldconv import MAX_INT, convert
 from .fieldload import NameList
 from .fieldmap import SYSTEM_IDS, FieldSchema, Resolution, SiteFields, Status
-from .sanitize import CAPS, GRAMMARS, cap_text, sanitize_body, sanitize_field, sanitize_line
+from .sanitize import CAPS, GRAMMARS, cap_text, sanitize_field, sanitize_line, scrub
 from .timestamps import normalize_date, normalize_ts
 
 # The table of docs/interface.md, in its order (the order of the printed object).
@@ -288,9 +290,13 @@ class _State:
     def mark(self, part: str) -> None:
         self.incomplete.add(part)
 
-    def unavailable(self, logical: str, src: _Source, part: str | None = None) -> None:
-        """A logical field that cannot be read: always named when ambiguous or mapped to nothing."""
-        part = part or logical
+    def unavailable(self, part: str, src: _Source, logical: str | None = None) -> None:
+        """A property whose logical field cannot be read: named when ambiguous or mapped to nothing.
+
+        ``part`` is the property name (what ``incomplete`` and ``--fields`` use); ``logical`` is
+        the config key when it differs (``sprints`` reads the ``sprint`` field).
+        """
+        logical = logical or part
         res = src.resolution
         site = self.ctx.site
         if src.status is Status.AMBIGUOUS:
@@ -306,14 +312,17 @@ class _State:
                 f"warning: the field mapped for {logical} is not in the provider's field list "
                 f"(sites.{site}.fields.{logical})"
             )
-        elif logical in self.ctx.props.explicit:
+        elif part in self.ctx.props.explicit:
             self.mark(part)  # not mapped, not discoverable, and the caller asked for it by name
 
 
-def _name(raw: object) -> str | None:
+def _name(st: _State, raw: object, part: str) -> str | None:
     if not isinstance(raw, str) or not raw:
         return None
-    return sanitize_field(raw, cap=NAME_CAP)[0]
+    out, cut = sanitize_field(raw, cap=NAME_CAP)
+    if cut:
+        st.mark(f"{part}.truncated")
+    return out
 
 
 def _text(st: _State, raw: str, cap: int, part: str, *, body: bool = False) -> str:
@@ -350,7 +359,7 @@ def _prop_id(st: _State) -> Any:
 
 def _prop_type(st: _State) -> Any:
     raw = st.fields.get("issuetype")
-    name = _name(raw.get("name")) if isinstance(raw, dict) else None
+    name = _name(st, raw.get("name"), "type") if isinstance(raw, dict) else None
     if name is None or not isinstance(raw, dict) or not isinstance(raw.get("subtask"), bool):
         st.mark("type")
         return _OMIT
@@ -361,7 +370,7 @@ def _prop_title(st: _State) -> Any:
     raw = st.fields.get("summary")
     if not isinstance(raw, str):
         st.mark("title")
-        return None
+        return _OMIT
     return _text(st, raw, CAPS["title"], "title")
 
 
@@ -371,7 +380,7 @@ def _prop_description(st: _State) -> Any:
         return None
     if isinstance(raw, dict):
         rendered = render_adf(raw, "description")
-        text, cut = cap_text(rendered.text, BODY_CAP)
+        text, cut = cap_text(scrub(rendered.text), BODY_CAP)
         if cut or rendered.incomplete:
             st.mark("description.truncated")
         return text
@@ -381,37 +390,55 @@ def _prop_description(st: _State) -> Any:
     return None
 
 
-def _clean_json(root: object) -> Any:
-    """A copy of an opaque JSON value with every string sanitized and no non-finite number.
+def _clean_json(root: object) -> tuple[Any, set[str]]:
+    """A copy of an opaque JSON value, its key order kept, and the parts it could not keep.
 
-    Iterative (no recursion limit), with a node budget; ``_OMIT`` when the budget is exceeded.
+    Every string is sanitized (body class), scrubbed and cut at the body cap; a non-finite number
+    and an integer beyond ``fieldconv.MAX_INT`` become null. Iterative (no recursion limit), with
+    a node budget: the value is ``_OMIT`` when the budget is exceeded (a cyclic or heavily shared
+    input ends there). The set holds ``truncated`` (a string was cut), ``lossy`` (a number was
+    replaced or two keys collapsed into one).
     """
     budget = ADF_NODE_LIMIT
+    marks: set[str] = set()
     out: list[Any] = [None]
     stack: list[tuple[Any, Any, Any]] = [(root, out, 0)]
     while stack:
         value, holder, slot = stack.pop()
         budget -= 1
         if budget < 0:
-            return _OMIT
+            return _OMIT, marks
         if isinstance(value, dict):
             new_dict: dict[str, Any] = {}
             holder[slot] = new_dict
+            pending: list[tuple[Any, str]] = []
             for k, v in value.items():
-                key = sanitize_line(k) if isinstance(k, str) else str(k)
-                stack.append((v, new_dict, key))
+                key, cut = sanitize_field(k if isinstance(k, str) else str(k), cap=NAME_CAP)
+                if cut:
+                    marks.add("truncated")
+                if key in new_dict:
+                    marks.add("lossy")
+                    continue
+                new_dict[key] = None  # the slot, so the order of the source is kept
+                pending.append((v, key))
+            stack.extend((v, new_dict, key) for v, key in reversed(pending))
         elif isinstance(value, list):
             new_list: list[Any] = [None] * len(value)
             holder[slot] = new_list
-            for i, v in enumerate(value):
-                stack.append((v, new_list, i))
+            stack.extend((v, new_list, i) for i, v in reversed(list(enumerate(value))))
         elif isinstance(value, str):
-            holder[slot] = sanitize_body(value)
+            holder[slot], cut = sanitize_field(value, cap=BODY_CAP, body=True)
+            if cut:
+                marks.add("truncated")
         elif isinstance(value, float) and not math.isfinite(value):
             holder[slot] = None
+            marks.add("lossy")
+        elif isinstance(value, int) and not isinstance(value, bool) and abs(value) > MAX_INT:
+            holder[slot] = None
+            marks.add("lossy")
         else:
             holder[slot] = value
-    return out[0]
+    return out[0], marks
 
 
 def _prop_description_adf(st: _State) -> Any:
@@ -420,17 +447,21 @@ def _prop_description_adf(st: _State) -> Any:
         return None
     if not isinstance(raw, dict):
         st.mark("description_adf")
-        return None
-    cleaned = _clean_json(raw)
+        return _OMIT
+    cleaned, marks = _clean_json(raw)
     if cleaned is _OMIT:
         st.mark("description_adf.truncated")
-        return None
+        return _OMIT
+    if "truncated" in marks:
+        st.mark("description_adf.truncated")
+    if "lossy" in marks:
+        st.mark("description_adf")
     return cleaned
 
 
 def _prop_status(st: _State) -> Any:
     raw = st.fields.get("status")
-    name = _name(raw.get("name")) if isinstance(raw, dict) else None
+    name = _name(st, raw.get("name"), "status") if isinstance(raw, dict) else None
     category = raw.get("statusCategory") if isinstance(raw, dict) else None
     key = category.get("key") if isinstance(category, dict) else None
     if name is None or key not in STATUS_CATEGORIES:
@@ -447,7 +478,7 @@ def _prop_resolution(st: _State) -> Any:
     raw = st.fields.get(src.id)
     if raw is None:
         return None
-    name = _name(raw.get("name")) if isinstance(raw, dict) else None
+    name = _name(st, raw.get("name"), "resolution") if isinstance(raw, dict) else None
     if name is None:
         st.mark("resolution")
     return name
@@ -460,14 +491,15 @@ def _account(st: _State, raw: object, part: str) -> Any:
         st.mark(part)
         return None
     account = raw.get("accountId")  # never emailAddress
+    if not GRAMMARS["account_id"].matches(account):
+        if account is not None:
+            st.mark(f"{part}.invalid_id")
+        return {"account_id": None, "display_name": UNKNOWN_USER}
     name = raw.get("displayName")
     shown = UNKNOWN_USER
     if isinstance(name, str) and name:
         shown = _text(st, name, NAME_CAP, part)
-    return {
-        "account_id": account if GRAMMARS["account_id"].matches(account) else None,
-        "display_name": shown,
-    }
+    return {"account_id": account, "display_name": shown}
 
 
 def _prop_assignee(st: _State) -> Any:
@@ -490,7 +522,7 @@ def _prop_priority(st: _State) -> Any:
     raw = st.fields.get(src.id)
     if raw is None:
         return None
-    name = _name(raw.get("name")) if isinstance(raw, dict) else None
+    name = _name(st, raw.get("name"), "priority") if isinstance(raw, dict) else None
     if name is None:
         st.mark("priority")
         return None
@@ -576,7 +608,7 @@ def _one_sprint(st: _State, raw: object) -> dict[str, Any] | None:
 def _prop_sprints(st: _State) -> Any:
     src = _source(st.ctx.site_fields, "sprint")
     if src.id is None:
-        st.unavailable("sprints", src)
+        st.unavailable("sprints", src, "sprint")
         return []
     raw = st.fields.get(src.id)
     if raw is None:
@@ -600,7 +632,7 @@ def _parent_object(st: _State, raw: object, part: str) -> dict[str, Any] | None:
     inner = raw.get("fields")
     inner = inner if isinstance(inner, dict) else {}
     itype = inner.get("issuetype")
-    type_name = _name(itype.get("name")) if isinstance(itype, dict) else None
+    type_name = _name(st, itype.get("name"), part) if isinstance(itype, dict) else None
     summary = inner.get("summary")
     title = _text(st, summary, SUMMARY_CAP, part) if isinstance(summary, str) else None
     return {"key": key, "type": type_name or UNKNOWN_TYPE, "title": title}
@@ -657,10 +689,10 @@ def _links(st: _State) -> dict[str, Any]:
         return st.cache["links"]
     raw = st.fields.get("issuelinks")
     out: dict[str, Any] = {"links": [], "partial": False, "blocking": [], "unreadable": False}
-    st.cache["links"] = out
     if not isinstance(raw, list):
         st.mark("links")
         out["partial"] = True
+        st.cache["links"] = out
         return out
     if len(raw) > MAX_LINKS:
         st.mark("links")
@@ -679,6 +711,7 @@ def _links(st: _State) -> dict[str, Any]:
                     out["unreadable"] = True
                 if link["key"] not in out["blocking"]:
                     out["blocking"].append(link["key"])
+    st.cache["links"] = out  # only a finished parse is cached: a failure is never half-read
     return out
 
 
@@ -708,7 +741,7 @@ def _one_link(st: _State, entry: object) -> tuple[dict[str, Any], str] | None:
     ckey = category.get("key") if isinstance(category, dict) else None
     return (
         {
-            "type": sanitize_field(kind_name, cap=NAME_CAP)[0],
+            "type": _text(st, kind_name, NAME_CAP, "links"),
             "direction": "inward" if inward is not None else "outward",
             "key": key,
             "status_category": ckey if ckey in STATUS_CATEGORIES else None,
@@ -835,11 +868,18 @@ _DEFAULTS: dict[str, Any] = {
     "fields": {},
     "blocked": {"value": None, "by": []},
 }
-_OMIT_ON_FAILURE = frozenset({"id", "type", "status", "comments", "url"})
+_OMIT_ON_FAILURE = frozenset(
+    {"id", "type", "title", "status", "comments", "url", "description_adf"}
+)
+_BUILDERS = {name: f"_prop_{name}" for name in PROPERTIES if name != "incomplete"}
 
 
-def _stub(key: str, ctx: Context) -> dict[str, Any]:
-    return {"key": key, "site": ctx.site, "incomplete": ["ticket"]}
+def _stub(key: str, ctx: Context, requested: str | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {"key": key, "site": ctx.site}
+    if requested is not None and requested != key:
+        out["requested_key"] = requested
+    out["incomplete"] = ["ticket"]
+    return out
 
 
 def normalize_issue(
@@ -851,24 +891,29 @@ def normalize_issue(
         else None
     )
     key = raw.get("key") if isinstance(raw, dict) else None
-    if not isinstance(raw, dict):
-        return None
-    if not isinstance(key, str) or not GRAMMARS["ticket_key"].matches(key):
+    if (
+        not isinstance(raw, dict)
+        or not isinstance(key, str)
+        or not GRAMMARS["ticket_key"].matches(key)
+    ):
         return Normalized(_stub(fallback, ctx)) if fallback is not None else None
+    stub = _stub(key, ctx, fallback)
     fields = raw.get("fields")
     if not isinstance(fields, dict):
-        return Normalized(_stub(key, ctx))
+        return Normalized(stub)
     st = _State(ctx, raw, fields)
     ticket: dict[str, Any] = {"key": key, "site": ctx.site}
-    if requested_key is not None and fallback is not None and fallback != key:
-        ticket["requested_key"] = fallback
+    if "requested_key" in stub:
+        ticket["requested_key"] = stub["requested_key"]
     for name in ctx.props.names:
         if name == "incomplete":
             continue
-        build = globals()[f"_prop_{name}"]
         try:
+            build = globals()[_BUILDERS[name]]
             value = build(st)
         except Exception:  # noqa: BLE001 - provider data must never abort a read
+            if name not in _BUILDERS:
+                continue  # a name outside the vocabulary (a hand-built Properties) is ignored
             st.mark(name)
             value = _OMIT if name in _OMIT_ON_FAILURE else _default(name)
         if value is not _OMIT:

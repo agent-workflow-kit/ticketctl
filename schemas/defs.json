@@ -1455,9 +1455,16 @@
           "description": "Untrusted Markdown rendered from the provider's rich text."
         },
         "description_adf": {
-          "type": "object",
-          "x-untrusted": true,
-          "description": "Only with --include-adf. The provider's document, passed through."
+          "oneOf": [
+            {
+              "type": "object",
+              "x-untrusted": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only with --include-adf. A sanitized copy of the provider's document; null when the ticket has no description."
         },
         "status": {
           "$ref": "#/$defs/status"
