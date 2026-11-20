@@ -61,10 +61,20 @@ def _whoami(p: argparse.ArgumentParser) -> None:
 
 
 def _get(p: argparse.ArgumentParser) -> None:
-    _add(p, "keys", metavar="KEY", nargs="+")
-    _add(p, "--fields")
-    _add(p, "--comments", type=count_arg, metavar="N")
-    _add(p, "--include-adf", action="store_true")
+    p.description = (
+        "Read tickets by key or browse URL (at most 50 distinct keys, one site). A key that "
+        "cannot be read is listed under errors and the others are still printed."
+    )
+    _add(p, "keys", metavar="KEY", nargs="+", help="ticket key or browse URL (at most 50 distinct)")
+    _add(p, "--fields", help="comma list of the properties to read (default: all but comments)")
+    _add(
+        p,
+        "--comments",
+        type=getcmd.comments_arg,
+        metavar="N",
+        help="also read the latest N comments of each ticket (1 to 50)",
+    )
+    _add(p, "--include-adf", action="store_true", help="also print the description as ADF")
 
 
 def _search(p: argparse.ArgumentParser) -> None:

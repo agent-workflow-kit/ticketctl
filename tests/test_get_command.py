@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,7 @@ from tests.fake_provider import (
     adf_paragraph,
 )
 from tests.golden import assert_golden
-from ticketctl import sanitize
+from ticketctl import getcmd, sanitize
 from ticketctl.cli import main
 
 TOKEN_VAR = "TICKETCTL_TEST_TOKEN"
@@ -274,6 +276,36 @@ def test_hostile_keys_never_reach_the_provider(env: Env, site: FakeProvider, bad
     assert site.calls == []
 
 
+@pytest.mark.parametrize("bad", ["bad key", "DEMO-1\n"])
+def test_an_invalid_key_beats_the_cap_error_and_nothing_is_read(
+    env: Env, site: FakeProvider, bad: str
+) -> None:
+    keys = seed_many(site, 51)
+    site.calls.clear()
+    code, out, _ = env.run("--json", "get", *keys, bad)
+    err = json.loads(out)["error"]
+    assert (code, err["code"], err["reason"]) == (22, "invalid_request", "invalid_key")
+    assert site.calls == []
+
+
+@pytest.mark.parametrize("order", [0, 1])
+def test_one_key_typed_against_two_sites_is_mixed_sites(
+    env: Env, fake: FakeProvider, fake_factory: Any, order: int
+) -> None:
+    other = fake_factory(None)
+    other.seed()
+    env.write(
+        "sites:\n"
+        + env.site(fake, "one", "projects: [DEMO]")
+        + env.site(other, "two", "projects: [ZZNOPE]")
+    )
+    refs = ["DEMO-1", f"{other.url}/browse/DEMO-1"]
+    code, out, _ = env.run("--json", "get", *(refs if order == 0 else refs[::-1]))
+    err = json.loads(out)["error"]
+    assert (code, err["code"], err["reason"]) == (22, "invalid_request", "mixed_sites")
+    assert fake.calls == [] and other.calls == []
+
+
 def seed_many(fake: FakeProvider, n: int) -> list[str]:
     keys = [f"DEMO-{100 + i}" for i in range(n)]
     for k in keys:
@@ -303,11 +335,39 @@ def test_no_key_is_a_usage_error(env: Env, site: FakeProvider) -> None:
     assert code == 2 and json.loads(out)["error"]["code"] == "usage"
 
 
-def test_reads_run_four_at_a_time(env: Env, site: FakeProvider) -> None:
+class _Gauge:
+    """The fake's wake event with a count of the waits in progress (the slow requests in flight)."""
+
+    def __init__(self, event: Any) -> None:
+        self.event = event
+        self.lock = threading.Lock()
+        self.now = 0
+        self.peak = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        with self.lock:
+            self.now += 1
+            self.peak = max(self.peak, self.now)
+        try:
+            return bool(self.event.wait(timeout))
+        finally:
+            with self.lock:
+                self.now -= 1
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.event, name)
+
+
+def test_reads_run_four_at_a_time(
+    env: Env, site: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
     keys = seed_many(site, 12)
     site.inject(Fault("slow", method="GET", path=r"/issue/DEMO-1\d\d$", times=None, delay_s=0.05))
+    gauge = _Gauge(site._wake)
+    monkeypatch.setattr(site, "_wake", gauge)
     code, doc, _ = env.get(*keys)
     assert code == 0 and [t["key"] for t in doc["tickets"]] == keys
+    assert 1 < gauge.peak <= 4
 
 
 # --- partial results -------------------------------------------------------------------------
@@ -334,11 +394,14 @@ def test_none_readable_exits_with_the_first_errors_code_and_the_list(
     assert all(e["error"]["code"] == "not_found" for e in listed)
 
 
-def test_a_missing_malformed_and_hidden_ticket_look_the_same(env: Env, site: FakeProvider) -> None:
-    code, out, _ = env.run("--json", "get", "DEMO-77", "ZZNOPE-5")
+def test_a_missing_and_a_hidden_ticket_look_the_same(env: Env, site: FakeProvider) -> None:
+    # The provider answers 404 for a ticket the account may not see, as for a missing one.
+    site.inject(Fault("status", method="GET", path=r"/issue/DEMO-1$", status=404, times=None))
+    code, out, _ = env.run("--json", "get", "DEMO-1", "DEMO-77")
     errs = json.loads(out)["error"]["details"]["errors"]
     messages = {e["error"]["message"] for e in errs}
-    assert code == 10 and len(messages) == 1
+    assert code == 10 and [e["key"] for e in errs] == ["DEMO-1", "DEMO-77"]
+    assert len(messages) == 1
     assert re.search(r"missing or you have no permission", messages.pop())
 
 
@@ -462,7 +525,7 @@ def test_comments_costs_one_extra_call_per_ticket(env: Env, site: FakeProvider) 
     ]
 
 
-@pytest.mark.parametrize("n", ["0", "51", "1000"])
+@pytest.mark.parametrize("n", ["0", "51", "1000", "-1", "-50", "99999999999999999999999999"])
 def test_comments_outside_one_to_fifty_is_exit_22(env: Env, site: FakeProvider, n: str) -> None:
     code, out, _ = env.run("--json", "get", "DEMO-1", "--comments", n)
     assert (code, json.loads(out)["error"]["reason"]) == (22, "invalid_value")
@@ -584,3 +647,149 @@ def test_credentials_are_required(env: Env, site: FakeProvider) -> None:
 def test_a_write_only_flag_is_refused(env: Env, site: FakeProvider) -> None:
     code, _, _ = env.run("--json", "get", "DEMO-1", "--yes")
     assert code == 2
+
+
+# --- review round 1 --------------------------------------------------------------------------
+
+
+def test_fields_without_comments_ignores_comments_and_include_adf(
+    env: Env, site: FakeProvider
+) -> None:
+    add_comment(site, "DEMO-2", "7001", "hello", 0)
+    site.calls.clear()
+    code, doc, _ = env.get("DEMO-2", "--fields", "key,title", "--comments", "5", "--include-adf")
+    assert code == 0
+    assert doc["tickets"][0] == {
+        "key": "DEMO-2",
+        "site": "main",
+        "title": "Seeded task in progress",
+    }
+    assert [c for c in site.calls if c.path.endswith("/comment")] == []
+
+
+def test_two_keys_of_one_moved_ticket_print_twice_and_the_comment_call_uses_the_new_key(
+    env: Env, site: FakeProvider
+) -> None:
+    site.move("DEMO-1", "DEMO-40")
+    del site.tickets["DEMO-3"]
+    site.moved["DEMO-3"] = "DEMO-40"
+    add_comment(site, "DEMO-40", "7101", "moved", 0)
+    code, doc, _ = env.get("DEMO-1", "DEMO-3", "--comments", "2")
+    assert code == 0
+    assert [(t["key"], t["requested_key"]) for t in doc["tickets"]] == [
+        ("DEMO-40", "DEMO-1"),
+        ("DEMO-40", "DEMO-3"),
+    ]
+    reads = {c.path for c in site.calls if c.path.endswith("/comment")}
+    assert reads == {"/rest/api/3/issue/DEMO-40/comment"}
+
+
+def test_an_own_comment_without_a_property_list_is_treated_as_the_tools(
+    env: Env, site: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_comment(site, "DEMO-2", "7201", "mine", 0)
+    real = site._comment_obj
+
+    def without(c: dict[str, Any], *, props: bool) -> dict[str, Any]:
+        out = real(c, props=props)
+        out.pop("properties", None)
+        return out
+
+    monkeypatch.setattr(site, "_comment_obj", without)
+    code, doc, _ = env.get("DEMO-2", "--comments", "3", "--fields", "key,comments")
+    t = doc["tickets"][0]
+    (item,) = t["comments"]["items"]
+    assert code == 0 and item["own"] and item["authored_by_ticketctl"] is True
+    assert t["incomplete"] == ["comments"]
+
+
+def test_an_unexpected_exception_is_one_keys_internal_error(
+    env: Env, site: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = getcmd._Reader._read
+
+    def boom(self: Any, key: str) -> Any:
+        if key == "DEMO-2":
+            raise RuntimeError(f"boom {SITE_TOKEN}")
+        return real(self, key)
+
+    monkeypatch.setattr(getcmd._Reader, "_read", boom)
+    code, out, err = env.run("--json", "get", "DEMO-1", "DEMO-2", "DEMO-3")
+    doc = json.loads(out)
+    assert code == 0 and [t["key"] for t in doc["tickets"]] == ["DEMO-1", "DEMO-3"]
+    (e,) = doc["errors"]
+    assert e["key"] == "DEMO-2" and e["error"]["code"] == "internal"
+    assert e["error"]["key"] == "DEMO-2" and e["error"]["site"] == "main"
+    assert "boom" not in out + err and SITE_TOKEN not in out + err
+
+
+def test_repeated_rejected_credentials_stop_the_remaining_reads(
+    env: Env, site: FakeProvider
+) -> None:
+    keys = seed_many(site, 12)
+    site.inject(Fault("status", method="GET", path=r"/issue/DEMO-1\d\d$", status=401, times=None))
+    site.calls.clear()
+    code, out, _ = env.run("--json", "get", *keys)
+    err = json.loads(out)["error"]
+    assert code == 12 and err["code"] == "bad_credentials"
+    listed = err["details"]["errors"]
+    assert [e["key"] for e in listed] == keys
+    assert all(e["error"]["code"] == "bad_credentials" for e in listed)
+    assert [e["error"]["key"] for e in listed] == keys
+    assert len(issue_gets(site)) <= getcmd.CONCURRENCY
+
+
+def test_a_stopped_reader_makes_no_request(env: Env, site: FakeProvider) -> None:
+    env.mp.setattr(getcmd, "_read_all", getcmd._read_all)  # the real one, named for the reader
+    reads: list[Any] = []
+    real = getcmd._Reader._read
+
+    def counting(self: Any, key: str) -> Any:
+        reads.append(key)
+        if key == "DEMO-100":
+            raise KeyboardInterrupt
+        assert self.stop.wait(10)
+        return getcmd._Read(error=getcmd.TicketctlError("internal", "interrupted"))
+
+    env.mp.setattr(getcmd._Reader, "_read", counting)
+    keys = seed_many(site, 12)
+    code, _, err = env.run("--json", "get", *keys)
+    assert code == 130 and "interrupted" in err
+    assert len(reads) < len(keys)
+    assert real is not counting
+
+
+def test_the_input_order_of_warnings_does_not_depend_on_the_threads(
+    env: Env, site: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keys = seed_many(site, 8)
+    real = getcmd.normalize_issue
+
+    def late(payload: Any, ctx: Any, *, requested_key: str) -> Any:
+        time.sleep(0.01 * (9 - keys.index(requested_key)))  # the first key finishes last
+        out = real(payload, ctx, requested_key=requested_key)
+        assert out is not None
+        return type(out)(out.ticket, (*out.warnings, f"note for {requested_key}"))
+
+    monkeypatch.setattr(getcmd, "normalize_issue", late)
+    code, _, err = env.run("--json", "get", *keys)
+    assert code == 0
+    assert re.findall(r"note for (DEMO-\d+)", err) == keys
+
+
+def test_human_output_of_none_readable_lists_every_key(env: Env, site: FakeProvider) -> None:
+    code, out, err = env.run("get", "DEMO-77", "DEMO-78")
+    assert code == 10 and out == ""
+    lines = [line for line in err.splitlines() if line.startswith("error ")]
+    assert [line.split(":")[0] for line in lines] == ["error DEMO-77", "error DEMO-78"]
+    assert all(re.search(r": not_found: ", line) for line in lines)
+
+
+def test_get_help_describes_every_argument(capsys: Any) -> None:
+    with pytest.raises(SystemExit):
+        main(["get", "--help"])
+    text = capsys.readouterr().out
+    assert re.search(r"at most 50 distinct keys", text)
+    for name in ("KEY", "--fields", "--comments", "--include-adf"):
+        assert re.search(rf"{re.escape(name)}[^\n]*\n?[^\n]*\S", text)
+    assert re.search(r"1 to 50", text)

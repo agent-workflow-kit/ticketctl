@@ -4,6 +4,7 @@ import dataclasses
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -768,6 +769,10 @@ BAD_NUMBERS = ["abc", "1_0", "\u0663", " 5", "5 ", "-5", "+5", "5\n", "9" * 29, 
 def test_bad_number_is_invalid_argument(
     argv: list[str], value: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    if argv[0] == "get" and re.fullmatch(r"-?[0-9]+", value):
+        pytest.skip(
+            "get --comments takes any integer; the range is exit 22 (tests/test_get_command)"
+        )
     status, out, _ = run(capsys, "--json", *argv, value)
     assert status == 2 and _check_envelope(out)["reason"] == "invalid_argument"
 

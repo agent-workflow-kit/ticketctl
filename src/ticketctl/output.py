@@ -8,16 +8,22 @@ the exit code.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from .sanitize import render
 
+# One line is written whole: the reader threads of a multi-key command (verbose lines, warnings)
+# and the main thread never interleave their output.
+_LOCK = threading.Lock()
+
 
 def write(stream: Any, text: str) -> None:
     safe = render(text, body=True)
-    try:
-        stream.write(safe + "\n")
-        stream.flush()
-    except (OSError, ValueError, AttributeError):
-        # A full disk, a broken pipe, a closed or missing stream: the exit code still stands.
-        pass
+    with _LOCK:
+        try:
+            stream.write(safe + "\n")
+            stream.flush()
+        except (OSError, ValueError, AttributeError):
+            # A full disk, a broken pipe, a closed or missing stream: the exit code still stands.
+            pass

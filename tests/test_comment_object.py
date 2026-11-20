@@ -101,10 +101,44 @@ def test_an_unknown_actor_kind_is_null(kind: object) -> None:
     assert obj is not None and obj["actor_kind"] is None
 
 
-@pytest.mark.parametrize("props", [None, {}, "x", [None], [{"key": "other", "value": {}}]])
+@pytest.mark.parametrize("props", [[], [None], [{"key": "other", "value": {}}]])
 def test_no_property_is_not_authored_by_the_tool(props: object) -> None:
-    obj, _ = one(raw(properties=props))
-    assert obj is not None and obj["authored_by_ticketctl"] is False
+    obj, marks = one(raw(properties=props))
+    assert obj is not None and obj["authored_by_ticketctl"] is False and not marks
+
+
+@pytest.mark.parametrize("props", [None, {}, "x", 5])
+def test_an_own_comment_without_a_property_list_fails_closed(props: object) -> None:
+    obj, marks = one(raw(properties=props))
+    assert obj is not None and obj["own"] is True and obj["authored_by_ticketctl"] is True
+    assert obj["actor_kind"] is None and obj["body_sha256"] is None
+    assert obj["dedupe_key_sha256"] is None and "comments" in marks
+
+
+def test_an_own_comment_with_no_properties_key_fails_closed() -> None:
+    obj, marks = one(raw())
+    assert obj is not None and obj["authored_by_ticketctl"] is True and "comments" in marks
+
+
+@pytest.mark.parametrize("props", [None, {}, "x"])
+def test_another_accounts_comment_without_a_property_list_is_unchanged(props: object) -> None:
+    other = raw(author={"accountId": "acct-0002", "displayName": "Other"}, properties=props)
+    obj, marks = one(other)
+    assert obj is not None and obj["own"] is False and obj["authored_by_ticketctl"] is False
+    assert not marks
+
+
+def test_an_own_comment_when_me_is_unresolved_is_not_own_and_not_checked() -> None:
+    obj, marks = one(raw(properties=None), me=None)
+    assert obj is not None and obj["own"] is False and obj["authored_by_ticketctl"] is False
+    assert not marks
+
+
+@pytest.mark.parametrize("author", [None, "x", ["a"], 5])
+def test_a_non_object_author_is_unknown_and_named(author: object) -> None:
+    obj, marks = one(raw(author=author))
+    assert obj is not None and obj["author"] == {"account_id": None, "display_name": "unknown user"}
+    assert obj["own"] is False and "comments" in marks
 
 
 def test_the_page_lists_the_newest_n_oldest_first() -> None:
@@ -128,3 +162,37 @@ def test_an_unusable_page_is_empty_and_named(page: object) -> None:
 def test_a_total_below_the_listed_count_is_raised() -> None:
     out = comment_list({"comments": [raw(id="1"), raw(id="2")], "total": 1}, 5, ME)
     assert out.value["total"] == 2 and out.value["truncated"] is False
+
+
+def test_the_provider_order_is_not_trusted() -> None:
+    comments = [
+        raw(id="1", created="2026-03-01T09:00:00.000-0600", updated="2026-03-01T09:00:00.000-0600"),
+        raw(id="2", created="2026-03-01T11:00:00.000-0600", updated="2026-03-01T11:00:00.000-0600"),
+        raw(id="3", created="2026-03-01T10:00:00.000-0600", updated="2026-03-01T10:00:00.000-0600"),
+    ]  # oldest first, although the request asked for newest first
+    page = comment_list({"comments": comments, "total": 3}, 2, ME)
+    assert [c["id"] for c in page.value["items"]] == ["3", "2"]
+    assert page.value["truncated"] is True
+
+
+def test_equal_created_times_are_ordered_by_id() -> None:
+    page = comment_list({"comments": [raw(id="9"), raw(id="10"), raw(id="8")], "total": 3}, 3, ME)
+    assert [c["id"] for c in page.value["items"]] == ["8", "9", "10"]
+
+
+@pytest.mark.parametrize("count", [None, True, 2.5, -1, "3"])
+def test_an_unknown_total_is_truncated_and_named(count: object) -> None:
+    page = comment_list({"comments": [raw(id="1"), raw(id="2")], "total": count}, 5, ME)
+    assert page.value["total"] == 2 and page.value["truncated"] is True
+    assert "comments" in page.incomplete
+
+
+def test_a_missing_total_is_truncated_and_named() -> None:
+    page = comment_list({"comments": [raw(id="1")]}, 5, ME)
+    assert page.value["truncated"] is True and "comments" in page.incomplete
+
+
+def test_a_repeated_comment_id_is_kept_once_and_named() -> None:
+    page = comment_list({"comments": [raw(id="1"), raw(id="1"), raw(id="2")], "total": 3}, 5, ME)
+    assert [c["id"] for c in page.value["items"]] == ["1", "2"]
+    assert "comments" in page.incomplete

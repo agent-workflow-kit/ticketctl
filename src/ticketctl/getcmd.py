@@ -7,10 +7,12 @@ requested output needs them), build the provider field list with ``normalize.pla
 read every key with ``GET /issue/{key}?fields=...`` at concurrency 4. Every payload goes through
 ``normalize_issue``; the order of the input is restored before printing.
 
-Per-key failures (a 404, a provider answer that is not usable, a transport failure of that read)
-become ``{key, error}`` entries. With at least one ticket read the command exits 0 and a consumer
-must read ``errors``; with none read it raises the first error (in input order) carrying the whole
-per-key list in ``details.errors``, except for a single key, which keeps the plain envelope.
+Per-key failures (a 404, a provider answer that is not usable, a transport failure of that read, an
+unexpected exception) become ``{key, error}`` entries. After the first rejected credential the keys
+not yet started return that same error without a request, and after a Ctrl-C they return at once.
+With at least one ticket read the command exits 0 and a consumer must read ``errors``; with none
+read it raises the first error (in input order) carrying the whole per-key list in
+``details.errors``, except for a single key, which keeps the plain envelope.
 
 ``--comments N`` reads ``GET /issue/{key}/comment?orderBy=-created&maxResults=N&expand=properties``
 once per ticket, never the comments embedded in the issue (the search embeds only the first 20).
@@ -24,13 +26,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 from . import fieldload, identity, selection
 from .comment_object import MAX_COMMENTS, comment_list
-from .errors import TicketctlError, from_exception
+from .errors import TicketctlError, from_exception, internal_error
 from .flags import Globals
 from .gateway import Gateway
 from .normalize import (
@@ -45,6 +49,8 @@ from .sanitize import query, segment
 
 MAX_KEYS = 50
 CONCURRENCY = 4
+AUTH_CODES = frozenset({"bad_credentials", "auth_required"})
+_INTEGER = re.compile(r"-?[0-9]+", re.ASCII)
 ISSUE = "/rest/api/3/issue"
 ISSUE_TEMPLATE = "/rest/api/3/issue/{key}"
 COMMENT_TEMPLATE = "/rest/api/3/issue/{key}/comment"
@@ -67,20 +73,36 @@ def _invalid(message: str) -> TicketctlError:
     return TicketctlError("invalid_request", message, reason="invalid_value")
 
 
-def distinct_keys(rt: Runtime, g: Globals, refs: list[str]) -> list[tuple[str, str]]:
-    """``(key, the reference that named it)`` for each distinct key, in input order.
+def comments_arg(text: str) -> int:
+    """``--comments`` as an integer of any size and sign; the range is judged by the handler.
+
+    A value outside 1 to 50 is exit 22 ``invalid_value`` (docs/interface.md, ``get``), so a negative
+    or huge integer must reach :func:`comment_count`; text that is not an integer is a usage error.
+    """
+    if not _INTEGER.fullmatch(text):
+        raise argparse.ArgumentTypeError("invalid number (an integer)")
+    if len(text.lstrip("-")) > 18:
+        return -1 if text.startswith("-") else 10**18
+    return int(text)
+
+
+def distinct_keys(rt: Runtime, g: Globals, refs: list[str]) -> tuple[list[str], list[str]]:
+    """``(the distinct keys in input order, one reference per distinct (site, key))``.
 
     Every reference is validated first (key grammar and length, browse URL rules, ``--site``), so
-    a bad key anywhere is exit 22 ``invalid_key`` before the cap is judged.
+    a bad key anywhere is exit 22 ``invalid_key`` before the cap is judged. The same key typed
+    against two sites keeps both references, so the site rule can refuse them as ``mixed_sites``.
     """
-    seen: dict[str, str] = {}
+    keys: dict[str, None] = {}
+    kept: dict[tuple[str, str], str] = {}
     for ref in refs:
-        key = selection.select_site(rt.config, site_flag=g.site, refs=[ref]).key
-        assert key is not None
-        seen.setdefault(key, ref)
-    if len(seen) > MAX_KEYS:
+        picked = selection.select_site(rt.config, site_flag=g.site, refs=[ref])
+        assert picked.key is not None
+        keys.setdefault(picked.key)
+        kept.setdefault((picked.site, picked.key), ref)
+    if len(keys) > MAX_KEYS:
         raise _invalid(f"get reads at most {MAX_KEYS} distinct keys")
-    return list(seen.items())
+    return list(keys), list(kept.values())
 
 
 def comment_count(value: int | None) -> int:
@@ -130,16 +152,24 @@ class _Reader:
         self.fields = fields
         self.comments = comments
         self.me = me_account_id
+        self.stop = threading.Event()  # set on Ctrl-C: keys not yet started do nothing
+        self._auth: TicketctlError | None = None  # the first rejected credential
 
     def one(self, key: str) -> _Read:
+        if self.stop.is_set():
+            return _Read(
+                error=TicketctlError("internal", "interrupted", key=key, site=self.ctx.site)
+            )
+        if self._auth is not None:
+            return _Read(error=_copy(self._auth, key))
         try:
             return self._read(key)
-        except Exception as exc:  # noqa: BLE001 - only the modules' own errors are per-key
-            err = from_exception(exc)
-            if err is None:
-                raise
+        except Exception as exc:  # noqa: BLE001 - one key never takes the others down
+            err = from_exception(exc) or internal_error(exc)
             err.site = err.site or self.ctx.site
             err.key = err.key or key
+            if err.code in AUTH_CODES and self._auth is None:
+                self._auth = err
             return _Read(error=err)
 
     def _read(self, key: str) -> _Read:
@@ -183,6 +213,21 @@ class _Reader:
             ticket["incomplete"] = sorted({*ticket.get("incomplete", ()), *page.incomplete})
 
 
+def _copy(err: TicketctlError, key: str) -> TicketctlError:
+    """The same error for another key (a fresh object: errors are mutated per key)."""
+    return TicketctlError(
+        err.code,
+        err.message,
+        reason=err.reason,
+        details=dict(err.details) if err.details else None,
+        site=err.site,
+        key=key,
+        retryable=err.retryable,
+        retry_after_s=err.retry_after_s,
+        outcome_unknown=err.outcome_unknown,
+    )
+
+
 def _aggregate(errors: list[tuple[str, TicketctlError]]) -> TicketctlError:
     """The command's error when no key was read: the first one, with the whole list."""
     first = errors[0][1]
@@ -203,13 +248,29 @@ def _aggregate(errors: list[tuple[str, TicketctlError]]) -> TicketctlError:
     )
 
 
+def _read_all(reader: _Reader, names: list[str]) -> list[_Read]:
+    """Read every key at concurrency 4, in input order; Ctrl-C does not wait for the workers.
+
+    The workers in flight end by the command's deadline; keys not yet started return at once.
+    """
+    pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
+    try:
+        reads = list(pool.map(reader.one, names))
+    except BaseException:
+        reader.stop.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
+    return reads
+
+
 def get(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     rt = load_runtime(g)
     refs: list[str] = list(a.keys)
-    keys = distinct_keys(rt, g, refs)
+    names, refs = distinct_keys(rt, g, refs)
     comments = comment_count(a.comments)
     props = parse_properties(a.fields, command="get", comments=comments, include_adf=a.include_adf)
-    site = selection.select_site(rt.config, site_flag=g.site, refs=[ref for _, ref in keys]).site
+    site = selection.select_site(rt.config, site_flag=g.site, refs=refs).site
     with for_site(site):
         gw = open_gateway(rt, site)
         site_fields = fieldload.load_site_fields(rt, site, gw, needs=_needs(props, rt, site))
@@ -235,12 +296,10 @@ def get(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
             comments if "comments" in props.names else 0,
             me,
         )
-        names = [key for key, _ in keys]
         if len(names) == 1:
             reads = [reader.one(names[0])]
         else:
-            with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-                reads = list(pool.map(reader.one, names))
+            reads = _read_all(reader, names)
     warnings: dict[str, None] = {}
     tickets: list[dict[str, Any]] = []
     failed: list[tuple[str, TicketctlError]] = []

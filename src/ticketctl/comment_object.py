@@ -15,10 +15,18 @@ Rules this module settles where the interface leaves room (all conservative):
   null. On an own comment the property being present at all makes ``authored_by_ticketctl`` true
   (a consumer that distrusts ticketctl's own comments then keeps distrusting a damaged property);
   ``actor_kind`` and the hashes are read from it only when they are valid (``actor_kind`` is
-  ``auto`` or ``human``, a hash is 64 lower-case hex digits), else null.
+  ``auto`` or ``human``, a hash is 64 lower-case hex digits), else null. An own comment whose
+  ``properties`` is missing or not a list fails closed: the property cannot be ruled out, so
+  ``authored_by_ticketctl`` is true, ``actor_kind`` and the hashes are null and ``comments`` is
+  named incomplete.
 * A comment whose ``created`` or ``updated`` cannot be read, or whose id is outside its grammar, is
   dropped and named in the ticket's ``incomplete`` (``comments`` or ``comments.invalid_id``): an
   ``updated`` guessed equal to ``created`` would tell a consumer the text was never edited.
+* A page is read newest first but the provider's order is not trusted: the newest ``limit`` by
+  ``created`` (id breaks a tie) are kept and listed oldest first. A repeated comment id is kept
+  once and names ``comments``. A ``total`` the provider did not give (missing, not an integer or
+  negative) is unknown: ``total`` is then the number of comments listed, ``truncated`` is true
+  and ``comments`` is named incomplete.
 * A body that is not rich text or a string is the empty string and names ``comments``. Rich text is
   rendered like a description: the renderer's budgets and the body cap make ``truncated`` true.
 
@@ -41,6 +49,7 @@ BODY_CAP = CAPS["body"]
 NAME_CAP = CAPS["name"]
 UNKNOWN_USER = "unknown user"
 MAX_COMMENTS = 50
+MAX_SCAN = 1000  # comments of one page that are looked at, whatever the provider sent
 _HASH = re.compile(r"[0-9a-f]{64}")
 _KINDS = ("auto", "human")
 
@@ -86,10 +95,11 @@ def _hash(value: object) -> str | None:
     return value if isinstance(value, str) and _HASH.fullmatch(value) else None
 
 
-def _meta(properties: object) -> tuple[bool, dict[str, Any]]:
-    """(the property is present, the valid parts of its value)."""
+def _meta(properties: object, marks: set[str]) -> tuple[bool, dict[str, Any]]:
+    """(the property is present, the valid parts of its value) of an own comment."""
     if not isinstance(properties, list):
-        return False, {}
+        marks.add("comments")  # cannot rule the property out: fail closed
+        return True, {}
     for entry in properties:
         if isinstance(entry, dict) and entry.get("key") == META_PROPERTY:
             value = entry.get("value")
@@ -124,7 +134,7 @@ def comment_object(
         return None
     author = _author(raw.get("author"), marks)
     own = me_account_id is not None and author["account_id"] == me_account_id
-    present, meta = _meta(raw.get("properties")) if own else (False, {})
+    present, meta = _meta(raw.get("properties"), marks) if own else (False, {})
     body, cut = _body(raw.get("body"), marks)
     if cut:
         marks.add("comments.truncated")
@@ -146,17 +156,18 @@ def comment_object(
 def comment_list(page: object, limit: int, me_account_id: str | None) -> CommentPage:
     """``{items, total, truncated}`` for a page read newest first with ``maxResults=limit``.
 
-    ``items`` are the newest ``limit`` comments, oldest first. ``truncated`` is true when the ticket
-    has more comments than are listed (a count the provider did not give counts as unknown: the
-    page is then truncated and ``comments`` is named incomplete).
+    ``items`` are the newest ``limit`` comments by ``created`` (the provider's order is not
+    trusted), oldest first. ``truncated`` is true when the ticket has more comments than are listed;
+    a count the provider did not give is unknown, so the page is then truncated and ``comments`` is
+    named incomplete.
     """
     marks: set[str] = set()
-    raws: list[object] = []
+    listed: list[object] = []
     total: int | None = None
     if isinstance(page, dict):
-        listed = page.get("comments")
-        if isinstance(listed, list):
-            raws = listed[:limit]
+        raw_list = page.get("comments")
+        if isinstance(raw_list, list):
+            listed = raw_list[:MAX_SCAN]
         else:
             marks.add("comments")
         count = page.get("total")
@@ -164,14 +175,36 @@ def comment_list(page: object, limit: int, me_account_id: str | None) -> Comment
             total = count
     else:
         marks.add("comments")
-    items = [c for c in (comment_object(r, me_account_id, marks) for r in raws) if c is not None]
-    items.reverse()
+    kept: list[tuple[dict[str, Any], set[str]]] = []
+    seen: set[str] = set()
+    for raw in listed:
+        own_marks: set[str] = set()
+        obj = comment_object(raw, me_account_id, own_marks)
+        if obj is None:
+            marks |= own_marks
+        elif obj["id"] in seen:
+            marks.add("comments")  # a repeated id is kept once
+        else:
+            seen.add(obj["id"])
+            kept.append((obj, own_marks))
+    kept.sort(
+        key=lambda pair: (pair[0]["created"], len(pair[0]["id"]), pair[0]["id"]),
+        reverse=True,
+    )
+    newest = kept[:limit]
+    newest.reverse()
+    for _, own_marks in newest:
+        marks |= own_marks
+    shown = min(len(listed), limit)
     if total is None:
         marks.add("comments")
-        total = len(raws)
-    total = max(total, len(raws))
+        total = len(listed)
+        truncated = True
+    else:
+        total = max(total, len(listed))
+        truncated = total > shown
     return CommentPage(
-        {"items": items, "total": total, "truncated": total > len(raws)},
+        {"items": [obj for obj, _ in newest], "total": total, "truncated": truncated},
         marks,
     )
 

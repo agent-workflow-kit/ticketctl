@@ -29,6 +29,7 @@ MODULES = [
     "fieldconv",
     "timestamps",
     "normalize",
+    "comment_object",
     "adf_render",
     "adf_from_markdown",
     "adf_validate",

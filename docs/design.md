@@ -140,6 +140,7 @@ Normalization assumptions (issue #13, unverified against a real site; the code t
 | `search_compile` | structured flags and named queries compiled to one JQL string: string escaping, the time grammar, the string-aware `ORDER BY` scanner and balance proof; no provider calls (the jira module sends the parse check) |
 | `timestamps` | provider timestamp and date parsing: offsets without a colon, UTC `Z` to the second, the date-only form |
 | `normalize` | the `--fields` vocabulary, the provider field request and the provider issue to ticket object conversion (`incomplete`, the blocked tri-state); pure logic, no I/O |
+| `comment_object` | the comment object of a provider comment and the `get --comments N` page (own, `ticketctl.meta`, ordering, `incomplete`); pure logic, no I/O |
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
 | `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
