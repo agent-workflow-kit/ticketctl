@@ -622,14 +622,6 @@ def test_validate_missing_config_file_is_config_invalid(env: Env) -> None:
     assert (code, err_of(out)["reason"]) == (2, "config_invalid")
 
 
-def test_validate_probe_is_not_implemented_yet(env: Env) -> None:
-    env.write(TWO)
-    code, out, err = env.run("--json", "validate", "--probe")
-    assert code == 1 and err_of(out)["code"] == "internal"
-    assert err_of(out)["message"] == "validate --probe is not implemented yet"
-    assert "NotImplementedError" not in out + err and "Traceback" not in err
-
-
 def test_config_file_contents_are_never_echoed(env: Env) -> None:
     env.write("sites: [unterminated SENTINEL-s3cr3t-value-9f2c\n  : :\n")
     code, out, err = env.run("--json", "sites")
@@ -693,13 +685,13 @@ def test_the_scrub_is_armed_before_the_first_output(
     live: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[bool] = []
-    real = sanitize.configure_scrubber
+    real = sanitize.add_secrets
 
     def spy(secrets: Any, **kw: Any) -> None:
         seen.append(SITE_TOKEN in list(secrets))
         real(secrets, **kw)
 
-    monkeypatch.setattr("ticketctl.runtime.configure_scrubber", spy)
+    monkeypatch.setattr("ticketctl.runtime.add_secrets", spy)
     live.run("--json", "whoami")
     assert seen == [True]
     # the Basic value is registered too
@@ -792,13 +784,13 @@ def test_the_scrub_is_armed_before_any_output_is_written(
     live: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events: list[str] = []
-    real_configure = sanitize.configure_scrubber
+    real_configure = sanitize.add_secrets
 
     def configure(secrets: Any, **kw: Any) -> None:
         events.append("armed")
         real_configure(secrets, **kw)
 
-    monkeypatch.setattr("ticketctl.runtime.configure_scrubber", configure)
+    monkeypatch.setattr("ticketctl.runtime.add_secrets", configure)
     real_write = output.write
 
     armed_at_write: list[bool] = []

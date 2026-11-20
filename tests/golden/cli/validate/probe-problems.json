@@ -1,0 +1,41 @@
+{
+  "probe": true,
+  "sites": [
+    {
+      "account_id": "acct-0001",
+      "problems": [
+        {
+          "problem": "account_mismatch"
+        },
+        {
+          "logical": "estimate",
+          "problem": "type_mismatch"
+        },
+        {
+          "logical": "acceptance_criteria",
+          "problem": "missing"
+        }
+      ],
+      "queries": [
+        {
+          "error": "Field 'nosuchfield' does not exist or you do not have permission to view it.",
+          "name": "badfield",
+          "valid": false
+        },
+        {
+          "error": null,
+          "name": "good",
+          "valid": true
+        },
+        {
+          "error": "unbalanced parentheses or quote",
+          "name": "syntax",
+          "valid": false
+        }
+      ],
+      "site": "main"
+    }
+  ],
+  "valid": true,
+  "warnings": []
+}

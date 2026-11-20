@@ -1,5 +1,8 @@
 {
   "cli/error.json": "03e8a248819c6e37529265c80cdbfc93025370ccb5bdf5a8fbf277b5405947dc",
+  "cli/fields-check.json": "f401a4f4891e83b9185c3c9c1d3b0cfea1c1eeb91691275fbfae8319a224bb0e",
+  "cli/fields-list.json": "91c4e024a66ac43bc3da1fa19affe43c86183824d7bf391215ec971c3df10ea2",
+  "cli/fields-refresh.json": "06450e3ad0568d5dac8af9b5728393045143fff2e25eb1a1c2ff3c49187712dd",
   "cli/sites-resolve.json": "a0bdf51046782b7c4cdc1614b5821983ad3a60a7207c152c52bc4e4fc7a51eb1",
   "cli/sites.json": "3b59225f91f8c120f81d86709909af1b02bbfb61f8ae6139acfb1bed530f21f5",
   "cli/validate.json": "40627ac1092e9720edb85eb6dbe0ee0644433bd3c099f2c4c97cd93c2f6a151d",
