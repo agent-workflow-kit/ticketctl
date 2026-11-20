@@ -1,0 +1,17 @@
+{
+  "error": {
+    "code": "rejected",
+    "message": "the provider refused the write",
+    "reason": null,
+    "retryable": false,
+    "retry_after_s": null,
+    "outcome_unknown": false,
+    "site": "main",
+    "key": "DEMO-1",
+    "details": {
+      "errorMessages": [
+        "Assignee is required to progress this issue."
+      ]
+    }
+  }
+}

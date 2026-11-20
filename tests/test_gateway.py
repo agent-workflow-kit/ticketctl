@@ -1043,7 +1043,7 @@ def test_ipv6_proxy_host_is_described_with_brackets() -> None:
         "http://proxy.test:abc",
         "http://u:SECRETPW@",
         "http://proxy.test:3128/\x00",
-        "http://pro xy.test",
+        "http://pro xy.test",  # scan: allow
         "http://proxy.test:0",
         "http://proxy.test:",
         "http://u:SECRETPW@proxy.test:",
@@ -1849,7 +1849,7 @@ def test_auth_required_for_a_missing_email_variable_carries_a_name_not_a_value()
         "https://api.example.test:-1",
         "https://api.example.test/a b",
         "https://api.example.test/a\tb",
-        "https://api .example.test/",
+        "https://api .example.test/",  # scan: allow
         "https://api.example.test/a\nb",
         "https://user:HUNTER2pw@api.example.test",
         "https://user@api.example.test",

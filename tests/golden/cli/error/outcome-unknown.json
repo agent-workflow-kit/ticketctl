@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "outcome_unknown",
+    "message": "the connection dropped after the request was sent",
+    "reason": null,
+    "retryable": true,
+    "retry_after_s": null,
+    "outcome_unknown": true,
+    "site": "main",
+    "key": "DEMO-2",
+    "details": {
+      "attempt_id": "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
