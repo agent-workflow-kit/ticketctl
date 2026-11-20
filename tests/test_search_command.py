@@ -557,14 +557,6 @@ def test_the_quiet_flag_drops_the_warnings(live: Env, monkeypatch: pytest.Monkey
     assert code == 0 and err == ""
 
 
-def test_a_huge_page_of_issues_is_bounded_by_the_gateway(live: Env, fake: FakeProvider) -> None:
-    """The gateway's 16 MiB response cap makes an oversized answer provider_changed."""
-    many(fake, 5)
-    fake.quirks.all_fields_filler = 0
-    code, out, _ = live.run("--json", "search", *ALL_DEMO)
-    assert code == 0
-
-
 # --- --count ---------------------------------------------------------------------------------
 
 
@@ -572,7 +564,7 @@ def test_count_is_printed_next_to_the_tickets(live: Env, fake: FakeProvider) -> 
     code, out, _ = live.run("--json", "search", *ALL_DEMO, "--count")
     doc = json.loads(out)
     assert code == 0 and doc["count"] == 3 and len(doc["tickets"]) == 3
-    assert paths(fake)[:2] == [PARSE, COUNT] or PARSE in paths(fake)
+    assert [p for p in paths(fake) if p in (PARSE, COUNT, SEARCH)] == [PARSE, COUNT, SEARCH]
     assert_golden("cli", "search", "with-count", doc)
 
 
@@ -855,7 +847,7 @@ def test_text_file_strips_exactly_one_trailing_newline(
     code, out, _ = live.run("--json", "search", "--text-file", str(path))
     assert code == 0 and keys(json.loads(out)) == ["DEMO-3"]
     sent = searches(fake)[0].body["jql"]
-    assert sent == 'text ~ "\\"Seeded finished bug\\""' or "Seeded finished bug" in sent
+    assert sent == r'(text ~ "\"Seeded finished bug\"")'
     path.write_text("Seeded finished bug\n\n", encoding="utf-8")
     code, out, _ = live.run("--json", "search", "--text-file", str(path))
     assert (code, err_of(out)["reason"]) == (22, "invalid_value")
@@ -942,9 +934,7 @@ def test_the_project_flag_selects_the_site(env: Env, fake: FakeProvider) -> None
 
 def test_priority_is_normalized_with_a_rank(live: Env, fake: FakeProvider) -> None:
     doc = json.loads(live.run("--json", "search", *ALL_DEMO, "--fields", "priority")[1])
-    assert doc["tickets"][0]["priority"] == {"name": "Medium", "rank": 2} or isinstance(
-        doc["tickets"][0]["priority"]["rank"], int
-    )
+    assert doc["tickets"][0]["priority"] == {"name": "Medium", "rank": 2}
     assert "/rest/api/3/priority" in paths(fake)
 
 
@@ -968,7 +958,7 @@ def test_a_warning_from_normalization_goes_to_stderr(env: Env, fake: FakeProvide
 # --- failures --------------------------------------------------------------------------------
 
 
-def test_a_400_page_cap_quirk_is_never_triggered(live: Env, fake: FakeProvider) -> None:
+def test_200_tickets_are_not_cut_at_the_all_fields_page_cap(live: Env, fake: FakeProvider) -> None:
     many(fake, 197)
     fake.quirks.all_fields_page_cap = 100
     doc = json.loads(live.run("--json", "search", *ALL_DEMO, "--limit", "200")[1])
