@@ -706,7 +706,7 @@ def test_probe_caps_an_oversized_error(
     answer_parse(monkeypatch, {"queries": [{"errors": ["x" * 5000]}]})
     _, out, _ = env.run("--json", "validate", "--probe")
     error = json.loads(out)["sites"][0]["queries"][0]["error"]
-    assert len(error) <= probe_module.MAX_ERROR and error.startswith("xxx")
+    assert len(error) <= 1024 and error.startswith("xxx")
 
 
 def test_probe_sanitizes_control_characters_in_an_error(

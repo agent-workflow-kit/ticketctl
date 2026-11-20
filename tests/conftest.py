@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from tests.fake_provider import SITE_EMAIL, SITE_TOKEN, FakeProvider, Quirks
+from ticketctl import sanitize
 from ticketctl.gateway import Deadline, Gateway, Target
 
 
@@ -51,6 +52,14 @@ def isolated_environment(
     monkeypatch.setenv("PATH", "")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+
+
+@pytest.fixture(autouse=True)
+def reset_scrubber() -> Iterator[None]:
+    """Registered secrets never accumulate across tests."""
+    sanitize.configure_scrubber([])
+    yield
+    sanitize.configure_scrubber([])
 
 
 def _assert_no_internal_errors(provider: FakeProvider) -> None:
