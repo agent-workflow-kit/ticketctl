@@ -181,7 +181,9 @@ def _is_global_with_value(tok: str) -> bool:
     name, sep, value = tok.partition("=")
     if not sep:
         return False
-    if name == "--hook":  # the command text may hold spaces
+    # The hook command text and a config path may hold spaces. Residual: a subcommand value that
+    # starts with `--config=` or `--hook=` is read as the global option.
+    if name in ("--hook", "--config"):
         return True
     if name == "--override-escalation" or name in _VALUE_OPTS:
         # Every other global value (and the override scope) has a grammar with no whitespace.
@@ -206,7 +208,9 @@ def extract_globals(argv: Sequence[str]) -> tuple[Globals, list[str]]:
         elif tok in _VALUE_OPTS:
             taken.append(tok)
             given.add(tok)
-            if i < len(head):
+            # A following global option is not this option's value: leave it unfilled so
+            # argparse reports "expected one argument" and the next token is read on its own.
+            if i < len(head) and head[i] not in _FLAG_OPTS and head[i] not in _VALUE_OPTS:
                 taken.append(head[i])
                 i += 1
         elif _is_global_with_value(tok):

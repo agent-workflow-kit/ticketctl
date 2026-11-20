@@ -173,6 +173,33 @@ def test_override_escalation_does_not_swallow_the_next_argument(
     assert code == 0 and seen[0].key == "AB-1"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--config=/tmp/a b/c.toml", "whoami"],
+        ["whoami", "--config=/tmp/a b/c.toml"],
+        ["--config", "/tmp/a b/c.toml", "whoami"],
+    ],
+    ids=["equals-before", "equals-after", "separate"],
+)
+def test_config_path_with_spaces_reaches_the_command(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[Any] = []
+    patch_handler(monkeypatch, ("whoami",), lambda g, a: seen.append(g) or None)
+    code, _, _ = run(capsys, *argv)
+    assert code == 0 and seen[0].config == "/tmp/a b/c.toml"
+
+
+def test_value_option_does_not_eat_a_following_global_option(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status, out, _ = run(capsys, "--config", "--json", "get", "AB-1")
+    assert status == 2
+    body = _check_envelope(out)
+    assert (body["code"], body["reason"]) == ("usage", "invalid_argument")
+
+
 # --- exit-code table: one command-line test per row ------------------------------------
 
 # (code, reason, exit) for every row of the table that a handler (not the CLI itself) raises.
