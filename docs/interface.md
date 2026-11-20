@@ -94,9 +94,13 @@ Provider-neutral. No `customfield_N` name appears in any output except `fields l
 | `comments` | `{items, total, truncated}` | only with `--comments N`; untrusted bodies. |
 | `attachments` | `{id, name, size, mime}[]` | metadata only; `name` is untrusted. |
 | `fields` | object | the configured `extra` fields, converted by schema. |
-| `incomplete` | string[] | parts that were cut off or unavailable (`links`, `comments`, `attachments`, `<part>.truncated`, `<part>.invalid_id`, `links.unreadable`, `fields.<name>`, ...). |
+| `incomplete` | string[] | parts that were cut off or unavailable (`links`, `comments`, `attachments`, `<part>.truncated`, `<part>.invalid_id`, `links.unreadable`, `fields.<name>`, ...), sorted. Printed when requested (an empty list then) and whenever it is not empty. |
 
 Text longer than a field's cap is cut at a code-point boundary, ends with the marker `<truncated>`, and the part is named `<field>.truncated` in `incomplete`; a comment object carries `truncated` (boolean). Caps: title 4096, parent and link summaries 4096, body fields 1,000,000, label 256, names 256, attachment names 1024. One ticket that fails to parse or convert becomes a stub with `incomplete`, never aborting a `search` or a multi-key `get`. `get --comments N` costs one extra `/comment?orderBy=-created` call per ticket and returns the latest N (at most 50), oldest first.
+
+#### Unreadable parts
+
+A property that cannot be read from the payload is never guessed: a scalar or object becomes `null`, a list `[]` and the part is named in `incomplete` (the part is the property name, `<part>.truncated` for text cut at a cap or a renderer budget, `<part>.invalid_id` for an identifier outside its grammar that was dropped). `type` and `status` have no null in the schema, so they are omitted and named instead (a status category outside `new`, `indeterminate` and `done` counts as unreadable). A list the provider did not send (`labels`, `links`, `attachments`) is unknown, not empty. A logical field that is ambiguous, or mapped to a field the list lacks, is named and warned about in every read; one that is neither mapped nor discoverable is named only when `--fields` asked for it. `epic` is the parent when the parent's `issuetype.hierarchyLevel` is 1 (null and named when the level is missing), else the mapped epic-link field's key when there is one. A parent with no embedded type has `type: "unknown"`. `description_adf` is a copy with every string sanitized and non-finite numbers replaced by null. `incomplete` also holds `ticket` for a stub (the payload had no usable `fields`).
 
 #### Blocked
 

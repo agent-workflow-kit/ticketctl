@@ -27,6 +27,8 @@ MODULES = [
     "fieldmap",
     "fieldload",
     "fieldconv",
+    "timestamps",
+    "normalize",
     "adf_render",
     "adf_from_markdown",
     "adf_validate",
