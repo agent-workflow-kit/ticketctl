@@ -1,32 +1,36 @@
 """Markdown to ADF: the converter for every body ticketctl sends (docs/interface.md, Writing).
 
 Public API:
-    markdown_to_adf(text, body_chars=..., reserve=...)   Markdown text -> ADF ``doc`` dict
+    markdown_to_adf(text, body_chars=..., reserve=..., reserve_nodes=...)
+                                                         Markdown text -> ADF ``doc`` dict
     text_chars(doc)                                      the size measure: characters of text nodes
 
 The dialect is a CommonMark subset: paragraphs, ATX headings, bullet and ordered lists, fenced
 code with a language word, block quotes, inline code, bold, italic, ``http(s)`` links and hard
 breaks. Everything else (tables, task lists, strikethrough, images, autolinks, raw HTML, setext
-headings, indented code, ``@`` mentions, ``[~accountid:...]``, wiki markup, entities) stays
+headings, ``@`` mentions, ``[~accountid:...]``, wiki markup, entities) stays
 literal text. The converter builds only the nodes and marks of the ADF allowlist and never a
 mention, card, media, panel or status node; it never raises except with an ``InputError``
 (``empty_body``, ``body_too_large`` or, for a host the ``idna`` codec cannot encode,
-``invalid_value``).
+``invalid_value``), a ``TypeError`` for a non-str body and a ``ValueError`` for a negative
+``reserve`` or ``reserve_nodes``.
 
 Deviations from CommonMark, all toward literal text: no lazy continuation lines, no titles on
-links, no setext headings, no indented code, thematic breaks and entities stay text, a soft line
-break is one space, and a list or block quote nested deeper than 5 containers is literal text.
+links, no setext headings, indented code is not recognized (the indentation is dropped and the
+text stays), thematic breaks and entities stay text, a soft line break is one space, and a
+list or block quote nested deeper than 5 containers is literal text.
 Every input is sanitized first (``sanitize_body``), so control and bidirectional characters
 reach the output only as ``<U+XXXX>`` markers.
 
 TODO(#21): ``validate_adf()`` re-checks this output (and ``--format adf`` input) against the
 allowlist; this module does not replace it.
 TODO(#22): the attribution paragraph is added after conversion; callers pass its text length as
-``reserve`` so the size rule counts it.
+``reserve`` and its node count as ``reserve_nodes`` so the size rules count it.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import unicodedata
 from bisect import bisect_left
@@ -37,7 +41,6 @@ from ticketctl.sanitize import InputError, sanitize_body
 
 MAX_NEST = 5  # lists and block quotes together
 MAX_NODES = 5000
-MAX_HREF_TAIL = 2000
 DEFAULT_BODY_CHARS = 30000
 _DEST_WINDOW = 4100
 
@@ -52,7 +55,8 @@ _BACKTICKS = re.compile(r"`+")
 _ESCAPABLE = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 _UNESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 _DEST = re.compile(r"\((?:<((?:[^<>\n\\]|\\.)*)>|((?:[^\s()\\<]|\\.|\((?:[^\s()\\]|\\.)*\))*))\)")
-_IPV6 = re.compile(r"\[[0-9A-Fa-f:.]+\](?::[0-9]*)?")
+_IPV6 = re.compile(r"\[([0-9A-Fa-f:.]+)\]")
+_PORT = re.compile(r"[0-9]{1,5}")
 _URL_SAFE = "-._~!$&'()*+,;=:@/%[]?#"
 _AUTHORITY_SAFE = "-._~!$&'()*+,;=:@%[]"
 _URL_FORBIDDEN = frozenset({"Cc", "Zs", "Zl", "Zp"})
@@ -67,17 +71,28 @@ def _error(reason: str, message: str) -> InputError:
 # --------------------------------------------------------------------------------------------
 
 
-def markdown_to_adf(text: str, *, body_chars: int = DEFAULT_BODY_CHARS, reserve: int = 0) -> Node:
+def markdown_to_adf(
+    text: str,
+    *,
+    body_chars: int = DEFAULT_BODY_CHARS,
+    reserve: int = 0,
+    reserve_nodes: int = 0,
+) -> Node:
     """Convert Markdown to an ADF ``doc``.
 
-    ``body_chars`` is ``limits.body_chars``; ``reserve`` is the length of text the caller adds
-    after conversion (the attribution paragraph), counted by the size rule but not by the
-    emptiness rule. Raises InputError 22 ``empty_body`` (no non-blank text), ``body_too_large``
-    (the sum of text-node characters plus ``reserve`` over ``body_chars``, or over the node
-    limit) or ``invalid_value`` (a link host the ``idna`` codec rejects).
+    ``body_chars`` is ``limits.body_chars``; ``reserve`` and ``reserve_nodes`` are the length of
+    text and the number of nodes the caller adds after conversion (the attribution paragraph),
+    counted by the size rules but not by the emptiness rule. Raises only InputError 22:
+    ``empty_body`` (no non-blank text), ``body_too_large`` (the input over ``4 * body_chars``
+    characters, the sum of text-node characters plus ``reserve`` over ``body_chars``, or the node
+    count plus ``reserve_nodes`` over the node limit) or ``invalid_value`` (a link host the
+    ``idna`` codec rejects). A non-str ``text`` is a TypeError and a negative ``reserve`` or
+    ``reserve_nodes`` a ValueError (caller bugs).
     """
     if not isinstance(text, str):
         raise TypeError(f"markdown_to_adf needs str, got {type(text).__name__}")
+    if reserve < 0 or reserve_nodes < 0:
+        raise ValueError("reserve and reserve_nodes must not be negative")
     if len(text) > 4 * body_chars:
         # The input reader caps files at 4 * body_chars bytes; nothing here is worth parsing.
         raise _error("body_too_large", "the body is too large")
@@ -86,7 +101,7 @@ def markdown_to_adf(text: str, *, body_chars: int = DEFAULT_BODY_CHARS, reserve:
     doc: Node = {"type": "doc", "version": 1, "content": blocks}
     if not _has_visible_text(doc):
         raise _error("empty_body", "the body has no text")
-    if _node_count(doc) > MAX_NODES:
+    if _node_count(doc) + reserve_nodes > MAX_NODES:
         raise _error("body_too_large", "the body has too many nodes")
     if text_chars(doc) + reserve > body_chars:
         raise _error("body_too_large", f"the body is over {body_chars} characters")
@@ -131,8 +146,19 @@ def _expand(line: str) -> str:
     return " " * col + line[i:]
 
 
+def _strip_cols(raw: str, n: int) -> str:
+    """Drop ``n`` columns of leading whitespace from a raw line (tab stops of 4); the rest of a
+    tab that straddles the cut becomes spaces. Tabs after the indentation stay as they are."""
+    col = 0
+    i = 0
+    while i < len(raw) and col < n and raw[i] in " \t":
+        col += 1 if raw[i] == " " else (col // 4 + 1) * 4 - col
+        i += 1
+    return " " * (col - n) + raw[i:] if col > n else raw[i:]
+
+
 def _blank(line: str) -> bool:
-    return not line or line.isspace()
+    return not line.strip(" \t")
 
 
 def _indent(line: str) -> int:
@@ -163,7 +189,7 @@ def _open_fence(line: str) -> tuple[str, int, str] | None:
 def _closes_fence(line: str, ch: str, run: int) -> bool:
     if _indent(line) >= 4:
         return False
-    s = line.strip()
+    s = line.strip(" \t")
     return len(s) >= run and not s.strip(ch)
 
 
@@ -222,7 +248,7 @@ def _marker(line: str, nest: int) -> _Marker | None:
     end = indent + mlen
     after = line[end:]
     spaces = len(after) - len(after.lstrip(" \t"))
-    if not after.strip():
+    if not after.strip(" \t"):
         return _Marker(kind, delim, number, end + 1, "")
     if spaces >= 5:
         return _Marker(kind, delim, number, end + 1, line[end + 1 :])
@@ -235,7 +261,7 @@ def _list_start(line: str, nest: int, *, interrupting: bool) -> _Marker | None:
         return None
     if m.kind == "o" and not (1 <= m.number <= 9999):
         return None
-    if interrupting and (not m.rest.strip() or (m.kind == "o" and m.number != 1)):
+    if interrupting and (not m.rest.strip(" \t") or (m.kind == "o" and m.number != 1)):
         return None
     return m
 
@@ -249,8 +275,10 @@ def _interrupts(line: str, nest: int) -> bool:
     )
 
 
-def _parse_blocks(raw_lines: list[str], nest: int) -> list[Node]:
-    lines = [_expand(line) for line in raw_lines]
+def _parse_blocks(raws: list[str], nest: int) -> list[Node]:
+    """Parse lines into blocks. Structure is judged on the tab-expanded ``lines``; code text and
+    the lines handed to containers come from the ``raws`` so tabs inside code survive."""
+    lines = [_expand(line) for line in raws]
     n = len(lines)
     out: list[Node] = []
     i = 0
@@ -261,7 +289,7 @@ def _parse_blocks(raw_lines: list[str], nest: int) -> list[Node]:
             continue
         fence = _open_fence(line)
         if fence is not None:
-            node, i = _fenced_code(lines, i, fence)
+            node, i = _fenced_code(lines, raws, i, fence)
             out.append(node)
             continue
         heading = _atx(line)
@@ -275,12 +303,12 @@ def _parse_blocks(raw_lines: list[str], nest: int) -> list[Node]:
             i += 1
             continue
         if _is_quote(line, nest):
-            node, i = _quote(lines, i, nest)
+            node, i = _quote(lines, raws, i, nest)
             out.append(node)
             continue
         marker = _list_start(line, nest, interrupting=False)
         if marker is not None:
-            node, i = _list(lines, i, marker, nest)
+            node, i = _list(lines, raws, i, marker, nest)
             out.append(node)
             continue
         node, i = _paragraph(lines, i, nest)
@@ -288,14 +316,15 @@ def _parse_blocks(raw_lines: list[str], nest: int) -> list[Node]:
     return out
 
 
-def _fenced_code(lines: list[str], i: int, fence: tuple[str, int, str]) -> tuple[Node, int]:
+def _fenced_code(
+    lines: list[str], raws: list[str], i: int, fence: tuple[str, int, str]
+) -> tuple[Node, int]:
     ch, run, info = fence
     indent = _indent(lines[i])
     body: list[str] = []
     j = i + 1
     while j < len(lines) and not _closes_fence(lines[j], ch, run):
-        line = lines[j]
-        body.append(line[min(indent, _indent(line)) :])
+        body.append(_strip_cols(raws[j], min(indent, _indent(lines[j]))))
         j += 1
     node: Node = {"type": "codeBlock"}
     word = info.split(None, 1)[0] if info else ""
@@ -307,34 +336,42 @@ def _fenced_code(lines: list[str], i: int, fence: tuple[str, int, str]) -> tuple
     return node, min(j + 1, len(lines))
 
 
-def _quote(lines: list[str], i: int, nest: int) -> tuple[Node, int]:
+def _quote(lines: list[str], raws: list[str], i: int, nest: int) -> tuple[Node, int]:
     inner: list[str] = []
     j = i
     while j < len(lines) and _is_quote(lines[j], nest):
-        s = lines[j].lstrip(" ")[1:]
+        s = _strip_cols(raws[j], _indent(lines[j]))[1:]
         inner.append(s[1:] if s[:1] == " " else s)
         j += 1
     content = _parse_blocks(inner, nest + 1) or [{"type": "paragraph"}]
     return {"type": "blockquote", "content": content}, j
 
 
-def _list(lines: list[str], i: int, first: _Marker, nest: int) -> tuple[Node, int]:
+def _raw_rest(marker: _Marker, raw: str) -> str:
+    """The first line of an item without its marker, from the raw line (a suffix of it)."""
+    return raw[len(raw) - len(marker.rest) :] if marker.rest else ""
+
+
+def _list(lines: list[str], raws: list[str], i: int, first: _Marker, nest: int) -> tuple[Node, int]:
     n = len(lines)
     items: list[Node] = []
     marker = first
     while True:
-        item_lines = [marker.rest]
+        item_lines = [_raw_rest(marker, raws[i])]
         j = i + 1
-        stop = not marker.rest.strip() and j < n and _blank(lines[j])
+        stop = not marker.rest.strip(" \t") and j < n and _blank(lines[j])
         blanks: list[str] = []
         while not stop and j < n:
             line = lines[j]
             if _blank(line):
-                blanks.append("")
+                # a whitespace-only line keeps what lies past the item's indent (code text)
+                blanks.append(
+                    _strip_cols(raws[j], marker.width) if _indent(line) >= marker.width else ""
+                )
             elif _indent(line) >= marker.width:
                 item_lines.extend(blanks)
                 blanks = []
-                item_lines.append(line[marker.width :])
+                item_lines.append(_strip_cols(raws[j], marker.width))
             else:
                 break
             j += 1
@@ -359,7 +396,7 @@ def _paragraph(lines: list[str], i: int, nest: int) -> tuple[Node, int]:
     j = i + 1
     while j < len(lines) and not _blank(lines[j]) and not _interrupts(lines[j], nest):
         j += 1
-    text = "\n".join(line.lstrip(" ") for line in lines[i:j]).rstrip()
+    text = "\n".join(line.lstrip(" ") for line in lines[i:j]).rstrip(" \t")
     node: Node = {"type": "paragraph"}
     inline = _parse_inline(text)
     if inline:
@@ -441,6 +478,8 @@ class _Inline:
         self.root = _Delim("", 0, False, False, -1)
         self.tail = self.root
         self.brackets: list[_Bracket] = []
+        self.floor = 0  # brackets below this index are images or already deactivated
+        self.bottoms: dict[tuple[str, int, bool], _Delim | None] = {}
         self.spans: list[tuple[int, int, int]] = []  # opener idx, closer idx, 1 em / 2 strong
         self.links: list[tuple[int, int, str]] = []
         self.runs: dict[int, list[int]] = {}
@@ -564,6 +603,7 @@ class _Inline:
             self.buf.append("]")
             return pos + 1
         opener = self.brackets.pop()
+        self.floor = min(self.floor, len(self.brackets))
         if opener.image or not opener.active:
             self.buf.append("]")
             return pos + 1
@@ -577,20 +617,32 @@ class _Inline:
             self.buf.append("]")
             return pos + 1
         self.flush()
+        if not self.visible(opener.idx + 1):
+            self.buf.append("]")
+            return pos + 1
         self.toks[opener.idx] = _Text("")
         self.emphasis(opener.bottom)
         self.links.append((opener.idx + 1, len(self.toks), href))
-        for b in reversed(self.brackets):  # earlier link openers can no longer open a link
-            if not b.active:
-                break
+        for k in range(len(self.brackets) - 1, self.floor - 1, -1):
+            b = self.brackets[k]  # earlier link openers can no longer open a link
             if not b.image:
                 b.active = False
+        self.floor = len(self.brackets)
         return m.end()
+
+    def visible(self, start: int) -> bool:
+        """Whether the tokens from ``start`` hold any non-whitespace text (a link needs some)."""
+        for tok in self.toks[start:]:
+            if isinstance(tok, _Delim):
+                return True
+            if isinstance(tok, (_Text, _Code)) and tok.text.strip():
+                return True
+        return False
 
     # -- emphasis (the CommonMark delimiter algorithm over a linked list) ---------------------
 
     def emphasis(self, bottom: _Delim) -> None:
-        bottoms: dict[tuple[str, int, bool], _Delim | None] = {}
+        bottoms = self.bottoms = {}
         closer = bottom.next
         while closer is not None:
             if not closer.can_close:
@@ -622,6 +674,9 @@ class _Inline:
             found.count -= use
             closer.count -= use
             found.next, closer.prev = closer, found  # drop the delimiters between them
+            for key, held in bottoms.items():
+                if held is not None and found.idx < held.idx < closer.idx:
+                    bottoms[key] = found
             if found.count == 0:
                 self.unlink(found)
             if closer.count == 0:
@@ -633,6 +688,9 @@ class _Inline:
         self.tail = bottom
 
     def unlink(self, d: _Delim) -> None:
+        for key, held in self.bottoms.items():  # a scan limit must stay in the list
+            if held is d:
+                self.bottoms[key] = d.prev
         if d.prev is not None:
             d.prev.next = d.next
         if d.next is not None:
@@ -704,6 +762,35 @@ def _forbidden(ch: str) -> bool:
     return ord(ch) <= 0x20 or ord(ch) == 0x7F or unicodedata.category(ch) in _URL_FORBIDDEN
 
 
+def _has_ace_label(host: str) -> bool:
+    return any(label.lower().startswith("xn--") for label in host.split("."))
+
+
+def _split_authority(authority: str) -> tuple[str, str | None] | None:
+    """Split ``host[:port]`` (the host an IPv6 literal in brackets); None when it is not valid."""
+    if authority.startswith("["):
+        end = authority.find("]")
+        m = _IPV6.fullmatch(authority[: end + 1]) if end != -1 else None
+        if m is None:
+            return None
+        try:
+            ipaddress.IPv6Address(m.group(1))
+        except ValueError:
+            return None
+        host, rest = authority[: end + 1], authority[end + 1 :]
+        if not rest:
+            return host, None
+        if rest[0] != ":" or _PORT.fullmatch(rest[1:]) is None:
+            return None
+        return host, rest[1:]
+    host, sep, port = authority.partition(":")
+    if not host or any(c in host for c in "[]%:"):
+        return None
+    if sep and _PORT.fullmatch(port) is None:
+        return None
+    return host, (port if sep else None)
+
+
 def _href(raw: str, *, angled: bool) -> str | None:
     """The normalized ``http(s)`` target, or None when the text is not a safe link target.
 
@@ -727,18 +814,29 @@ def _href(raw: str, *, angled: bool) -> str | None:
     authority, tail = rest[:cut], rest[cut:]
     if not authority or "@" in authority or "\\" in authority:
         return None
-    if "[" in authority or "]" in authority:
-        if _IPV6.fullmatch(authority) is None:
-            return None
-    elif not authority.isascii():
-        host, sep, port = authority.rpartition(":")
-        if not sep or not port.isdigit():
-            host, sep, port = authority, "", ""
+    parsed = _split_authority(authority)
+    if parsed is None:
+        return None
+    host, port = parsed
+    if host.isascii():
+        if _has_ace_label(host):  # a punycode label must decode, else the host is not valid
+            try:
+                host.encode("idna").decode("idna")
+            except UnicodeError:
+                return None
+    else:
         try:
-            host = host.encode("idna").decode("ascii")
+            encoded = host.encode("idna")
         except UnicodeError:
             raise _error("invalid_value", "a link host cannot be encoded") from None
-        authority = host + sep + port
+        try:
+            remapped = encoded.decode("idna") != host.lower()  # IDNA 2003 changed the host
+        except UnicodeError:
+            remapped = True
+        if remapped:
+            return None
+        host = encoded.decode("ascii")
+    authority = host + (":" + port if port is not None else "")
     href = (
         m.group(1).lower()
         + "://"

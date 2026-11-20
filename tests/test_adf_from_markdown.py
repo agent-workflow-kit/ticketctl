@@ -19,6 +19,19 @@ HREF = re.compile(r"(?!https?://[^/?#]*@)https?://[\x21-\x7e]{1,2000}")
 LANG = re.compile(r"[A-Za-z0-9+#._-]{1,32}")
 MAX_DEPTH = 10  # container depth below the doc (list nesting 5)
 MAX_NODES = 5000
+ALLOWED_NODES = {
+    "doc",
+    "paragraph",
+    "text",
+    "heading",
+    "bulletList",
+    "orderedList",
+    "listItem",
+    "codeBlock",
+    "blockquote",
+    "hardBreak",
+}
+ALLOWED_MARKS = {"strong", "em", "code", "link"}
 
 
 # --- an independent allowlist check (the real validate_adf is owned by #21) -----------------
@@ -34,6 +47,7 @@ def check(doc: dict[str, Any]) -> int:
     def block(node: dict[str, Any], depth: int) -> None:
         count[0] += 1
         t = node["type"]
+        assert t in ALLOWED_NODES, t
         if t in ("bulletList", "orderedList", "blockquote"):
             assert depth <= MAX_DEPTH, "too deep"
         keys = set(node)
@@ -87,6 +101,7 @@ def check(doc: dict[str, Any]) -> int:
             kinds = [m["type"] for m in marks]
             assert len(kinds) == len(set(kinds)), "duplicate mark"
             for m in marks:
+                assert m["type"] in ALLOWED_MARKS, m["type"]
                 if m["type"] in ("strong", "em", "code"):
                     assert set(m) == {"type"}
                 else:
@@ -138,6 +153,30 @@ def all_text(doc: dict[str, Any]) -> str:
 
     walk(doc)
     return "".join(out)
+
+
+def container_depth(doc: dict[str, Any]) -> int:
+    """The depth measure of docs/interface.md: list, listItem and blockquote nodes only."""
+
+    def walk(n: dict[str, Any]) -> int:
+        here = 1 if n["type"] in ("bulletList", "orderedList", "listItem", "blockquote") else 0
+        return here + max((walk(c) for c in n.get("content", [])), default=0)
+
+    return walk(doc)
+
+
+def link_hrefs(doc: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+
+    def walk(n: Any) -> None:
+        for m in n.get("marks", []):
+            if m["type"] == "link":
+                out.append(m["attrs"]["href"])
+        for c in n.get("content", []):
+            walk(c)
+
+    walk(doc)
+    return out
 
 
 def types(doc: dict[str, Any]) -> set[str]:
@@ -249,14 +288,9 @@ def test_links() -> None:
 
 def test_link_text_never_nests_links() -> None:
     doc = conv("[a [b](https://b.example) c](https://c.example)")
-    links = [
-        m["attrs"]["href"]
-        for n in doc["content"][0]["content"]
-        for m in n.get("marks", [])
-        if m["type"] == "link"
-    ]
-    assert len(set(links)) == 1 and len(links) >= 1
-    assert "[a " in all_text(doc) or "c](" in all_text(doc)
+    assert doc == body(
+        para(t("[a "), t("b", href="https://b.example"), t(" c](https://c.example)"))
+    )
 
 
 @pytest.mark.parametrize(
@@ -279,6 +313,24 @@ def test_link_text_never_nests_links() -> None:
         "https://a.example/<U+202E>",
         "https://" + "a" * 2001,
         "https://[::1",
+        "http://good.example＠evil.example/",
+        "http://evil.com\\@good.com",
+        "http://evil.com\\\\good.com/",
+        "http://good.example/\\<U+202E>",
+        "<http://a.example/x\ty>",
+        "<http://a.example/x\u00a0y>",
+        "http://:80/",
+        "http://é:abc/",
+        "http://é:²",
+        "http://x.co:99999999999",
+        "http://x.co:",
+        "http://[:]",
+        "http://[::1]x",
+        "http://xn--/",
+        "http://a%41.example/",
+        "http://faß.de/",
+        "http://u@" + "ü" * 70 + ".example/",
+        "http://a.example:8a/",
     ],
 )
 def test_unsafe_or_unsupported_link_targets_stay_literal(target: str) -> None:
@@ -364,9 +416,7 @@ def test_lists() -> None:
     doc = conv("3. a\n4) b\n5. c")
     assert [b["type"] for b in doc["content"]] == ["orderedList"] * 3
     assert doc["content"][0]["attrs"] == {"order": 3}
-    assert "attrs" not in conv("1. a")["content"][0] or conv("1. a")["content"][0]["attrs"] == {
-        "order": 1
-    }
+    assert "attrs" not in conv("1. a")["content"][0]  # order omitted when it is 1
 
 
 def test_ordered_start_bounds() -> None:
@@ -444,36 +494,35 @@ def test_headings_inside_containers() -> None:
 
 
 @pytest.mark.parametrize(
-    "md",
+    ("md", "text"),
     [
-        "[~accountid:abc]",
-        "[~accountid:abc] please look",
-        "@someone",
-        "{code}x{code}",
-        "{code:java}x{code}",
-        "h2. Title",
-        "h1.Title",
-        "{panel}x{panel}",
-        "||a||b||\n|c|d|",
-        "| a | b |\n|---|---|\n| 1 | 2 |",
-        "<b>bold</b> <script>alert(1)</script>",
-        "<!-- c -->",
-        "&amp; &#60;",
-        "<https://a.example/>",
-        "https://a.example/bare",
-        "~~strike~~",
-        "!(https://a.example/i.png)",
-        "[ ] todo",
-        ":smile: [x]",
-        "!{noformat}",
-        "    indented\n    code",
+        ("[~accountid:abc]", "[~accountid:abc]"),
+        ("[~accountid:abc] please look", "[~accountid:abc] please look"),
+        ("@someone", "@someone"),
+        ("{code}x{code}", "{code}x{code}"),
+        ("{code:java}x{code}", "{code:java}x{code}"),
+        ("h2. Title", "h2. Title"),
+        ("h1.Title", "h1.Title"),
+        ("{panel}x{panel}", "{panel}x{panel}"),
+        ("||a||b||\n|c|d|", "||a||b|| |c|d|"),
+        ("| a | b |\n|---|---|\n| 1 | 2 |", "| a | b | |---|---| | 1 | 2 |"),
+        ("<b>bold</b> <script>alert(1)</script>", "<b>bold</b> <script>alert(1)</script>"),
+        ("<!-- c -->", "<!-- c -->"),
+        ("&amp; &#60;", "&amp; &#60;"),
+        ("<https://a.example/>", "<https://a.example/>"),
+        ("https://a.example/bare", "https://a.example/bare"),
+        ("~~strike~~", "~~strike~~"),
+        ("!(https://a.example/i.png)", "!(https://a.example/i.png)"),
+        ("[ ] todo", "[ ] todo"),
+        (":smile: [x]", ":smile: [x]"),
+        ("!{noformat}", "!{noformat}"),
+        ("    indented\n    code", "indented code"),
     ],
 )
-def test_other_forms_stay_literal(md: str) -> None:
+def test_other_forms_stay_literal(md: str, text: str) -> None:
     doc = conv(md)
-    assert types(doc) <= {"doc", "paragraph", "text", "hardBreak"}
-    squashed = re.sub(r"\s+", "", all_text(doc))
-    assert squashed.startswith(re.sub(r"\s+", "", md)[:4].replace("\\", ""))
+    assert types(doc) <= {"doc", "paragraph", "text"}  # no marks, no other nodes
+    assert all_text(doc) == text
 
 
 def test_task_list_and_wiki_items_become_plain_text() -> None:
@@ -502,7 +551,7 @@ def test_crlf_and_cr_are_newlines() -> None:
     assert conv("a\r\n\r\nb\rc") == body(para(t("a")), para(t("b c")))
 
 
-def test_scrub_runs_on_text() -> None:
+def test_converter_does_not_scrub_secrets() -> None:
     sanitize.configure_scrubber(["supersecretvalue123"])
     try:
         # the converter does not scrub (that is ensure_no_secret's job): it must not crash
@@ -511,7 +560,7 @@ def test_scrub_runs_on_text() -> None:
         sanitize.configure_scrubber([])
 
 
-@pytest.mark.parametrize("md", ["", " ", "\n\n", "\t \r\n", " "[:0]])
+@pytest.mark.parametrize("md", ["", " ", "\n\n", "\t \r\n"])
 def test_whitespace_only_body_is_empty_body(md: str) -> None:
     with pytest.raises(sanitize.InputError) as err:
         markdown_to_adf(md)
@@ -729,3 +778,202 @@ def test_no_wiki_markup_api_anywhere_in_the_code() -> None:
     assert "/rest/api/3/" in endpoints
     assert "/rest/api/2" not in endpoints
     assert "renderedBody" not in endpoints
+
+
+# --- review round 1: raw code text, reserve, links, depth, limits ---------------------------
+
+
+def code_text(doc: dict[str, Any]) -> str:
+    out: list[str] = []
+
+    def walk(n: Any) -> None:
+        if n["type"] == "codeBlock":
+            out.extend(c["text"] for c in n.get("content", []))
+        for c in n.get("content", []):
+            walk(c)
+
+    walk(doc)
+    return "\n".join(out)
+
+
+def test_tabs_inside_fenced_code_are_kept() -> None:
+    assert code_text(conv("```\n\tx\n\t\ty\n```")) == "\tx\n\t\ty"
+    assert code_text(conv("> ```\n> \tx\n> ```")) == "\tx"
+    assert code_text(conv("- ```\n  \tx\n  ```")) == "\tx"
+    assert code_text(conv("- a\n\n  ```\n  \tx\n  ```")) == "\tx"
+
+
+def test_tab_straddling_a_container_indent_becomes_spaces() -> None:
+    # the tab spans columns 0 to 4; the list item takes 2 of them
+    assert code_text(conv("- a\n\n  ```\n\tx\n  ```")) == "  x"
+
+
+def test_leading_tab_is_four_columns_for_structure() -> None:
+    doc = conv("\t- a")  # indented 4 columns: not a list marker
+    assert types(doc) == {"doc", "paragraph", "text"}
+    assert all_text(doc) == "- a"
+    assert conv("- a\n\t- b")["content"][0]["content"][0]["content"][1]["type"] == "bulletList"
+
+
+def test_reserve_nodes_counts_toward_the_node_limit() -> None:
+    md = "a\\\n" * 2000 + "z"  # about 4002 nodes
+    nodes = check(conv(md, body_chars=32767))
+    free = 5000 - nodes
+    assert markdown_to_adf(md, body_chars=32767, reserve_nodes=free)
+    with pytest.raises(sanitize.InputError) as err:
+        markdown_to_adf(md, body_chars=32767, reserve_nodes=free + 1)
+    assert err.value.reason == "body_too_large"
+
+
+@pytest.mark.parametrize("kw", [{"reserve": -1}, {"reserve_nodes": -1}])
+def test_negative_reserve_is_a_value_error(kw: dict[str, int]) -> None:
+    with pytest.raises(ValueError):
+        markdown_to_adf("a", **kw)
+
+
+@pytest.mark.parametrize(
+    "md",
+    [
+        "[](http://a.example)",
+        "[ ](http://a.example)",
+        "[ ](http://a.example)",
+        "[` `](http://a.example)",
+    ],
+)
+def test_link_without_visible_text_stays_literal(md: str) -> None:
+    doc = conv(md)
+    assert "mark:link" not in types(doc)
+    assert all_text(doc).startswith("[")
+    assert "http://a.example" in all_text(doc)
+
+
+def test_link_whose_text_is_a_sanitizer_marker_is_a_link() -> None:
+    doc = conv("[​](http://a.example)")
+    assert link_hrefs(doc) == ["http://a.example"]
+    assert all_text(doc) == "<U+200B>"
+
+
+def test_nbsp_only_line_is_not_a_blank_line() -> None:
+    doc = conv("a\n \nb")
+    assert doc == body(para(t("a   b")))
+
+
+def test_nbsp_only_body_is_empty() -> None:
+    with pytest.raises(sanitize.InputError) as err:
+        markdown_to_adf(" \n ")
+    assert err.value.reason == "empty_body"
+
+
+def test_whitespace_only_line_inside_code_in_a_list_item_keeps_its_content() -> None:
+    doc = conv("- ```\n    x\n      \n    y\n  ```")
+    assert code_text(doc) == "  x\n    \n  y"
+    short = conv("- ```\n  x\n \n  y\n  ```")  # shorter than the item indent: empty line
+    assert code_text(short) == "x\n\ny"
+
+
+def test_body_of_only_sanitizer_markers_is_text() -> None:
+    doc = conv("​")
+    assert all_text(doc) == "<U+200B>"
+
+
+def test_container_depth_measure_for_nested_lists() -> None:
+    md = "\n".join("  " * i + f"- l{i}" for i in range(8))
+    assert container_depth(conv(md)) == 10  # five lists and five list items
+
+
+def test_container_depth_measure_for_mixed_quotes_and_lists() -> None:
+    doc = conv("> - > - > x")  # quote, list, item, quote, list, item, quote
+    assert container_depth(doc) == 7
+    deeper = conv("> - > - > - > x")  # the sixth container is literal
+    assert container_depth(deeper) == 7
+    assert "- > x" in all_text(deeper)
+
+
+def test_input_cap_is_four_times_body_chars() -> None:
+    cap = 50
+    assert text_chars(conv("a" + "\n" * (4 * cap - 1), body_chars=cap)) == 1
+    with pytest.raises(sanitize.InputError) as err:
+        markdown_to_adf("a" + "\n" * (4 * cap), body_chars=cap)
+    assert err.value.reason == "body_too_large"
+
+
+def test_unescaped_parens_in_destinations() -> None:
+    assert link_hrefs(conv(r"[x](http://a.example/p\)q)")) == ["http://a.example/p)q"]
+    assert link_hrefs(conv(r"[x](http://a.example/p\(q)")) == ["http://a.example/p(q"]
+
+
+def test_fence_indent_of_four_or_more_is_not_a_fence() -> None:
+    assert "codeBlock" not in types(conv("    ```\nx"))
+    doc = conv("```\na\n    ```\nb")  # an indented fence line does not close the block
+    assert code_text(doc) == "a\n    ```\nb"
+
+
+def test_host_with_special_characters_is_percent_encoded() -> None:
+    assert link_hrefs(conv('[x](http://a"b.example/)')) == ["http://a%22b.example/"]
+
+
+def test_host_and_port_forms_that_link() -> None:
+    cases = {
+        "http://é.example/": "http://xn--9ca.example/",
+        "http://é.example:8080/x": "http://xn--9ca.example:8080/x",
+        "http://xn--bcher-kva.example/": "http://xn--bcher-kva.example/",
+        "http://[::1]:80/": "http://[::1]:80/",
+        "http://x.co:65535/": "http://x.co:65535/",
+    }
+    for target, href in cases.items():
+        assert link_hrefs(conv(f"[x]({target})")) == [href], target
+
+
+def test_userinfo_with_unencodable_host_is_literal_not_an_error() -> None:
+    doc = conv("[x](http://u@" + "ü" * 70 + ".example/)")
+    assert "mark:link" not in types(doc)
+
+
+def test_very_long_destination_stays_literal_and_fast() -> None:
+    start = time.monotonic()
+    doc = conv("[x](http://a.example/" + "a" * 5000 + ")")
+    assert "mark:link" not in types(doc)
+    md = ("[x](http://a.example/" + "a" * 3000) * 8
+    assert "mark:link" not in types(conv(md))
+    assert time.monotonic() - start < 2
+
+
+def test_many_images_before_links_is_not_quadratic() -> None:
+    md = "![" * 30000 + "[a](http://a)" * 4615
+    start = time.monotonic()
+    try:
+        check(markdown_to_adf(md, body_chars=32767))
+    except sanitize.InputError as exc:
+        assert exc.reason == "body_too_large"
+    assert time.monotonic() - start < 2
+
+
+def test_emphasis_token_soup_is_not_superlinear() -> None:
+    # A bound, not a regression proof: the superlinear case from review was not reproduced.
+    rng = random.Random(7)
+    md = "".join(rng.choice(["***", "[", "_a", "](", "*"]) for _ in range(65000))
+    start = time.monotonic()
+    try:
+        check(markdown_to_adf(md, body_chars=32767))
+    except sanitize.InputError as exc:
+        assert exc.reason == "body_too_large"
+    assert time.monotonic() - start < 2
+
+
+def test_schema_patterns_and_allowlist_match_the_converter() -> None:
+    from ticketctl import adf_from_markdown as mod
+
+    schema = json.loads((ROOT / "schemas" / "adf.json").read_text(encoding="utf-8"))
+    defs = schema["$defs"]
+    link = defs["mark"]["oneOf"][1]["properties"]["attrs"]["properties"]["href"]
+    assert link["pattern"] == "^" + mod._HREF.pattern + "$"
+    lang = defs["codeBlock"]["properties"]["attrs"]["properties"]["language"]
+    assert lang["pattern"] == "^" + mod._LANGUAGE.pattern + "$"
+    nodes = {"doc"} | {
+        d["properties"]["type"]["const"]
+        for d in defs.values()
+        if "const" in d.get("properties", {}).get("type", {})
+    }
+    marks = set(defs["mark"]["oneOf"][0]["properties"]["type"]["enum"]) | {"link"}
+    assert nodes == ALLOWED_NODES
+    assert marks == ALLOWED_MARKS
