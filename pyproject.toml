@@ -5,7 +5,10 @@ description = "Normalized ticket access (Jira first)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.4",
+    "pyyaml>=6.0.3",
+]
 
 [project.scripts]
 ticketctl = "ticketctl.cli:main"

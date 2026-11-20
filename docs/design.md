@@ -133,6 +133,7 @@ Still to verify (conservative defaults apply): closed-sprint membership under th
 | `hooks` | hook execution (process groups, timeouts, payloads) |
 | `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
+| `dedupe` | the dedupe lock and the lookups for comment and create |
 
 Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway.
 
