@@ -431,7 +431,7 @@ TYPES = [
 MARKS = ["strong", "em", "code", "strike", "link", "underline", None, 3]
 STRINGS = [
     "", "a", "x y", "javascript:1", "https://e.test/a b)", "mailto:a@e.test", "\x00‮",
-    "`" * 5, "*|*\n", "\U0001f600", "9" * 40, "abc-1",
+    "`" * 5, "*|*\n", "\U0001f600", "9" * 40, "abc-1", "\ud800", "https://e.test/\udc00",
 ]  # fmt: skip
 VALUES = [*STRINGS, 0, 1, 6, 99, -1, 1.5, 1e300, True, None, [], {}]
 
@@ -482,3 +482,206 @@ def test_wide_document_is_fast() -> None:
     started = time.monotonic()
     render_adf(doc(*[para(txt("word " * 5, mark("strong"))) for _ in range(20_000)]))
     assert time.monotonic() - started < 5
+
+
+# ---- review round 1 -------------------------------------------------------------------------
+
+
+def ok_text(url: str = "https://e.test/") -> dict[str, Any]:
+    return txt("t", link(url))
+
+
+def test_lone_surrogate_in_href_is_encoded_not_fatal() -> None:
+    result = render_adf(doc(para(txt("t", link("https://e.test/\ud800x")))))
+    assert result.text == "t (https://e.test/%EF%BF%BDx)"
+    assert result.reasons == ()
+    card = render_adf(doc({"type": "blockCard", "attrs": {"url": "https://e.test/\udfff"}}))
+    assert card.text == "https://e.test/%EF%BF%BD" and card.reasons == ()
+
+
+def test_href_of_2048_chars_is_kept_and_2049_is_unsafe() -> None:
+    base = "https://e.test/"
+    assert md(para(txt("t", link(base + "a" * (2048 - len(base)))))).startswith("t (https://")
+    assert md(para(txt("t", link(base + "a" * (2049 - len(base)))))) == "[unsafe link removed]"
+    assert md({"type": "blockCard", "attrs": {"url": base + "a" * 2040}}) == (
+        "[unsafe link removed]"
+    )
+
+
+def test_huge_hrefs_are_refused_before_encoding() -> None:
+    url = "https://e.test/" + "\u00e9" * 20_000
+    cards = [{"type": "inlineCard", "attrs": {"url": url}} for _ in range(2000)]
+    links = [txt("a", link(url)) if i % 2 else txt("b") for i in range(2000)]
+    started = time.monotonic()
+    result = render_adf(doc(para(*cards), para(*links)))
+    assert time.monotonic() - started < 10
+    assert "\u00e9" not in result.text and len(result.text) < 100_000
+
+
+def test_link_and_card_text_is_charged_to_the_output_budget() -> None:
+    url = "https://e.test/" + "a" * 2000
+    cards = [{"type": "inlineCard", "attrs": {"url": url}} for _ in range(2000)]
+    result = render_adf(doc(para(*cards)))
+    assert "too_large" in result.reasons and result.text.endswith("[too large]")
+    assert len(result.text) <= adf_render.OUTPUT_LIMIT
+    links = [txt("a", link(url)) if i % 2 == 0 else txt("b") for i in range(4000)]
+    result = render_adf(doc(para(*links)))
+    assert "too_large" in result.reasons and len(result.text) <= adf_render.OUTPUT_LIMIT
+
+
+def test_internal_failure_keeps_partial_output_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(self: Any, attrs: Any) -> str:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(adf_render._Ctx, "emoji", boom)
+    result = render_adf(
+        doc(para(txt("before")), para({"type": "emoji", "attrs": {}})), part="description"
+    )
+    assert result.text == "before\n[render error]"
+    assert "[too large]" not in result.text
+    assert result.reasons == ("internal",)
+    assert result.incomplete == ("description",)
+
+
+@pytest.mark.parametrize("scheme", ["https\u017f", "HTTP\u017f", "mailto\u017f"])
+def test_scheme_match_is_ascii_only(scheme: str) -> None:
+    assert md(para(txt("t", link(f"{scheme}://a.test/")))) == "[unsafe link removed]"
+    assert md({"type": "inlineCard", "attrs": {"url": "http\u017f://a.test/"}}) == (
+        "[unsafe link removed]"
+    )
+
+
+def test_uppercase_scheme_is_kept() -> None:
+    assert md(para(txt("t", link("HTTPS://e.test/")))) == "t (HTTPS://e.test/)"
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "javascript:alert(1)//https://e.test/",
+        "x https://e.test/",
+        "ftp://e.test/",
+        "data:text/html,https://e.test/",
+        "file:///https://e.test/",
+        "vbscript:https://e.test/",
+    ],
+)
+def test_scheme_must_be_at_the_start(href: str) -> None:
+    assert md(para(txt("t", link(href)))) == "[unsafe link removed]"
+
+
+def test_unicode_spaces_in_href_are_encoded() -> None:
+    out = md(para(txt("t", link("https://e.test/a\u3000b\u00a0c"))))
+    assert out == "t (https://e.test/a%E3%80%80b%C2%A0c)"
+
+
+def test_media_in_a_group_each_get_their_own_line() -> None:
+    def media(ident: str) -> dict[str, Any]:
+        return {"type": "media", "attrs": {"id": ident}}
+
+    assert md({"type": "mediaGroup", "content": [media("a"), media("b"), media("c")]}) == (
+        "[attachment: a]\n[attachment: b]\n[attachment: c]"
+    )
+    single = {"type": "mediaSingle", "content": [media("a"), media("b")]}
+    assert md(single) == "[attachment: a]\n[attachment: b]"
+
+
+def test_list_item_paragraphs_are_separated_by_a_blank_line() -> None:
+    item = {"type": "listItem", "content": [para(txt("a")), para(txt("b")), para(txt("c"))]}
+    out = md({"type": "bulletList", "content": [item, item]})
+    assert out == "- a\n\n  b\n\n  c\n- a\n\n  b\n\n  c"
+
+
+def test_list_item_paragraph_then_code_block_is_separated() -> None:
+    code = {"type": "codeBlock", "content": [txt("x")]}
+    item = {"type": "listItem", "content": [para(txt("a")), code]}
+    assert md({"type": "bulletList", "content": [item]}) == "- a\n\n  ```\n  x\n  ```"
+
+
+# ---- pinned literals and boundaries ---------------------------------------------------------
+
+
+def test_budget_literals_are_pinned() -> None:
+    assert adf_render.DEPTH_LIMIT == 50
+    assert adf_render.NODE_LIMIT == 50_000
+    assert adf_render.OUTPUT_LIMIT == 1048576
+    assert adf_render.TABLE_ROW_LIMIT == 200
+
+
+def test_text_at_depth_50_renders_and_at_51_is_too_deep() -> None:
+    # doc is depth 1, d quotes are depths 2..d+1, the paragraph d+2, its text d+3.
+    at_50 = render_adf(nested_quotes(47))
+    assert "core" in at_50.text and at_50.reasons == ()
+    at_51 = render_adf(nested_quotes(48))
+    assert "core" not in at_51.text and at_51.reasons == ("too_deep",)
+
+
+def test_exactly_50000_nodes_is_complete_and_50001_is_not() -> None:
+    # doc + paragraph + N text nodes
+    limit = adf_render.NODE_LIMIT
+    ok = render_adf(doc(para(*[txt("a")] * (limit - 2))))
+    assert ok.reasons == () and ok.text == "a" * (limit - 2)
+    over = render_adf(doc(para(*[txt("a")] * (limit - 1))))
+    assert over.reasons == ("too_many_nodes",)
+
+
+def test_table_cells_and_rows_count_as_nodes() -> None:
+    empty_cell = {"type": "tableCell", "content": []}
+    row0 = {"type": "tableRow", "content": [empty_cell] * 60_000}
+    row1 = {"type": "tableRow", "content": [empty_cell]}
+    started = time.monotonic()
+    result = render_adf(doc({"type": "table", "content": [row0, row1, row1]}))
+    assert time.monotonic() - started < 10
+    assert "too_many_nodes" in result.reasons and result.text.endswith("[too large]")
+    assert len(result.text) <= adf_render.OUTPUT_LIMIT
+
+
+def test_table_padding_is_charged_to_the_output_budget() -> None:
+    empty_cell = {"type": "tableCell", "content": []}
+    wide = {"type": "tableRow", "content": [empty_cell] * 20_000}
+    narrow = {"type": "tableRow", "content": [empty_cell]}
+    started = time.monotonic()
+    result = render_adf(doc({"type": "table", "content": [wide] + [narrow] * 150}))
+    assert time.monotonic() - started < 10
+    assert len(result.text) <= adf_render.OUTPUT_LIMIT
+    assert "too_large" in result.reasons
+
+
+def test_list_items_and_code_children_count_as_nodes() -> None:
+    items = [{"type": "listItem", "content": []}] * 60_000
+    result = render_adf(doc({"type": "bulletList", "content": items}))
+    assert result.reasons == ("too_many_nodes",)
+    pieces = [txt("a")] * 60_000
+    result = render_adf(doc({"type": "codeBlock", "content": pieces}))
+    assert result.reasons == ("too_many_nodes",)
+
+
+def test_only_the_first_20_marks_count() -> None:
+    filler = [mark("underline")] * 20
+    assert md(para(txt("x", *filler, mark("strong")))) == "x"
+    assert md(para(txt("x", *filler[:19], mark("strong")))) == "**x**"
+    late_link = txt("x", *filler, link("https://e.test/"))
+    assert md(para(late_link)) == "x"
+    assert md(para(txt("x", *filler[:19], link("https://e.test/")))) == "x (https://e.test/)"
+
+
+@pytest.mark.parametrize("kind", ["x<y>", "a-b", "a1", "a b", "", "A\u017f"])
+def test_type_names_outside_letters_are_unknown(kind: str) -> None:
+    assert md({"type": kind}) == "[unsupported: unknown]"
+
+
+@pytest.mark.parametrize(
+    ("order", "first"), [(0, "0."), (9999, "9999."), (10000, "1."), (-1, "1.")]
+)
+def test_ordered_list_start_is_range_checked(order: int, first: str) -> None:
+    items = [{"type": "listItem", "content": [para(txt("a"))]}]
+    out = md({"type": "orderedList", "attrs": {"order": order}, "content": items})
+    assert out == f"{first} a"
+
+
+@pytest.mark.parametrize(
+    ("ms", "day"),
+    [(-1, "1969-12-31"), (0, "1970-01-01"), (86_399_999, "1970-01-01"), (86_400_000, "1970-01-02")],
+)
+def test_date_uses_utc_day_boundaries(ms: int, day: str) -> None:
+    assert md(para({"type": "date", "attrs": {"timestamp": str(ms)}})) == day

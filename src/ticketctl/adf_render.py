@@ -13,7 +13,8 @@ otherwise end the cell.
 Budgets: nodes nested deeper than DEPTH_LIMIT render ``[too deep]``; more than NODE_LIMIT visited
 nodes or more than OUTPUT_LIMIT characters of output end the text with ``[too large]``. Any
 budget hit (and a table cut to 200 rows) names ``part`` in ``incomplete`` and the budget in
-``reasons`` (``too_deep``, ``too_many_nodes``, ``too_large``, ``table_rows``).
+``reasons`` (``too_deep``, ``too_many_nodes``, ``too_large``, ``table_rows``, ``internal``).
+An ``internal`` failure keeps the text rendered so far and appends ``[render error]``.
 """
 
 from __future__ import annotations
@@ -36,11 +37,13 @@ _MARK_LIMIT = 20
 TOO_DEEP = "[too deep]"
 TOO_LARGE = "[too large]"
 UNSAFE_LINK = "[unsafe link removed]"
+RENDER_ERROR = "[render error]"
+HREF_LIMIT = 2048
 
 _MEDIA_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _TYPE_WORD = re.compile(r"[A-Za-z]{1,32}")
 _LANGUAGE = re.compile(r"[A-Za-z0-9+#._-]{1,32}")
-_SAFE_SCHEME = re.compile(r"(?:https?|mailto):", re.IGNORECASE)
+_SAFE_SCHEME = re.compile(r"(?:https?|mailto):", re.IGNORECASE | re.ASCII)
 _HREF_ENCODE = re.compile(r"[)\x00-\x20\x7f-\U0010ffff]")
 _SPLIT_WS = re.compile(r"(\s*)(.*?)(\s*)", re.DOTALL)
 _PARTIAL_MARKER = re.compile(r"<(?:U(?:\+[0-9A-F]{0,6})?)?$")
@@ -70,6 +73,7 @@ _BLOCKS = frozenset(
 )
 # Known containers that are flattened to one line when they occur inside inline content.
 _FLATTEN = _BLOCKS | {"listItem", "taskItem", "tableRow", "tableCell", "tableHeader"}
+_LISTS = frozenset({"bulletList", "orderedList", "taskList"})
 _MARK_ORDER = ("code", "em", "strong", "strike")
 _MARKERS = {"em": "*", "strong": "**", "strike": "~~"}
 
@@ -91,7 +95,7 @@ def render_adf(doc: object, part: str = "description") -> Rendered:
         text = ctx.finish()
     except Exception:  # noqa: BLE001 - the contract is "never raises"; the tests pin "internal"
         ctx.reasons.add("internal")
-        text = TOO_LARGE
+        text = ctx.partial()
     reasons = tuple(sorted(ctx.reasons))
     return Rendered(text=text, incomplete=(part,) if reasons else (), reasons=reasons)
 
@@ -144,6 +148,21 @@ class _Ctx:
             self.stop("too_large")
         self.used += len(text)
         return text
+
+    def charge(self, size: int) -> None:
+        """Charge synthetic text (link suffixes, table padding) to the output budget."""
+        self.used += size
+        if self.used > self.room_limit:
+            self.stop("too_large")
+
+    def partial(self) -> str:
+        """The text rendered so far plus the error marker, for an internal failure."""
+        try:
+            out = self.finish()
+        except Exception:  # noqa: BLE001 - finish itself failed; fall back to the raw lines
+            out = "\n".join(self.lines)
+        out = _PARTIAL_MARKER.sub("", out[: OUTPUT_LIMIT - len(RENDER_ERROR) - 1])
+        return out + "\n" + RENDER_ERROR if out else RENDER_ERROR
 
     def finish(self) -> str:
         while self.lines and not self.lines[-1].strip():
@@ -216,7 +235,7 @@ class _Ctx:
             text = self.inline(run, depth)
             run.clear()
             if text.strip():
-                if emitted and not tight:
+                if emitted:
                     self.blank()
                 self.text(text)
                 emitted = True
@@ -226,7 +245,7 @@ class _Ctx:
                 break
             if _kind(child) in _BLOCKS:
                 flush()
-                if emitted and not tight:
+                if emitted and not (tight and _kind(child) in _LISTS):
                     self.blank()
                 before = len(self.lines)
                 self.block(child, depth)
@@ -275,8 +294,9 @@ class _Ctx:
             self.line("---")
         elif kind == "table":
             self.table(content, depth)
-        else:  # mediaSingle, mediaGroup: transparent containers
-            self.blocks(content, depth + 1, tight=False)
+        else:  # mediaSingle, mediaGroup: each child on its own line
+            for child in _list(content):
+                self.blocks([child], depth + 1, tight=True)
 
     def list_block(self, kind: str, attrs: dict[str, Any], content: object, depth: int) -> None:
         start = attrs.get("order")
@@ -356,6 +376,9 @@ class _Ctx:
         width = max((len(r) for r in grid), default=0)
         if width:
             for index, cells in enumerate(grid):
+                self.charge(3 * width + 4 + (3 * width + 2 if index == 0 else 0))
+                if self.stopped:
+                    break
                 padded = cells + [""] * (width - len(cells))
                 self.line("| " + " | ".join(padded) + " |")
                 if index == 0:
@@ -422,7 +445,9 @@ class _Ctx:
                 url = data.get("url")
             if not isinstance(url, str):
                 return f"[unsupported: {kind}]"
-            return _safe_href(url) or UNSAFE_LINK
+            shown = _safe_href(url) or UNSAFE_LINK
+            self.charge(len(shown))
+            return shown
         if kind in ("media", "mediaInline"):
             ident = attrs.get("id")
             ok = isinstance(ident, str) and _MEDIA_ID.fullmatch(ident)
@@ -461,13 +486,16 @@ class _Ctx:
     def link(self, text: str, href: str) -> str:
         safe = _safe_href(href)
         if safe is None:
+            self.charge(len(UNSAFE_LINK))
             return UNSAFE_LINK
         shown = text.strip()
-        bare = href[len("mailto:") :] if href.lower().startswith("mailto:") else href
+        bare = href[len("mailto:") :] if href[:7].lower() == "mailto:" else href
         if not shown:
+            self.charge(len(safe))
             return safe
         if shown in (href, bare):
             return text
+        self.charge(len(safe) + 3)
         return f"{text} ({safe})"
 
     def emoji(self, attrs: dict[str, Any]) -> str:
@@ -525,6 +553,8 @@ def _link_href(node: object) -> str | None:
 
 def _encode_char(match: re.Match[str]) -> str:
     ch = match.group()
+    if "\ud800" <= ch <= "\udfff":  # a lone surrogate cannot be UTF-8 encoded
+        return "%EF%BF%BD"
     if ord(ch) < 0x80 or ch.isspace() or sanitize_line(ch) != ch:
         return quote(ch, safe="")
     return ch
@@ -532,6 +562,6 @@ def _encode_char(match: re.Match[str]) -> str:
 
 def _safe_href(href: str) -> str | None:
     """The href with ``)``, spaces and control characters percent-encoded, or None if unsafe."""
-    if not _SAFE_SCHEME.match(href):
+    if len(href) > HREF_LIMIT or not _SAFE_SCHEME.match(href):
         return None
     return _HREF_ENCODE.sub(_encode_char, href)
