@@ -102,6 +102,10 @@ def drip(data: bytes, interval: float) -> Behavior:
     return behavior
 
 
+class BadRequest(Exception):
+    """The bytes are not a request this server can parse (answered with a 400)."""
+
+
 def _read_request(sock: socket.socket) -> Request | None:
     buffer = b""
     while b"\r\n\r\n" not in buffer:
@@ -113,12 +117,20 @@ def _read_request(sock: socket.socket) -> Request | None:
             return None
     head, _, rest = buffer.partition(b"\r\n\r\n")
     lines = head.decode("latin-1").split("\r\n")
-    method, target, _ = lines[0].split(" ", 2)
+    parts = lines[0].split(" ", 2)
+    if len(parts) != 3:
+        raise BadRequest("malformed request line")
+    method, target, _ = parts
     headers: dict[str, list[str]] = {}
     for line in lines[1:]:
         name, _, value = line.partition(":")
         headers.setdefault(name.strip().lower(), []).append(value.strip())
-    length = int((headers.get("content-length") or ["0"])[0])
+    try:
+        length = int((headers.get("content-length") or ["0"])[0])
+    except ValueError:
+        raise BadRequest("non-numeric Content-Length") from None
+    if length < 0:
+        raise BadRequest("negative Content-Length")
     body = rest
     while len(body) < length:
         chunk = sock.recv(65536)
@@ -134,6 +146,7 @@ class ScriptedServer:
         script: list[Behavior] | Behavior,
         *,
         tls: ssl.SSLContext | None = None,
+        backlog: int = 16,
     ) -> None:
         self.script = [script] if callable(script) else list(script)
         self.requests: list[Request] = []
@@ -143,9 +156,11 @@ class ScriptedServer:
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(16)
+        self.backlog = backlog
+        self._listener.listen(backlog)
         self.port: int = self._listener.getsockname()[1]
         self._stop = threading.Event()
+        self._started = False
         self._open: list[socket.socket] = []
         self._threads: list[threading.Thread] = []
         self._accept_thread = threading.Thread(
@@ -154,6 +169,7 @@ class ScriptedServer:
 
     # lifecycle ---------------------------------------------------------------------------
     def start(self) -> ScriptedServer:
+        self._started = True
         self._accept_thread.start()
         return self
 
@@ -164,7 +180,8 @@ class ScriptedServer:
             socket.create_connection(("127.0.0.1", self.port), timeout=1).close()
         except OSError:
             pass
-        self._accept_thread.join(timeout=5)
+        if self._started:
+            self._accept_thread.join(timeout=5)
         self._listener.close()
         with self._lock:
             sockets = list(self._open)
@@ -215,7 +232,11 @@ class ScriptedServer:
                     return
                 with self._lock:
                     self._open.append(sock)
-            request = _read_request(sock)
+            try:
+                request = _read_request(sock)
+            except BadRequest as exc:
+                sock.sendall(response_bytes(400, f"Bad Request: {exc}", {"Connection": "close"}))
+                return
             if request is None:
                 return
             with self._lock:

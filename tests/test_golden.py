@@ -234,3 +234,133 @@ def test_golden_names_are_restricted(kind: str, name: str, case: str) -> None:
 def test_the_pending_list_names_real_schemas_and_an_owner() -> None:
     assert set(golden.PENDING) <= set(golden.schema_files())
     assert all(isinstance(n, int) and n > 0 for n in golden.PENDING.values())
+
+
+# --- review round 1: update mode, CI, formats, strict compare, stray files ------------------
+
+
+def _tiny_tree(root: Path) -> tuple[Path, Path]:
+    """Two golden-backed schemas (a, b) in a throwaway tree, with goldens and a fresh manifest."""
+    schemas = root / "schemas"
+    (schemas / "cli").mkdir(parents=True)
+    for name in ("a", "b"):
+        doc = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {"n": {}},
+            "description": "first",
+        }
+        (schemas / "cli" / f"{name}.json").write_text(json.dumps(doc), encoding="utf-8")
+    goldens = root / "golden"
+    for name in ("a", "b"):
+        (goldens / "cli" / name).mkdir(parents=True)
+        (goldens / "cli" / name / "x.json").write_text('{"n": 1}\n', encoding="utf-8")
+    golden.write_manifest(schemas, goldens)
+    return schemas, goldens
+
+
+def _change(schemas: Path, name: str) -> None:
+    path = schemas / "cli" / f"{name}.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["description"] = "second"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_updating_one_schema_does_not_bless_the_stale_digest_of_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schemas, goldens = _tiny_tree(tmp_path)
+    assert golden.check_tree(schemas, goldens, {}) == []
+    _change(schemas, "a")
+    _change(schemas, "b")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv(golden.UPDATE_ENV, "1")
+    golden.assert_golden("cli", "a", "x", {"n": 1}, schemas=schemas, golden_dir=goldens)
+    monkeypatch.delenv(golden.UPDATE_ENV)
+    problems = golden.check_tree(schemas, goldens, {})
+    assert len(problems) == 1 and problems[0].startswith("cli/b.json: the schema")
+    # updating the second one clears it
+    monkeypatch.setenv(golden.UPDATE_ENV, "1")
+    golden.assert_golden("cli", "b", "x", {"n": 1}, schemas=schemas, golden_dir=goldens)
+    monkeypatch.delenv(golden.UPDATE_ENV)
+    assert golden.check_tree(schemas, goldens, {}) == []
+
+
+def test_update_mode_is_refused_when_ci_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(golden.UPDATE_ENV, "1")
+    monkeypatch.setenv("CI", "")
+    with pytest.raises(RuntimeError, match="CI"):
+        golden.updating()
+    monkeypatch.delenv("CI")
+    assert golden.updating() is True
+    monkeypatch.delenv(golden.UPDATE_ENV)
+    monkeypatch.setenv("CI", "true")
+    assert golden.updating() is False  # CI alone is fine: it only compares
+
+
+def test_assert_golden_does_not_write_in_ci(
+    trees: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schemas, goldens = trees
+    monkeypatch.setenv(golden.UPDATE_ENV, "1")
+    monkeypatch.setenv("CI", "1")
+    with pytest.raises(RuntimeError):
+        golden.assert_golden(
+            "cli", "error", "usage", ERRORS["usage"].envelope(), schemas=schemas, golden_dir=goldens
+        )
+    assert not (goldens / "cli" / "error" / "usage.json").exists()
+
+
+def test_a_uri_format_is_enforced(tmp_path: Path) -> None:
+    schemas = tmp_path / "schemas"
+    (schemas / "cli").mkdir(parents=True)
+    doc = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"url": {"type": "string", "format": "uri"}},
+    }
+    (schemas / "cli" / "u.json").write_text(json.dumps(doc), encoding="utf-8")
+    check = golden.validator("cli/u.json", schemas)
+    for good in ("https://example.test/x", "http://127.0.0.1:8/p?q=1"):
+        check.validate({"url": good})
+    for bad in ("not a url", "/relative/path", "https://", "ftp:/no-host", "", "http://a b/c"):
+        with pytest.raises(ValidationError):
+            check.validate({"url": bad})
+
+
+def test_golden_comparison_is_type_strict() -> None:
+    assert golden._canonical({"a": 1}) != golden._canonical({"a": True})
+    assert golden._canonical({"a": 1}) != golden._canonical({"a": 1.0})
+    assert golden._canonical({"a": 1, "b": 2}) == golden._canonical({"b": 2, "a": 1})
+
+
+def test_assert_golden_rejects_an_integer_written_as_a_float(trees: tuple[Path, Path]) -> None:
+    schemas, goldens = trees
+    envelope = ERRORS["rate-limited"].envelope()
+    (goldens / "cli" / "error" / "rate-limited.json").write_text(
+        json.dumps(envelope), encoding="utf-8"
+    )
+    golden.assert_golden(
+        "cli", "error", "rate-limited", envelope, schemas=schemas, golden_dir=goldens
+    )
+    changed = json.loads(json.dumps(envelope))
+    changed["error"]["details"]["rate_limit"]["limit"] = 1000.0  # still an integer to the schema
+    with pytest.raises(AssertionError, match="differs"):
+        golden.assert_golden(
+            "cli", "error", "rate-limited", changed, schemas=schemas, golden_dir=goldens
+        )
+
+
+@pytest.mark.parametrize("name", ["README.md", "x.JSON", "Upper.json", "a_b.json", "notes.txt"])
+def test_a_stray_file_under_the_golden_tree_is_a_problem(
+    trees: tuple[Path, Path], name: str
+) -> None:
+    schemas, goldens = trees
+    (goldens / "cli" / "error" / name).write_text("x", encoding="utf-8")
+    problems = golden.check_tree(schemas, goldens, pending_for(schemas))
+    assert any(name in p and "not a golden file name" in p for p in problems)
+
+
+def test_the_manifest_and_well_named_goldens_are_not_stray(trees: tuple[Path, Path]) -> None:
+    _, goldens = trees
+    assert golden.stray_files(goldens) == []

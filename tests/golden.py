@@ -5,8 +5,12 @@ Layout: ``tests/golden/cli/<command>/<case>.json`` is validated against
 and ``tests/golden/hooks/<hook>/<case>.json`` against ``schemas/hooks/<hook>.json``; ``<command>``
 and ``<hook>`` are the schema's file stem. A test produces a document and calls
 ``assert_golden("cli", "whoami", "basic", doc)``: the document must satisfy the schema and equal the
-golden file. ``TICKETCTL_UPDATE_GOLDEN=1`` writes the file (after the schema check) instead of
-comparing, and refreshes ``tests/golden/MANIFEST.json``.
+golden file, compared type-strictly (``True`` is not ``1``, ``1.0`` is not ``1``).
+``TICKETCTL_UPDATE_GOLDEN=1`` writes the file (after the schema check) instead of comparing, and
+refreshes only the ``tests/golden/MANIFEST.json`` digest of the schema it just wrote a golden for,
+so a stale digest of any other schema keeps failing. Update mode refuses to run when ``CI`` is set.
+
+A schema is validated with a format checker, so ``format: uri`` is enforced.
 
 Three guards run in ``tests/test_golden.py`` through ``check_tree``:
 
@@ -17,7 +21,9 @@ Three guards run in ``tests/test_golden.py`` through ``check_tree``:
   manifest is refreshed;
 - every schema under ``schemas/cli`` and ``schemas/hooks`` has a golden or is listed in ``PENDING``
   with the issue that owns its command; a pending entry that gets a golden, or names no schema,
-  fails, so the list can only shrink.
+  fails, so the list can only shrink;
+- no stray file sits under ``tests/golden`` (every file is ``<name>.json`` of lower case letters,
+  digits and hyphens, apart from the manifest).
 """
 
 from __future__ import annotations
@@ -28,8 +34,9 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -72,8 +79,18 @@ PENDING: dict[str, int] = {
 }
 
 
+NAME = re.compile(r"[a-z0-9-]+")
+
+
 def updating() -> bool:
-    return os.environ.get(UPDATE_ENV) == "1"
+    """Whether this run rewrites goldens. Never allowed in CI, where a golden must not change."""
+    if os.environ.get(UPDATE_ENV) != "1":
+        return False
+    if "CI" in os.environ:
+        raise RuntimeError(
+            f"{UPDATE_ENV}=1 is refused when CI is set: goldens are updated locally and reviewed"
+        )
+    return True
 
 
 def _load(path: Path) -> Any:
@@ -92,8 +109,29 @@ def registry(schemas: Path = SCHEMAS) -> Registry:
     return Registry().with_resources(resources)
 
 
+def _is_uri(value: object) -> bool:
+    """A small stdlib ``uri`` check (no extra dependency): a scheme, a host, no whitespace."""
+    if not isinstance(value, str):
+        return True  # format applies to strings only
+    if not value or re.search(r"\s", value):
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return bool(parts.scheme) and bool(parts.netloc)
+
+
+def format_checker() -> FormatChecker:
+    checker = FormatChecker()
+    checker.checks("uri")(_is_uri)
+    return checker
+
+
 def validator(rel: str, schemas: Path = SCHEMAS) -> Draft202012Validator:
-    return Draft202012Validator(_load(schemas / rel), registry=registry(schemas))
+    return Draft202012Validator(
+        _load(schemas / rel), registry=registry(schemas), format_checker=format_checker()
+    )
 
 
 def schema_files(schemas: Path = SCHEMAS) -> list[str]:
@@ -141,6 +179,22 @@ def _text(doc: Any) -> str:
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
 
 
+def _canonical(doc: Any) -> str:
+    """A form in which ``True``, ``1`` and ``1.0`` differ, and key order does not matter."""
+    return json.dumps(doc, sort_keys=True, ensure_ascii=False)
+
+
+def stray_files(golden_dir: Path = GOLDEN) -> list[Path]:
+    """Files under the golden tree that are not ``<name>.json`` (the manifest aside)."""
+    return sorted(
+        p
+        for p in golden_dir.rglob("*")
+        if p.is_file()
+        and not (p.parent == golden_dir and p.name == MANIFEST)
+        and not (NAME.fullmatch(p.stem) and p.suffix == ".json")
+    )
+
+
 def check_tree(
     schemas: Path = SCHEMAS,
     golden_dir: Path = GOLDEN,
@@ -150,6 +204,8 @@ def check_tree(
     pending = PENDING if pending is None else pending
     problems: list[str] = []
     have: set[str] = set()
+    for stray in stray_files(golden_dir):
+        problems.append(f"{stray.relative_to(golden_dir)}: not a golden file name (<name>.json)")
     for path in golden_files(golden_dir):
         try:
             rel = schema_for(path, golden_dir)
@@ -195,9 +251,21 @@ def check_tree(
 
 
 def write_manifest(schemas: Path = SCHEMAS, golden_dir: Path = GOLDEN) -> None:
+    """Record the digest of every schema that has a golden: a full refresh after a review.
+
+    ``assert_golden`` never calls this; update mode refreshes one entry (``update_manifest``).
+    """
     have = sorted({schema_for(p, golden_dir) for p in golden_files(golden_dir)})
     manifest = {rel: digest(rel, schemas) for rel in have}
     (golden_dir / MANIFEST).write_text(_text(manifest), encoding="utf-8")
+
+
+def update_manifest(rel: str, schemas: Path = SCHEMAS, golden_dir: Path = GOLDEN) -> None:
+    """Refresh only the digest of ``rel``; every other entry keeps its recorded value."""
+    path = golden_dir / MANIFEST
+    manifest: dict[str, str] = _load(path) if path.is_file() else {}
+    manifest[rel] = digest(rel, schemas)
+    path.write_text(_text(dict(sorted(manifest.items()))), encoding="utf-8")
 
 
 def assert_golden(
@@ -224,9 +292,11 @@ def assert_golden(
     if updating():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_text(doc), encoding="utf-8")
-        write_manifest(schemas, golden_dir)
+        update_manifest(rel, schemas, golden_dir)
         return
     if not path.is_file():
         raise AssertionError(f"missing golden file {path}; create it with {UPDATE_ENV}=1")
     expected = _load(path)
-    assert doc == expected, f"output differs from {path.relative_to(golden_dir.parent)}"
+    assert _canonical(doc) == _canonical(expected), (
+        f"output differs from {path.relative_to(golden_dir.parent)}"
+    )

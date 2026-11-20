@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from typing import Any
 
 import pytest
 
@@ -35,10 +36,37 @@ def make_gateway(fake: FakeProvider, *, seconds: float = 20.0, **kw: object) -> 
     return Gateway(make_target(fake, **target_kw), deadline=Deadline(seconds), **gw_kw)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def isolated_environment(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: Any
+) -> None:
+    """No test can start a program through the ambient PATH or read the user's real config.
+
+    PATH is empty and HOME and XDG_CONFIG_HOME point at a private temp dir. A test that needs an
+    executable uses an absolute path or sets its own PATH. Live tests are left alone.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+
+
+def _assert_no_internal_errors(provider: FakeProvider) -> None:
+    internal = [e for e in provider.errors if e.status >= 500]
+    if internal and not provider.allow_internal_errors:
+        raise AssertionError(
+            "the fake hit an internal error (set fake.allow_internal_errors to expect it): "
+            + "; ".join(f"{e.call.method} {e.call.path}: {e.exc!r}" for e in internal)
+        )
+
+
 @pytest.fixture
 def fake() -> Iterator[FakeProvider]:
     with FakeProvider() as provider:
         yield provider
+    _assert_no_internal_errors(provider)
 
 
 @pytest.fixture
@@ -54,3 +82,5 @@ def fake_factory() -> Iterator[Callable[[Quirks | None], FakeProvider]]:
     yield build
     for provider in started:
         provider.close()
+    for provider in started:
+        _assert_no_internal_errors(provider)

@@ -196,7 +196,7 @@ def test_me_name_rejects(home: Home, value: str) -> None:
     expect_error(home, MINIMAL + f"me:\n  name: {value}\n", "me.name")
 
 
-@pytest.mark.parametrize("value", ["abc:123-x_y.z", "5b10ac8d82e05b22cc7d4ef5", "a" * 128])
+@pytest.mark.parametrize("value", ["abc:123-x_y.z", "acct-0001", "a" * 128])
 def test_me_jira_accepts(home: Home, value: str) -> None:
     home.main(MINIMAL + f"me:\n  jira: '{value}'\n")
     assert home.load().config.me.jira == value
@@ -904,7 +904,7 @@ def test_provider_only_jira(home: Home) -> None:
 
 @pytest.mark.parametrize(
     "mapping",
-    ["{name: Story Points}", "{id: customfield_10001}", "{schema: 'a.b:c'}"],
+    ["{name: Story Points}", "{id: customfield_90001}", "{schema: 'a.b:c'}"],
 )
 def test_field_mapping_exactly_one_selector_accepts(home: Home, mapping: str) -> None:
     home.main(site_text(fields=f"fields: {{estimate: {mapping}}}"))

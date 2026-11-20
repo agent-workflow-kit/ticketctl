@@ -1,10 +1,10 @@
 """A fake of the Jira Cloud REST API for tests (issue #10).
 
 Everything here is synthetic: the site, the project key (``DEMO``), the accounts (``acct-*``), the
-custom field ids (the 90001 to 90004 range), the sprints and every text. Shapes follow the facts of
+custom field ids (the 90001 to 90006 range), the sprints and every text. Shapes follow the facts of
 docs/design.md (Live verification, V-1 to V-33) and the endpoint table of docs/interface.md; the
-places where the fake had to guess are listed in the "Unverified" comment at the end of this
-docstring's section below and are reported on the live-verification issues.
+places where the fake had to guess are listed in the ``UNVERIFIED`` constant at the end of this
+module and are reported on the live-verification issues.
 
 Safety: the server is ``tests/scripted_server.py`` (loopback 127.0.0.1, an ephemeral port, daemon
 threads of this process, torn down exactly: the listener, its accept thread and every accepted
@@ -17,13 +17,12 @@ at them sees the real provider's surprises. Failure injection (``Fault``) is off
 Time is a fake wall clock (``FakeProvider.now``): it moves only through ``advance()`` and one
 second per applied write, so label lag and timestamps are deterministic.
 
-Unverified (guessed, never seen live): see UNVERIFIED at the bottom of this module.
+Unverified (guessed, never seen live): see the ``UNVERIFIED`` constant at the bottom of this module.
 """
 
 from __future__ import annotations
 
 import base64
-import binascii
 import copy
 import http.client
 import json
@@ -38,7 +37,7 @@ from email.utils import format_datetime
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tests.scripted_server import Conn, ScriptedServer, response_bytes
+from tests.scripted_server import Conn, Request, ScriptedServer, response_bytes
 
 ME_ACCOUNT = "acct-0001"
 OTHER_ACCOUNT = "acct-0002"
@@ -53,6 +52,10 @@ F_POINTS = "customfield_90001"  # legacy float "Story Points"
 F_ESTIMATE = "customfield_90002"  # jsw-story-points, no data
 F_SPRINT = "customfield_90003"  # gh-sprint
 F_CRITERIA = "customfield_90004"  # rich text, found by name only
+F_VALUE = "customfield_90005"  # another legacy float field, other name
+F_EFFORT = "customfield_90006"  # and a third
+# Float custom fields besides "Story Points": the ``:float`` schema is shared, only names differ.
+EXTRA_FLOATS = {F_VALUE: "Business value", F_EFFORT: "Effort days"}
 
 CATEGORY = {
     "new": {"id": 2, "key": "new", "name": "To Do"},
@@ -91,6 +94,11 @@ EMBEDDED_COMMENTS = 20  # V-25
 # --------------------------------------------------------------------------------------------
 
 
+ERROR_SHAPES = {None, "messages", "error", "text"}
+RETRY_AFTER_FORMATS = {"seconds", "http_date", "junk", "none"}
+FAULT_KINDS = {"reset", "close", "headers_only", "truncated", "status", "slow", "drip"}
+
+
 @dataclass
 class Quirks:
     """Switches for the provider's behaviors. The defaults are the verified (real) behavior."""
@@ -118,18 +126,28 @@ class Quirks:
     rate_limit_headers: bool = True
     rate_limit_limit: int = 1000
     rate_limit_remaining: int | None = None
-    # How a 429 renders Retry-After: "seconds", "http_date", "junk" or "none".
-    retry_after_format: str = "seconds"
-    # V-20, V-33: a label added by update or create is JQL-visible only after this many seconds.
-    label_lag_s: float = 0.0
+    # How a 429 renders Retry-After: "seconds", "http_date", "junk" or "none". V-15: no
+    # Retry-After was ever seen, so the default sends none; a test opts in to a format.
+    retry_after_format: str = "none"
+    # V-20, V-33: a label added by update or create is JQL-visible only this many seconds after
+    # the write completes (verified about 0.6 to 1 s; 1.0 on the fake clock spans one tick).
+    # ``label_lag_s=0`` opts out: the label is searchable at once.
+    label_lag_s: float = 1.0
     # Sleep before every response (a slow provider).
     response_delay_s: float = 0.0
-    # V-4: a read with all fields (or no ``fields``) carries this many extra field keys.
-    all_fields_filler: int = 500
+    # V-4: a read with all fields (or no ``fields``) carries this many extra field keys with
+    # non-null values (23 real fields plus 532 filler keys make the verified 555 keys, about 31 KB).
+    all_fields_filler: int = 532
     # V-18: ``notifyUsers=false`` is a 403 for a non-admin.
     notify_users_false_forbidden: bool = True
     # V-1: the credentials the fake accepts (email, token); None accepts any Basic header.
     credentials: tuple[str, str] | None = (SITE_EMAIL, SITE_TOKEN)
+
+    def __post_init__(self) -> None:
+        if self.error_shape not in ERROR_SHAPES:
+            raise ValueError(f"unknown error_shape {self.error_shape!r}")
+        if self.retry_after_format not in RETRY_AFTER_FORMATS:
+            raise ValueError(f"unknown retry_after_format {self.retry_after_format!r}")
 
 
 @dataclass
@@ -139,11 +157,14 @@ class Fault:
     ``kind``:
     - ``reset``: a TCP reset with no response byte (``after_apply``: the write lands first).
     - ``close``: a clean close with no response byte (same ``after_apply`` rule).
-    - ``headers_only``: the status line and headers (Content-Length of the real body), no body,
-      then close; the write has landed.
-    - ``truncated``: headers and half the body, then close; the write has landed.
-    - ``status``: the given ``status`` (a 5xx or 429) and text ``body``; nothing applied.
-    - ``slow``: sleep ``delay_s`` before answering normally.
+    - ``headers_only``: the status line and headers (Content-Length of the real body, or 2 for an
+      empty one), no body, then close; the write has landed.
+    - ``truncated``: headers and half the body (one byte of an empty one that advertises 2), then
+      close; the write has landed.
+    - ``status``: the given ``status`` (a 5xx or 429) and text ``body``; nothing applied, or with
+      ``after_apply`` the write lands first and the client still sees the status.
+    - ``slow``: sleep ``delay_s`` before answering normally (``after_apply``: apply first, then
+      sleep). ``close()`` wakes the sleeper, which then returns without dispatching or answering.
     - ``drip``: the normal answer, one byte per ``delay_s``.
     """
 
@@ -157,6 +178,10 @@ class Fault:
     delay_s: float = 0.0
     retry_after: int | str | None = None
     hits: int = 0
+
+    def __post_init__(self) -> None:
+        if self.kind not in FAULT_KINDS:
+            raise ValueError(f"unknown fault kind {self.kind!r}")
 
     def matches(self, method: str, path: str) -> bool:
         if self.times is not None and self.hits >= self.times:
@@ -174,6 +199,15 @@ class Out:
     body: Any = None  # dict/list -> JSON; str -> text; None -> empty
     headers: dict[str, str] = field(default_factory=dict)
     applied: bool = False  # a write that changed state
+
+
+@dataclass
+class HandlerError:
+    """An unexpected exception in a handler or a body parse (not a deliberate ProviderError)."""
+
+    call: Call
+    exc: BaseException
+    status: int  # 400 for client-shaped malformed input, 500 otherwise
 
 
 class ProviderError(Exception):
@@ -203,6 +237,8 @@ class Call:
     body: Any
     headers: dict[str, list[str]]
     status: int = 0
+    target: str = ""  # the raw request target, as sent
+    malformed: str | None = None  # why the target could not be parsed
 
     def one(self, name: str, default: str | None = None) -> str | None:
         values = self.query.get(name)
@@ -212,6 +248,38 @@ class Call:
 # --------------------------------------------------------------------------------------------
 # ADF fixtures
 # --------------------------------------------------------------------------------------------
+
+
+def _stem(token: str) -> str:
+    for suffix in ("ing", "ed", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def _near(query: str, word: str) -> bool:
+    """A near match of one query token against one word of the text (both lower case)."""
+    return _stem(query) == _stem(word) or (len(query) >= 4 and word.startswith(query))
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _adf_shape_ok(doc: Any) -> bool:
+    """Every node is an object with a string type, list content and string text (iterative)."""
+    stack = [doc]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict) or not isinstance(node.get("type"), str):
+            return False
+        content = node.get("content", [])
+        if not isinstance(content, list):
+            return False
+        if "text" in node and not isinstance(node["text"], str):
+            return False
+        stack.extend(content)
+    return True
 
 
 def adf_doc(*content: dict[str, Any]) -> dict[str, Any]:
@@ -361,6 +429,17 @@ class JqlSyntax(Exception):
     pass
 
 
+class Bare(str):
+    """An unquoted word of a JQL value. ``bad``: a text search value that V-31 answers with no
+    results (an unquoted phrase, or one holding reserved characters)."""
+
+    bad: bool = False
+
+
+TEXT_RESERVED = set(":*?+&|{}[]^\\/")
+DATE_FUNCTIONS = {"now", "startofday", "endofday"}
+
+
 @dataclass
 class Clause:
     field: str
@@ -483,7 +562,7 @@ class _Parser:
                 self.take()
             self.take()
             return ("fn", tok[1])
-        return tok[1]
+        return Bare(tok[1])
 
     def clause(self) -> Clause:
         name = self.take()
@@ -511,11 +590,29 @@ class _Parser:
             self.expect_punct(")")
         else:
             values = [self.value()]
+            if op in {"~", "!~"} and isinstance(values[0], Bare):
+                words = [str(values[0])]
+                while (
+                    self.peek() is not None
+                    and self.peek()[0] == "word"  # type: ignore[index]
+                    and not self.word_is("and", "or", "not", "order")
+                ):
+                    words.append(self.take()[1])
+                phrase = Bare(" ".join(words))
+                phrase.bad = (
+                    len(words) > 1
+                    or any(ch in TEXT_RESERVED for ch in phrase)
+                    or phrase.startswith("-")
+                )
+                values = [phrase]
         return Clause(name[1].lower(), op, values, name[2])
 
 
 def parse_jql(text: str) -> tuple[Node | None, list[tuple[str, bool]]]:
-    return _Parser(text).parse()
+    try:
+        return _Parser(text).parse()
+    except RecursionError:
+        raise JqlSyntax("the query is nested too deeply") from None
 
 
 def _walk(node: Node | None) -> list[Clause]:
@@ -554,6 +651,8 @@ class Ticket:
     points: float | None = None
     criteria: dict[str, Any] | None = None
     due: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)  # values of the EXTRA_FLOATS fields
+    properties: dict[str, Any] = field(default_factory=dict)  # issue properties
 
 
 SPRINTS: dict[int, dict[str, Any]] = {
@@ -588,7 +687,13 @@ class FakeProvider:
         self.faults: list[Fault] = []
         self.calls: list[Call] = []
         self.applied: list[Call] = []  # writes that changed state, in order
+        # Unexpected exceptions of a handler or body parse (answered 400 or 500, never a drop).
+        self.errors: list[HandlerError] = []
+        # A test that provokes a 500-class internal error on purpose sets this; the ``fake``
+        # fixture otherwise fails the test at teardown when ``errors`` holds one.
+        self.allow_internal_errors = False
         self.tickets: dict[str, Ticket] = {}
+        self.moved: dict[str, str] = {}  # old key (upper case) -> current key
         self.sprints = copy.deepcopy(SPRINTS)
         self.now = datetime(2026, 3, 4, 15, 0, tzinfo=UTC)
         self._next_id = 10000
@@ -596,7 +701,7 @@ class FakeProvider:
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._served = 0
-        self._server = ScriptedServer(self._behavior)
+        self._server = ScriptedServer(self._behavior, backlog=128)
         self._routes: list[tuple[str, re.Pattern[str], Callable[..., Out]]] = []
         self._build_routes()
         self.seed()
@@ -675,6 +780,15 @@ class FakeProvider:
             self.tickets[key] = ticket
             return ticket
 
+    def move(self, old_key: str, new_key: str) -> Ticket:
+        """Rename a ticket as a project move does: the old key still resolves, to the new one."""
+        with self._lock:
+            ticket = self.tickets.pop(old_key)
+            ticket.key = new_key
+            self.tickets[new_key] = ticket
+            self.moved[old_key.upper()] = new_key
+            return ticket
+
     def next_key(self, project: str = PROJECT) -> str:
         numbers = [int(k.split("-")[1]) for k in self.tickets if k.startswith(project + "-")] or [0]
         return f"{project}-{max(numbers) + 1}"
@@ -729,36 +843,53 @@ class FakeProvider:
         return self.now
 
     # request handling ------------------------------------------------------------------------
-    def _behavior(self, conn: Conn) -> None:
-        req = conn.request
-        split = urlsplit(req.target)
-        path = unquote(split.path)
+    @staticmethod
+    def _route_path(raw: str) -> str:
+        """Split on ``/`` first, then unquote each segment, so ``%2F`` never becomes a separator."""
+        return "/".join(unquote(part).replace("/", "%2F") for part in raw.split("/"))
+
+    def _make_call(self, req: Request) -> Call:
+        malformed: str | None = None
+        path = req.target
+        query: dict[str, list[str]] = {}
+        try:
+            split = urlsplit(req.target)
+            path = self._route_path(split.path)
+            query = parse_qs(split.query, keep_blank_values=True)
+        except ValueError as exc:
+            malformed = str(exc)
+        body: Any
         try:
             body = json.loads(req.body) if req.body else None
-        except ValueError:
+        except (ValueError, RecursionError):  # bad JSON, a digit-limit number, nesting too deep
             body = ("invalid", req.body)
-        call = Call(
-            req.method, path, parse_qs(split.query, keep_blank_values=True), body, req.headers
+        return Call(
+            req.method, path, query, body, req.headers, target=req.target, malformed=malformed
         )
+
+    def _behavior(self, conn: Conn) -> None:
+        req = conn.request
+        call = self._make_call(req)
         with self._lock:
             self.calls.append(call)
-            fault = next((f for f in self.faults if f.matches(req.method, path)), None)
+            fault = next((f for f in self.faults if f.matches(req.method, call.path)), None)
             if fault is not None:
                 fault.hits += 1
-        if fault is not None and fault.kind == "slow":
-            self._wake.wait(fault.delay_s)
-        elif self.quirks.response_delay_s:
-            self._wake.wait(self.quirks.response_delay_s)
-        if fault is not None and not fault.after_apply and fault.kind in {"reset", "close"}:
-            self._cut(conn, fault.kind)
+        kind = fault.kind if fault is not None else None
+        after = fault is not None and fault.after_apply
+        if kind == "slow" and not after:
+            assert fault is not None
+            if self._wake.wait(fault.delay_s):
+                return  # closed while sleeping: do not dispatch
+        elif kind != "slow" and self.quirks.response_delay_s:
+            if self._wake.wait(self.quirks.response_delay_s):
+                return
+        if kind in {"reset", "close"} and not after:
+            self._cut(conn, kind)
             return
-        if fault is not None and fault.kind == "status":
-            call.status = fault.status
-            headers = {"Content-Type": "text/plain"}
-            if fault.status == 429 or fault.retry_after is not None:
-                headers.update(self._retry_after(fault.retry_after))
-            headers.update(self._rate_headers())
-            conn.send(response_bytes(fault.status, fault.body, headers))
+        if kind == "status" and not after:
+            assert fault is not None
+            self._send_status(conn, call, fault)
             return
         with self._lock:
             out = self._dispatch(call)
@@ -766,23 +897,42 @@ class FakeProvider:
                 self.applied.append(call)
                 self._tick()
         call.status = out.status
-        if fault is not None and fault.kind in {"reset", "close"}:
-            self._cut(conn, fault.kind)
+        if kind == "slow" and after:
+            assert fault is not None
+            if self._wake.wait(fault.delay_s):
+                return
+        if kind in {"reset", "close"}:
+            assert kind is not None
+            self._cut(conn, kind)
             return
-        raw = self._render(out)
-        if fault is not None and fault.kind == "headers_only":
-            head, _, _ = raw.partition(b"\r\n\r\n")
-            conn.send(head + b"\r\n\r\n")
-        elif fault is not None and fault.kind == "truncated":
-            head, _, payload = raw.partition(b"\r\n\r\n")
-            conn.send(head + b"\r\n\r\n" + payload[: max(1, len(payload) // 2)])
-        elif fault is not None and fault.kind == "drip":
+        if kind == "status":
+            assert fault is not None
+            self._send_status(conn, call, fault)
+            return
+        status, headers, data = self._parts(call, out)
+        if kind == "headers_only":
+            # An empty body (a 204) still advertises bytes that never come.
+            conn.send(response_bytes(status, b"", headers, content_length=len(data) or 2))
+        elif kind == "truncated":
+            body = data[: len(data) // 2] if data else b"{"
+            conn.send(response_bytes(status, body, headers, content_length=len(data) or 2))
+        elif kind == "drip":
+            assert fault is not None
+            raw = response_bytes(status, data, headers)
             for i in range(len(raw)):
                 conn.send(raw[i : i + 1])
                 if self._wake.wait(fault.delay_s):
                     return
         else:
-            conn.send(raw)
+            conn.send(response_bytes(status, data, headers))
+
+    def _send_status(self, conn: Conn, call: Call, fault: Fault) -> None:
+        call.status = fault.status
+        headers = {"Content-Type": "text/plain"}
+        if fault.status == 429 or fault.retry_after is not None:
+            headers.update(self._retry_after(fault.retry_after))
+        headers.update(self._rate_headers())
+        conn.send(response_bytes(fault.status, fault.body, headers))
 
     @staticmethod
     def _cut(conn: Conn, kind: str) -> None:
@@ -818,19 +968,25 @@ class FakeProvider:
             return {"Retry-After": "soon"}
         return {"Retry-After": str(seconds)}
 
-    def _render(self, out: Out) -> bytes:
+    def _parts(self, call: Call, out: Out) -> tuple[int, dict[str, str], bytes]:
         headers = dict(out.headers)
         body = out.body
-        if isinstance(body, str):
-            headers.setdefault("Content-Type", "text/plain;charset=UTF-8")
-            data: bytes = body.encode()
-        elif body is None:
-            data = b""
-        else:
-            headers.setdefault("Content-Type", "application/json;charset=UTF-8")
-            data = json.dumps(body).encode()
+        try:
+            if isinstance(body, str):
+                headers.setdefault("Content-Type", "text/plain;charset=UTF-8")
+                data: bytes = body.encode()
+            elif body is None:
+                data = b""
+            else:
+                headers.setdefault("Content-Type", "application/json;charset=UTF-8")
+                data = json.dumps(body).encode()
+        except (ValueError, TypeError, RecursionError) as exc:  # a body that cannot be rendered
+            self.errors.append(HandlerError(call, exc, 500))
+            out = Out(500, "Internal Server Error")
+            headers = {"Content-Type": "text/plain;charset=UTF-8"}
+            data = b"Internal Server Error"
         headers.update(self._rate_headers())
-        return response_bytes(out.status, data, headers)
+        return out.status, headers, data
 
     # errors ----------------------------------------------------------------------------------
     def _error_out(self, err: ProviderError) -> Out:
@@ -840,18 +996,23 @@ class FakeProvider:
             if err.text is not None:
                 shape = "text"
         if shape == "text":
-            text = err.text or (err.messages[0] if err.messages else "error")
+            text = err.text or "; ".join([*err.messages, *err.errors.values()]) or "error"
             return Out(err.status, text)
         if shape == "error":
             message = (
-                err.messages[0] if err.messages else (next(iter(err.errors.values()), "error"))
+                err.messages[0]
+                if err.messages
+                else (next(iter(err.errors.values()), err.text or "error"))
             )
             return Out(err.status, {"error": message})
-        return Out(err.status, {"errorMessages": err.messages, "errors": err.errors})
+        messages = err.messages or ([err.text] if err.text else [])
+        return Out(err.status, {"errorMessages": messages, "errors": err.errors})
 
     def _dispatch(self, call: Call) -> Out:
         try:
             self._authenticate(call)
+            if call.malformed is not None:
+                raise ProviderError(400, ["The request target is malformed."])
             for method, pattern, handler in self._routes:
                 match = pattern.fullmatch(call.path)
                 if match and method == call.method:
@@ -861,6 +1022,12 @@ class FakeProvider:
             raise ProviderError(404, ["The requested resource was not found."])
         except ProviderError as err:
             return self._error_out(err)
+        except Exception as exc:  # noqa: BLE001 - nothing may drop the connection
+            # Malformed input of the client is a 400; anything else is the fake's own bug (500).
+            status = 400 if isinstance(exc, ValueError | RecursionError) else 500
+            self.errors.append(HandlerError(call, exc, status))
+            message = "Malformed request." if status == 400 else "Internal Server Error"
+            return self._error_out(ProviderError(status, [message]))
 
     def _authenticate(self, call: Call) -> None:
         header = (call.headers.get("authorization") or [""])[0]
@@ -872,7 +1039,7 @@ class FakeProvider:
             raise ProviderError(401, text="Client must be authenticated to access this resource.")
         try:
             decoded = base64.b64decode(value, validate=True).decode()
-        except (binascii.Error, UnicodeDecodeError):
+        except ValueError:  # bad base64, non-ASCII characters, bytes that are not UTF-8
             raise ProviderError(
                 401, text="Client must be authenticated to access this resource."
             ) from None
@@ -907,6 +1074,11 @@ class FakeProvider:
         r("POST", api + f"/issue/{key}/transitions", self._transition)
         r("GET", api + f"/issue/{key}/comment", self._comments)
         r("POST", api + f"/issue/{key}/comment", self._add_comment)
+        r("GET", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
+        r("PUT", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
+        comment_props = api + f"/issue/{key}/comment/([^/]+)/properties/([^/]+)"
+        r("GET", comment_props, self._comment_property)
+        r("PUT", comment_props, self._comment_property)
         agile = r"/rest/agile/1.0"
         r("GET", agile + "/board", self._boards)
         r("GET", agile + r"/board/(\d+)/sprint", self._board_sprints)
@@ -915,14 +1087,34 @@ class FakeProvider:
         r("POST", agile + "/backlog/issue", self._backlog)
 
     # lookups ---------------------------------------------------------------------------------
+    def _find(self, key: str) -> Ticket | None:
+        """By key (any case), by numeric id, or by a moved ticket's old key."""
+        upper = key.upper()
+        found = self.tickets.get(upper)
+        if found is None and key.isascii() and key.isdigit():
+            found = next((t for t in self.tickets.values() if str(t.id) == key), None)
+        if found is None and upper in self.moved:
+            found = self.tickets.get(self.moved[upper])
+        return found
+
     def _ticket(self, key: str) -> Ticket:
-        ticket = self.tickets.get(key)
+        ticket = self._find(key)
         # V-16: a missing, malformed or hidden key is the same 404 with the same text.
         if ticket is None:
             raise ProviderError(
                 404, ["Issue does not exist or you do not have permission to see it."]
             )
         return ticket
+
+    @staticmethod
+    def _int_param(call: Call, name: str, default: int) -> int:
+        """A non-negative integer query parameter; anything else is a 400."""
+        raw = call.one(name)
+        if raw is None or raw == "":
+            return default
+        if not (raw.isascii() and raw.isdigit()) or len(raw) > 9:
+            raise ProviderError(400, errors={name: f"The value '{raw}' is not valid for {name}."})
+        return int(raw)
 
     def _need_body(self, call: Call) -> dict[str, Any]:
         if not isinstance(call.body, dict):
@@ -1006,6 +1198,8 @@ class FakeProvider:
             F_SPRINT: [self._sprint_obj(s) for s in t.sprints] or None,
             F_CRITERIA: t.criteria,
         }
+        for fid in EXTRA_FLOATS:
+            fields[fid] = t.extra.get(fid)
         if t.status in ("Done",):
             fields["resolutiondate"] = self.stamp(t.updated)
         return fields
@@ -1037,7 +1231,7 @@ class FakeProvider:
         if "*all" in names:
             fields = dict(full)
             for n in range(self.quirks.all_fields_filler):
-                fields["customfield_" + str(80000 + n)] = None
+                fields["customfield_" + str(80000 + n)] = f"filler value {n:04d} " + "x" * 13
         elif "*navigable" in names:
             fields = dict(full)
         else:
@@ -1136,6 +1330,15 @@ class FakeProvider:
                 True,
             ),
         ]
+        for fid, name in EXTRA_FLOATS.items():
+            custom.append(
+                f(
+                    fid,
+                    name,
+                    {"type": "number", "custom": f"{ns}:float", "customId": int(fid[-5:])},
+                    True,
+                )
+            )
         return Out(200, sys_fields + custom)
 
     def _resolutions(self, call: Call) -> Out:
@@ -1171,16 +1374,32 @@ class FakeProvider:
                 elif (
                     c.field == "status"
                     and c.op in {"=", "!=", "in", "not in"}
-                    and v not in STATUSES
+                    and v.lower() not in {name.lower() for name in STATUSES}
                 ):
                     errors.append(f"The value '{v}' does not exist for the field 'status'.")
                 elif c.field == "project" and v.upper() != PROJECT:
                     errors.append(f"The value '{v}' does not exist for the field 'project'.")
+                elif isinstance(v, Bare) and v.bad and c.op in {"~", "!~"}:
+                    # V-31: an unquoted phrase or reserved characters answer 200 with no results.
+                    errors.append(f"The text query '{v}' must be quoted.")
         for name, _ in order:
             if name not in KNOWN_FIELDS:
                 errors.append(
                     f"Field '{name}' does not exist or you do not have permission to view it."
                 )
+        return errors
+
+    def _date_errors(self, clauses: list[Clause]) -> list[str]:
+        """A date value that cannot be read is a 400 (never the silent empty answer)."""
+        errors: list[str] = []
+        for c in clauses:
+            if c.field not in {"created", "updated"}:
+                continue
+            for v in c.values:
+                if self._date_value(v) is None and not (
+                    isinstance(v, tuple) and v[1].lower() not in KNOWN_FUNCTIONS
+                ):
+                    errors.append(f"Date value '{v if isinstance(v, str) else v[1]}' is invalid.")
         return errors
 
     def _values(self, t: Ticket, fld: str) -> list[str]:
@@ -1210,7 +1429,26 @@ class FakeProvider:
             return ME_ACCOUNT
         return ""
 
+    def _date_value(self, value: Any) -> datetime | None:
+        if isinstance(value, tuple):
+            name = value[1].lower()
+            local = self.now.astimezone(LOCAL_TZ)
+            midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            if name == "now":
+                return self.now
+            if name == "startofday":
+                return midnight.astimezone(UTC)
+            if name == "endofday":
+                return (midnight + timedelta(days=1)).astimezone(UTC)
+            return None
+        return self._date(value)
+
     def _date(self, text: str) -> datetime | None:
+        relative = re.fullmatch(r"([+-])(\d{1,6})([mhdw])", text.strip())
+        if relative:
+            unit = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}[relative[3]]
+            delta = timedelta(**{unit: int(relative[2])})
+            return self.now + delta if relative[1] == "+" else self.now - delta
         # V-32: an absolute date is read in the searching user's time zone.
         for fmt in ("%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%Y-%m-%d", "%Y/%m/%d"):
             try:
@@ -1223,7 +1461,7 @@ class FakeProvider:
         wanted = [self._fn_value(v[1]) if isinstance(v, tuple) else v for v in c.values]
         if c.field in {"created", "updated"}:
             stamp = t.created if c.field == "created" else t.updated
-            when = self._date(wanted[0]) if wanted else None
+            when = self._date_value(c.values[0]) if c.values else None
             if when is None:
                 return False
             return {
@@ -1251,10 +1489,11 @@ class FakeProvider:
         if c.op == "not in":
             return not any(w in low for w in want)
         if c.op in {"~", "!~"}:
-            # V-31: a tokenized phrase match: punctuation is ignored and near matches count.
+            # V-31: a tokenized phrase match: punctuation is ignored and near matches count
+            # (a trailing s, ed or ing, and a prefix of 4 or more characters).
             tokens = re.findall(r"\w+", " ".join(want))
             hit = bool(tokens) and all(
-                any(tok in re.findall(r"\w+", h) for h in low) for tok in tokens
+                any(_near(tok, doc) for h in low for doc in re.findall(r"\w+", h)) for tok in tokens
             )
             return hit if c.op == "~" else not hit
         return False
@@ -1299,6 +1538,9 @@ class FakeProvider:
             node, order = parse_jql(jql)
         except JqlSyntax as exc:
             raise ProviderError(400, [f"Error in the JQL Query: {exc}"]) from None
+        dates = self._date_errors(_walk(node))
+        if dates:
+            raise ProviderError(400, dates)
         semantic = self._semantic_errors(_walk(node), order)
         if semantic:
             if not self.quirks.silent_semantic_jql:
@@ -1310,7 +1552,7 @@ class FakeProvider:
         all_fields = wanted is not None and any(f in {"*all", "*navigable"} for f in wanted)
         cap = 5000
         requested = body.get("maxResults", 50)
-        if not isinstance(requested, int) or requested < 1:
+        if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
             raise ProviderError(400, ["maxResults must be a positive integer."])
         page = min(requested, cap)
         if all_fields and self.quirks.all_fields_page_cap is not None:
@@ -1322,10 +1564,10 @@ class FakeProvider:
                 prefix, _, digits = (
                     base64.urlsafe_b64decode(str(token).encode()).decode().partition(":")
                 )
-                if prefix != "page" or not digits.isdigit():
+                if prefix != "page" or not digits.isascii() or not digits.isdigit():
                     raise ValueError
                 start = int(digits)
-            except (ValueError, binascii.Error, UnicodeDecodeError):
+            except ValueError:  # includes bad base64, bad UTF-8 and the int digit limit
                 raise ProviderError(400, ["The 'nextPageToken' is invalid."]) from None
         chunk = found[start : start + page]
         out: dict[str, Any] = {
@@ -1343,6 +1585,9 @@ class FakeProvider:
             node, order = parse_jql(jql)
         except JqlSyntax as exc:
             raise ProviderError(400, [f"Error in the JQL Query: {exc}"]) from None
+        dates = self._date_errors(_walk(node))
+        if dates:
+            raise ProviderError(400, dates)
         if self._semantic_errors(_walk(node), order):
             return Out(200, {"count": 0})
         return Out(200, {"count": len(self._run_query(jql))})
@@ -1359,8 +1604,9 @@ class FakeProvider:
             structure: dict[str, Any] = {}
             try:
                 node, order = parse_jql(str(q))
+                errors = self._date_errors(_walk(node))
                 if mode != "none":
-                    errors = self._semantic_errors(_walk(node), order)
+                    errors += self._semantic_errors(_walk(node), order)
                 structure = {"where": {} if node else None}
             except JqlSyntax as exc:
                 errors = [f"Error in the JQL Query: {exc}"]
@@ -1386,6 +1632,10 @@ class FakeProvider:
             "duedate": meta("Due date", {"type": "date", "system": "duedate"}),
             F_POINTS: meta("Story Points", {"type": "number", "custom": f"{ns}:float"}),
             F_CRITERIA: meta("Acceptance Criteria", {"type": "string", "custom": f"{ns}:textarea"}),
+            **{
+                fid: meta(name, {"type": "number", "custom": f"{ns}:float"})
+                for fid, name in EXTRA_FLOATS.items()
+            },
         }
 
     def _editmeta(self, call: Call, key: str) -> Out:
@@ -1421,7 +1671,7 @@ class FakeProvider:
             elif name == "assignee":
                 changes["assignee"] = self._account(value)
             elif name == "parent" and creating:
-                changes["parent"] = (value or {}).get("key") if isinstance(value, dict) else None
+                changes["parent"] = value.get("key") if isinstance(value, dict) else None
             elif name == F_SPRINT and creating:
                 continue  # V-28: silently ignored in a create body
             elif name == "reporter" and creating:
@@ -1437,8 +1687,13 @@ class FakeProvider:
             not isinstance(changes["summary"], str) or not changes["summary"].strip()
         ):
             raise ProviderError(400, errors={"summary": "You must specify a summary of the issue."})
-        if "description" in changes:
-            self._check_adf(changes["description"], "description")
+        for name in ("description", F_CRITERIA):
+            if name in changes:
+                self._check_adf(changes[name], name)
+        for name in (F_POINTS, *EXTRA_FLOATS):
+            value = changes.get(name)
+            if name in changes and value is not None and not _is_number(value):
+                raise ProviderError(400, errors={name: "Number value expected."})
         return changes
 
     @staticmethod
@@ -1446,7 +1701,10 @@ class FakeProvider:
         if value is None:
             return
         if not (
-            isinstance(value, dict) and value.get("type") == "doc" and value.get("version") == 1
+            isinstance(value, dict)
+            and value.get("type") == "doc"
+            and value.get("version") == 1
+            and _adf_shape_ok(value)
         ):
             raise ProviderError(400, errors={name: "Operation value must be an Atlassian Document"})
         if len(json.dumps(value)) >= COMMENT_BODY_LIMIT * 8 and name != "description":
@@ -1477,6 +1735,11 @@ class FakeProvider:
                     if lab not in value:
                         del t.labels[lab]
                         changed = True
+                continue
+            if name in EXTRA_FLOATS:
+                if t.extra.get(name) != value:
+                    t.extra[name] = value
+                    changed = True
                 continue
             attr = {"duedate": "due", F_POINTS: "points", F_CRITERIA: "criteria"}.get(name, name)
             if name == "priority":
@@ -1553,10 +1816,13 @@ class FakeProvider:
         fields = body.get("fields")
         if not isinstance(fields, dict):
             raise ProviderError(400, ["'fields' is required."])
-        project = (fields.get("project") or {}).get("key")
+        project_field = fields.get("project")
+        project = project_field.get("key") if isinstance(project_field, dict) else None
         if project != PROJECT:
             raise ProviderError(400, errors={"project": "Valid project is required"})
-        itype = fields.get("issuetype") or {}
+        itype = fields.get("issuetype")
+        if not isinstance(itype, dict):
+            raise ProviderError(400, errors={"issuetype": "Specify a valid issue type"})
         type_id = str(itype.get("id")) if itype.get("id") is not None else None
         if type_id is None and itype.get("name"):
             type_id = next((i for i, (n, _) in ISSUE_TYPES.items() if n == itype["name"]), None)
@@ -1572,9 +1838,15 @@ class FakeProvider:
                 400, errors={"parent": "Sub-tasks must be created with a parent."}
             )  # V-29
         if parent:
-            ptype = self.tickets.get(parent)
+            ptype = self._find(parent) if isinstance(parent, str) else None
             if ptype is None:
                 raise ProviderError(400, errors={"parent": "Parent issue does not exist."})
+            parent = ptype.key
+            if subtask and ISSUE_TYPES[ptype.type_id][0] not in {"Task", "Bug"}:
+                raise ProviderError(
+                    400,
+                    errors={"parent": "Sub-tasks can only be created under a task or a bug."},
+                )
             if not subtask and ISSUE_TYPES[ptype.type_id][0] != "Epic":
                 raise ProviderError(
                     400,
@@ -1583,7 +1855,7 @@ class FakeProvider:
                     },
                 )
         adds, _ = self._update_ops(body.get("update"))
-        props = body.get("properties")
+        props = self._parse_props(body.get("properties"))  # V-27
         key = self.next_key()
         t = self.add_ticket(key, str(changes["summary"]), type_id=type_id)
         t.status = "Backlog"
@@ -1598,10 +1870,10 @@ class FakeProvider:
         )
         t.labels = {}
         self._apply(t, {"labels": changes.get("labels", [])}, adds, [])
-        for name in ("duedate", F_POINTS, F_CRITERIA):
+        for name in ("duedate", F_POINTS, F_CRITERIA, *EXTRA_FLOATS):
             if name in changes:
                 self._apply(t, {name: changes[name]}, [], [])
-        del props  # issue properties are accepted and not modeled
+        t.properties = props
         t.created = t.updated = self.now
         return Out(
             201,
@@ -1656,12 +1928,17 @@ class FakeProvider:
     def _transition(self, call: Call, key: str) -> Out:
         t = self._ticket(key)
         body = self._need_body(call)
-        tid = str((body.get("transition") or {}).get("id", ""))
+        chosen = body.get("transition")
+        if not isinstance(chosen, dict):
+            raise ProviderError(400, ["'transition' must be an object with an 'id'."])
+        tid = str(chosen.get("id", ""))
         if tid not in TRANSITIONS:
             raise ProviderError(400, [f"Transition id '{tid}' is not valid for this issue."])
         target = TRANSITIONS[tid][1]
         done = STATUSES[target][1] == "done"
         fields = body.get("fields") or {}
+        if not isinstance(fields, dict):
+            raise ProviderError(400, ["'fields' must be an object."])
         allowed = {"resolution", "parent"}
         for name in fields:
             if name not in allowed:
@@ -1669,9 +1946,10 @@ class FakeProvider:
                     400,
                     errors={name: NOT_SETTABLE.format(name=name)},
                 )
-        resolution = (
-            (fields.get("resolution") or {}).get("name") if fields.get("resolution") else None
-        )
+        chosen_resolution = fields.get("resolution")
+        if chosen_resolution is not None and not isinstance(chosen_resolution, dict):
+            raise ProviderError(400, errors={"resolution": "Resolution is not valid."})
+        resolution = chosen_resolution.get("name") if chosen_resolution else None
         if resolution is not None and resolution not in RESOLUTIONS:
             raise ProviderError(400, errors={"resolution": "Resolution is not valid."})
         if done and resolution is None and not self.quirks.done_without_resolution:
@@ -1701,8 +1979,8 @@ class FakeProvider:
         items = list(t.comments)
         if order == "-created":
             items.reverse()
-        start = int(call.one("startAt", "0") or 0)
-        limit = int(call.one("maxResults", "50") or 50)
+        start = self._int_param(call, "startAt", 0)
+        limit = self._int_param(call, "maxResults", 50)
         props = "properties" in (call.one("expand") or "")
         chunk = items[start : start + limit]
         return Out(
@@ -1719,21 +1997,12 @@ class FakeProvider:
         t = self._ticket(key)
         body = self._need_body(call)
         doc = body.get("body")
-        if not (isinstance(doc, dict) and doc.get("type") == "doc"):
+        if not (isinstance(doc, dict) and doc.get("type") == "doc" and _adf_shape_ok(doc)):
             raise ProviderError(400, ["Comment body is not valid!"])
         text_size = sum(len(n.get("text", "")) for n in self._text_nodes(doc))
         if text_size >= COMMENT_BODY_LIMIT:
             raise ProviderError(400, errors={"comment": "CONTENT_LIMIT_EXCEEDED"})  # V-21
-        props: dict[str, Any] = {}
-        for prop in body.get("properties") or []:
-            if not isinstance(prop, dict) or not isinstance(prop.get("key"), str):
-                raise ProviderError(400, ["Invalid comment property."])
-            if (
-                len(prop["key"].encode()) > 255
-                or len(json.dumps(prop.get("value")).encode()) > PROPERTY_VALUE_LIMIT
-            ):
-                raise ProviderError(400, ["Comment property is too large."])
-            props[prop["key"]] = prop.get("value")
+        props = self._parse_props(body.get("properties"))
         cid = str(self._next_comment)
         self._next_comment += 1
         when = self.now
@@ -1749,7 +2018,61 @@ class FakeProvider:
             "jsdPublic": True,
         }
         t.comments.append(comment)
+        t.updated = self.now
         return Out(201, self._comment_obj(comment, props=False), applied=True)
+
+    @staticmethod
+    def _check_property(key: Any, value: Any) -> None:
+        """V-19: a key up to 255 bytes and a value up to 32,768 bytes of JSON."""
+        if not isinstance(key, str) or not key:
+            raise ProviderError(400, ["Invalid property key."])
+        if len(key.encode()) > 255:
+            raise ProviderError(400, ["The property key is too long."])
+        if len(json.dumps(value).encode()) > PROPERTY_VALUE_LIMIT:
+            raise ProviderError(400, ["The property value is too large."])
+
+    def _parse_props(self, raw: Any) -> dict[str, Any]:
+        """A body's ``properties``: a list of ``{key, value}`` (V-19, V-27)."""
+        props: dict[str, Any] = {}
+        if raw is None:
+            return props
+        if not isinstance(raw, list):
+            raise ProviderError(400, ["'properties' must be a list."])
+        for prop in raw:
+            if not isinstance(prop, dict):
+                raise ProviderError(400, ["Invalid property."])
+            self._check_property(prop.get("key"), prop.get("value"))
+            props[prop["key"]] = prop.get("value")
+        return props
+
+    def _property_get(self, bag: dict[str, Any], pkey: str) -> Out:
+        if pkey not in bag:
+            raise ProviderError(404, [f"Property with key '{pkey}' does not exist."])
+        return Out(200, {"key": pkey, "value": bag[pkey]})
+
+    def _property_put(self, call: Call, bag: dict[str, Any], pkey: str) -> Out:
+        if call.body is None or (isinstance(call.body, tuple) and call.body[:1] == ("invalid",)):
+            raise ProviderError(400, ["The request body must be valid JSON."])
+        self._check_property(pkey, call.body)
+        created = pkey not in bag
+        changed = created or bag[pkey] != call.body
+        bag[pkey] = call.body
+        return Out(201 if created else 200, None, applied=changed)
+
+    def _issue_property(self, call: Call, key: str, pkey: str) -> Out:
+        t = self._ticket(key)
+        if call.method == "GET":
+            return self._property_get(t.properties, pkey)
+        return self._property_put(call, t.properties, pkey)
+
+    def _comment_property(self, call: Call, key: str, cid: str, pkey: str) -> Out:
+        t = self._ticket(key)
+        comment = next((c for c in t.comments if c["id"] == cid), None)
+        if comment is None:
+            raise ProviderError(404, ["Comment does not exist or you do not have permission."])
+        if call.method == "GET":
+            return self._property_get(comment["properties"], pkey)
+        return self._property_put(call, comment["properties"], pkey)
 
     @staticmethod
     def _text_nodes(node: Any) -> list[dict[str, Any]]:
@@ -1806,6 +2129,17 @@ class FakeProvider:
                 "operations": ["set"],
             },
         ]
+        ns = "com.atlassian.jira.plugin.system.customfieldtypes"
+        for fid, name in {F_POINTS: "Story Points", **EXTRA_FLOATS}.items():
+            fields.append(
+                {
+                    "fieldId": fid,
+                    "name": name,
+                    "required": False,
+                    "schema": {"type": "number", "custom": f"{ns}:float"},
+                    "operations": ["set"],
+                }
+            )
         if ISSUE_TYPES[type_id][1]:
             fields.append(
                 {
@@ -1866,12 +2200,16 @@ class FakeProvider:
         ]
         return Out(200, {"maxResults": 50, "startAt": 0, "isLast": True, "values": values})
 
-    def _sprint(self, call: Call, sid: str) -> Out:
-        if int(sid) not in self.sprints:
+    def _sprint_id(self, sid: str) -> int:
+        found = next((i for i in self.sprints if str(i) == sid), None)
+        if found is None:
             raise ProviderError(
                 404, ["Sprint does not exist or you do not have permission to view it."]
             )
-        return Out(200, self._agile_sprint(int(sid)))
+        return found
+
+    def _sprint(self, call: Call, sid: str) -> Out:
+        return Out(200, self._agile_sprint(self._sprint_id(sid)))
 
     def _issues_in(self, call: Call) -> list[Ticket]:
         body = self._need_body(call)
@@ -1880,20 +2218,15 @@ class FakeProvider:
             raise ProviderError(400, ["'issues' must be a non-empty list of keys."])
         return [self._ticket(str(k)) for k in keys]
 
-    def _sprint_add(self, call: Call, sid: str) -> Out:
-        if int(sid) not in self.sprints:
-            raise ProviderError(
-                404, ["Sprint does not exist or you do not have permission to view it."]
-            )
+    def _sprint_add(self, call: Call, sid_text: str) -> Out:
+        sid = self._sprint_id(sid_text)
         tickets = self._issues_in(call)
-        if self.sprints[int(sid)]["state"] == "closed":
+        if self.sprints[sid]["state"] == "closed":
             raise ProviderError(400, ["Issues cannot be added to a closed sprint."])
         changed = False
         for t in tickets:
-            if int(sid) not in t.sprints:
-                t.sprints = [s for s in t.sprints if self.sprints[s]["state"] == "closed"] + [
-                    int(sid)
-                ]
+            if sid not in t.sprints:
+                t.sprints = [s for s in t.sprints if self.sprints[s]["state"] == "closed"] + [sid]
                 t.updated = self.now
                 changed = True
         return Out(204, None, applied=changed)

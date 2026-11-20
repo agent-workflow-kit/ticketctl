@@ -12,7 +12,7 @@ VALID = {
     "site_name": ["main", "A", "a-b_c", "x" * 64, "9lives"],
     "provider_id": ["10001", "a.b:c_d-e", "x" * 64],
     "numeric_id": ["0", "1", "9" * 18],
-    "custom_field_id": ["customfield_1", "customfield_10042"],
+    "custom_field_id": ["customfield_1", "customfield_90002"],
     "account_id": ["abc:123-def_g.h", "x" * 128],
     "decision_id": ["a", "a.b:c@d/e-f_g", "x" * 128],
     "dedupe_key": ["run-2024/01@host:1", "x" * 128],
