@@ -27,6 +27,7 @@ MODULES = [
     "adf_render",
     "adf_from_markdown",
     "adf_validate",
+    "attribution",
     "plan",
     "writeflow",
     "hooks",
