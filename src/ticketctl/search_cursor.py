@@ -16,7 +16,8 @@ base64url alphabet, canonical base64 (the text must be exactly what ``encode`` w
 decoded bytes, so one document has one spelling), JSON nesting depth at most 4 (an iterative,
 string-aware scan on the bytes, before the parser sees them), strict UTF-8 JSON (no duplicate key,
 no ``NaN``), then exactly the four keys with ``v`` the integer 1, ``site`` and ``jql_sha256``
-strings and ``page_token`` a printable ASCII string of 1 to 1024 characters.
+strings and ``page_token`` a printable ASCII string of 1 to 1024 characters, and last the document
+must be exactly what ``encode`` prints for those three values (key order, spacing and escapes).
 
 The provider's token is opaque and is only ever sent back inside a JSON string of the search body.
 """
@@ -123,7 +124,9 @@ def _reject_constant(_name: str) -> Any:
 
 
 def decode(text: str) -> Cursor:
-    if not isinstance(text, str) or not text or len(text.encode("utf-8", "replace")) > MAX_CURSOR:
+    # The length first, on characters: a longer text is over the cap in bytes too, and nothing
+    # encodes or scans a text this long.
+    if not isinstance(text, str) or not text or len(text) > MAX_CURSOR:
         raise _invalid("empty or longer than 4096 bytes")
     if not _ALPHABET.fullmatch(text):
         raise _invalid("not base64url")
@@ -153,6 +156,12 @@ def decode(text: str) -> Cursor:
     token = document["page_token"]
     if not isinstance(site, str) or not isinstance(digest, str) or not valid_token(token):
         raise _invalid("wrong field types")
+    try:
+        respelled = encode(site, digest, token) != bare
+    except TicketctlError:
+        respelled = True
+    if respelled:  # one document, one spelling: key order, spacing and \u escapes are refused
+        raise _invalid("not canonical")
     return Cursor(site, digest, token)
 
 

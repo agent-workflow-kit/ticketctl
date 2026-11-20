@@ -39,7 +39,7 @@ def doc(**over: Any) -> dict[str, Any]:
 
 
 def cursor_of(document: Any) -> str:
-    return b64(json.dumps(document))
+    return b64(json.dumps(document, sort_keys=True, separators=(",", ":")))
 
 
 def refused(text: str) -> TicketctlError:
@@ -200,3 +200,70 @@ def test_the_message_never_echoes_the_cursor() -> None:
     marker = "ZZZSECRETZZZ"
     err = refused(b64(json.dumps(doc(page_token=marker, v=9))))
     assert marker not in err.message and marker not in str(err.details)
+
+
+def test_a_respelled_but_valid_document_is_not_canonical() -> None:
+    assert decode(encode("main", DIGEST, "tok-1")).page_token == "tok-1"
+    spaced = json.dumps(doc(), sort_keys=True)  # a space after each separator
+    reordered = json.dumps(doc(), separators=(",", ":"))  # insertion order, not sorted
+    escaped = '{"jql_sha256":"' + DIGEST + '","page_token":"tok-1","site":"m\\u0061in","v":1}'
+    compact_sorted = json.dumps(doc(), sort_keys=True, separators=(",", ":"))
+    for text in (spaced, reordered, escaped):
+        assert json.loads(text) == doc() and text != compact_sorted
+        refused(b64(text))
+    assert decode(b64(compact_sorted)) == Cursor("main", DIGEST, "tok-1")
+
+
+def test_the_size_cap_alone_refuses_a_long_valid_cursor() -> None:
+    site = "s" * 4000
+    document = {"v": 1, "site": site, "jql_sha256": DIGEST, "page_token": "tok-1"}
+    text = b64(json.dumps(document, sort_keys=True, separators=(",", ":")))
+    assert len(text) > MAX_CURSOR
+    refused(text)
+    # the same document under the cap decodes: only the length refuses the long one
+    short = b64(json.dumps({**document, "site": "s" * 100}, sort_keys=True, separators=(",", ":")))
+    assert len(short) <= MAX_CURSOR and decode(short).site == "s" * 100
+
+
+def test_the_length_is_judged_before_any_byte_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Spy(str):
+        __slots__ = ()
+
+        def encode(self, *args: Any, **kw: Any) -> bytes:
+            raise AssertionError("encoded before the length check")
+
+    refused_text = Spy("A" * (MAX_CURSOR + 1))
+    with pytest.raises(TicketctlError) as info:
+        decode(refused_text)
+    assert info.value.reason == "cursor_invalid"
+
+
+def test_the_depth_guard_alone_refuses_a_deep_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ticketctl import search_cursor
+
+    def parser_must_not_run(*args: Any, **kw: Any) -> Any:
+        raise AssertionError("the JSON parser ran on a document over the depth cap")
+
+    monkeypatch.setattr(search_cursor.json, "loads", parser_must_not_run)
+    refused(cursor_of(doc(page_token=[[[[["x"]]]]])))
+
+
+def test_the_parser_is_given_a_hook_that_rejects_json_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A constant (NaN, Infinity) always lands in a field the shape checks refuse anyway, so no
+    cursor makes the hook the only defect; the hook is checked through the arguments instead."""
+    from ticketctl import search_cursor
+
+    seen: dict[str, Any] = {}
+    real = json.loads
+
+    def spy(text: str, **kw: Any) -> Any:
+        seen.update(kw)
+        return real(text, **kw)
+
+    monkeypatch.setattr(search_cursor.json, "loads", spy)
+    decode(encode("main", DIGEST, "tok-1"))
+    for constant in ("NaN", "Infinity", "-Infinity"):
+        with pytest.raises(ValueError):
+            seen["parse_constant"](constant)

@@ -53,7 +53,7 @@ from .normalize import (
 )
 from .runtime import Runtime, for_site, load_runtime, open_gateway
 from .sanitize import read_input
-from .search_compile import SearchFlags, compile_search, lookup_named_query
+from .search_compile import SearchFlags, compile_search, is_rfc3339, lookup_named_query
 from .search_cursor import Cursor, check, decode, encode, jql_digest, valid_token
 
 SEARCH = "/rest/api/3/search/jql"
@@ -63,8 +63,6 @@ MAX_LIMIT = 500
 PAGE_SIZE = 100
 MAX_PAGES = 5
 MAX_MESSAGES = 10
-_DURATION = re.compile(r"[0-9]{1,4}[mhdw]")
-_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _CUSTOM_ID = re.compile(r"customfield_([0-9]{1,18})")
 
 _SEQUENCES = (
@@ -130,10 +128,10 @@ def check_offline(a: argparse.Namespace) -> None:
             "a raw query (--jql, --jql-file) cannot be given with a structured flag, --text, "
             "--text-file, --order-by or --query",
         )
-    if not raw and a.query is None and not replace(flags, order_by=None).any_given():
-        raise usage_error("missing_option", "search needs a query or a filter flag")
     effective_limit(a)
     parse_properties(a.fields, command="search")
+    if not raw and a.query is None and not replace(flags, order_by=None).any_given():
+        raise usage_error("missing_option", "search needs a query or a filter flag")
 
 
 def _text_of(a: argparse.Namespace) -> str | None:
@@ -157,10 +155,7 @@ def _raw_of(a: argparse.Namespace) -> str | None:
 
 def _needs_zone(flags: SearchFlags) -> bool:
     """Whether a ``--*-since`` value is an RFC 3339 timestamp (a duration and a date need none)."""
-    return any(
-        v is not None and not _DURATION.fullmatch(v) and not _DATE.fullmatch(v)
-        for v in (flags.updated_since, flags.created_since)
-    )
+    return any(v is not None and is_rfc3339(v) for v in (flags.updated_since, flags.created_since))
 
 
 def _order_clauses(site_fields: SiteFields) -> dict[str, str]:

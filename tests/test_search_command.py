@@ -680,6 +680,15 @@ def b64(raw: str) -> str:
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
+# A document that passes every check for the raw query ALL_DEMO on site "main": each hostile entry
+# below changes one field, so only the guard under test can reject it.
+GOOD_DOC = {
+    "v": 1,
+    "site": "main",
+    "jql_sha256": jql_digest(ALL_DEMO[1]),
+    "page_token": "t",
+}
+
 HOSTILE = {
     "over 4096 bytes": "A" * 4097,
     "nested 100000 deep": b64("[" * 100_000)[:4096],
@@ -691,18 +700,9 @@ HOSTILE = {
     "json null": b64("null"),
     "json list": b64("[]"),
     "bytes": b64("\xff\xfe"),
-    "non-ASCII token": b64(
-        json.dumps(
-            {"v": 1, "site": "main", "jql_sha256": "0" * 64, "page_token": "café"},
-            ensure_ascii=False,
-        )
-    ),
-    "wrong version": b64(
-        json.dumps({"v": 2, "site": "main", "jql_sha256": "0" * 64, "page_token": "t"})
-    ),
-    "path injection": b64(
-        json.dumps({"v": 1, "site": "../../etc", "jql_sha256": "0" * 64, "page_token": "t"})
-    ),
+    "non-ASCII token": b64(json.dumps({**GOOD_DOC, "page_token": "café"}, ensure_ascii=False)),
+    "wrong version": b64(json.dumps({**GOOD_DOC, "v": 2})),
+    "path injection": b64(json.dumps({**GOOD_DOC, "site": "../../etc"})),
 }
 
 
@@ -1054,3 +1054,65 @@ def test_the_cursor_never_holds_a_credential(live: Env, fake: FakeProvider) -> N
     cursor = json.loads(live.run("--json", "search", *ALL_DEMO, "--limit", "2")[1])["next"]
     raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
     assert SITE_TOKEN not in raw and SITE_EMAIL not in raw and ME_ACCOUNT not in raw
+
+
+# --- review round 1 ----------------------------------------------------------------------------
+
+
+def test_a_garbage_since_value_is_refused_before_any_request(live: Env, fake: FakeProvider) -> None:
+    code, out, _ = live.run("--json", "search", "--project", "DEMO", "--updated-since", "garbage")
+    assert (code, err_of(out)["reason"]) == (22, "invalid_value")
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "reason"),
+    [
+        (["--limit", "501"], "invalid_value"),
+        (["--limit", "0"], "invalid_value"),
+        (["--fields", "bogus"], "unknown_field"),
+    ],
+)
+def test_limit_and_fields_are_judged_before_missing_option(
+    live: Env, fake: FakeProvider, argv: list[str], reason: str
+) -> None:
+    code, out, _ = live.run("--json", "search", *argv)
+    assert (code, err_of(out)["reason"]) == (22, reason)
+    assert fake.calls == []
+
+
+def test_the_provider_text_of_a_search_400_is_masked_everywhere(
+    live: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parse_says_valid(monkeypatch)
+    real = Gateway.request
+    text = f"bad customfield_90005 cf[90005] {SITE_TOKEN}"
+
+    def request(self: Any, method: str, path: str, **kw: Any) -> Any:
+        if path == SEARCH:
+            data = {"errorMessages": [text]}
+            return type("R", (), {"status": 400, "text": text, "data": data})()
+        return real(self, method, path, **kw)
+
+    monkeypatch.setattr(Gateway, "request", request)
+    code, out, err = live.run("--json", "--verbose", "search", *ALL_DEMO)
+    body = err_of(out)
+    assert (code, body["reason"]) == (22, "invalid_query")
+    shown = [body["message"], *body["details"]["errorMessages"], out, err]
+    for item in shown:
+        assert "customfield_90005" not in item and "cf[90005]" not in item
+        assert SITE_TOKEN not in item
+    assert body["details"]["errorMessages"]
+
+    # the same with a plain-text body and no errorMessages list
+    def plain(self: Any, method: str, path: str, **kw: Any) -> Any:
+        if path == SEARCH:
+            return type("R", (), {"status": 400, "text": text, "data": None})()
+        return real(self, method, path, **kw)
+
+    monkeypatch.setattr(Gateway, "request", plain)
+    code, out, err = live.run("--json", "--verbose", "search", *ALL_DEMO)
+    body = err_of(out)
+    assert code == 22 and body["details"]["errorMessages"]
+    for item in (out, err):
+        assert "customfield_90005" not in item and "cf[90005]" not in item
