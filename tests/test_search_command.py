@@ -680,6 +680,12 @@ def b64(raw: str) -> str:
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
+def canonical(document: dict[str, Any], *, ensure_ascii: bool = True) -> str:
+    """Encode a cursor document the way the decoder's canonical re-encode check expects."""
+    raw = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=ensure_ascii)
+    return b64(raw)
+
+
 # A document that passes every check for the raw query ALL_DEMO on site "main": each hostile entry
 # below changes one field, so only the guard under test can reject it.
 GOOD_DOC = {
@@ -700,9 +706,9 @@ HOSTILE = {
     "json null": b64("null"),
     "json list": b64("[]"),
     "bytes": b64("\xff\xfe"),
-    "non-ASCII token": b64(json.dumps({**GOOD_DOC, "page_token": "café"}, ensure_ascii=False)),
-    "wrong version": b64(json.dumps({**GOOD_DOC, "v": 2})),
-    "path injection": b64(json.dumps({**GOOD_DOC, "site": "../../etc"})),
+    "non-ASCII token": canonical({**GOOD_DOC, "page_token": "café"}, ensure_ascii=False),
+    "wrong version": canonical({**GOOD_DOC, "v": 2}),
+    "path injection": canonical({**GOOD_DOC, "site": "../../etc"}),
 }
 
 
