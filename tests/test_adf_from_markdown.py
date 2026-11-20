@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import random
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -13,108 +12,21 @@ import pytest
 
 from ticketctl import sanitize
 from ticketctl.adf_from_markdown import markdown_to_adf, text_chars
+from ticketctl.adf_validate import validate_adf
 
 ROOT = Path(__file__).resolve().parent.parent
-HREF = re.compile(r"(?!https?://[^/?#]*@)https?://[\x21-\x7e]{1,2000}")
-LANG = re.compile(r"[A-Za-z0-9+#._-]{1,32}")
-MAX_DEPTH = 10  # container depth below the doc (list nesting 5)
-MAX_NODES = 5000
-ALLOWED_NODES = {
-    "doc",
-    "paragraph",
-    "text",
-    "heading",
-    "bulletList",
-    "orderedList",
-    "listItem",
-    "codeBlock",
-    "blockquote",
-    "hardBreak",
-}
-ALLOWED_MARKS = {"strong", "em", "code", "link"}
-
-
-# --- an independent allowlist check (the real validate_adf is owned by #21) -----------------
 
 
 def check(doc: dict[str, Any]) -> int:
-    """Raise AssertionError for any node, mark or attribute outside the allowlist."""
-    assert (
-        doc["type"] == "doc" and doc["version"] == 1 and set(doc) == {"type", "version", "content"}
-    )
-    count = [1]
-
-    def block(node: dict[str, Any], depth: int) -> None:
-        count[0] += 1
-        t = node["type"]
-        assert t in ALLOWED_NODES, t
-        if t in ("bulletList", "orderedList", "blockquote"):
-            assert depth <= MAX_DEPTH, "too deep"
-        keys = set(node)
-        if t == "paragraph":
-            assert keys <= {"type", "content"}
-            inline(node.get("content", []))
-        elif t == "heading":
-            assert keys <= {"type", "attrs", "content"}
-            assert set(node["attrs"]) == {"level"} and node["attrs"]["level"] in range(1, 7)
-            inline(node.get("content", []))
-        elif t == "codeBlock":
-            assert keys <= {"type", "attrs", "content"}
-            if "attrs" in node:
-                assert set(node["attrs"]) == {"language"}
-                assert LANG.fullmatch(node["attrs"]["language"])
-            for c in node.get("content", []):
-                assert set(c) == {"type", "text"} and c["type"] == "text" and c["text"]
-                count[0] += 1
-        elif t in ("bulletList", "orderedList"):
-            assert keys <= {"type", "attrs", "content"}
-            if t == "bulletList":
-                assert "attrs" not in node
-            elif "attrs" in node:
-                assert set(node["attrs"]) == {"order"}
-                assert isinstance(node["attrs"]["order"], int)
-                assert 1 <= node["attrs"]["order"] <= 9999
-            assert node["content"]
-            for item in node["content"]:
-                count[0] += 1
-                assert depth + 1 <= MAX_DEPTH
-                assert item["type"] == "listItem" and set(item) == {"type", "content"}
-                assert item["content"]
-                for b in item["content"]:
-                    block(b, depth + 2)
-        elif t == "blockquote":
-            assert keys == {"type", "content"} and node["content"]
-            for b in node["content"]:
-                block(b, depth + 1)
-        else:
-            raise AssertionError(f"node not allowed: {t}")
-
-    def inline(items: list[dict[str, Any]]) -> None:
-        for n in items:
-            count[0] += 1
-            if n["type"] == "hardBreak":
-                assert set(n) == {"type"}
-                continue
-            assert n["type"] == "text" and n["text"]
-            assert set(n) <= {"type", "text", "marks"}
-            marks = n.get("marks", [])
-            kinds = [m["type"] for m in marks]
-            assert len(kinds) == len(set(kinds)), "duplicate mark"
-            for m in marks:
-                assert m["type"] in ALLOWED_MARKS, m["type"]
-                if m["type"] in ("strong", "em", "code"):
-                    assert set(m) == {"type"}
-                else:
-                    assert m["type"] == "link" and set(m) == {"type", "attrs"}
-                    assert set(m["attrs"]) == {"href"}
-                    assert HREF.fullmatch(m["attrs"]["href"]), m["attrs"]["href"]
-            if "code" in kinds:
-                assert set(kinds) <= {"code", "link"}
-
-    for b in doc["content"]:
-        block(b, 1)
-    assert count[0] <= MAX_NODES
-    return count[0]
+    """The real allowlist (``validate_adf``); returns the node count."""
+    validate_adf(doc, body_chars=32767)
+    count = 0
+    stack = [doc]
+    while stack:
+        node = stack.pop()
+        count += 1
+        stack.extend(node.get("content", ()))
+    return count
 
 
 def conv(md: str, **kw: Any) -> dict[str, Any]:
@@ -960,20 +872,12 @@ def test_emphasis_token_soup_is_not_superlinear() -> None:
     assert time.monotonic() - start < 2
 
 
-def test_schema_patterns_and_allowlist_match_the_converter() -> None:
+def test_converter_patterns_match_the_validators() -> None:
     from ticketctl import adf_from_markdown as mod
+    from ticketctl import adf_validate
 
-    schema = json.loads((ROOT / "schemas" / "adf.json").read_text(encoding="utf-8"))
-    defs = schema["$defs"]
-    link = defs["mark"]["oneOf"][1]["properties"]["attrs"]["properties"]["href"]
-    assert link["pattern"] == "^" + mod._HREF.pattern + "$"
-    lang = defs["codeBlock"]["properties"]["attrs"]["properties"]["language"]
-    assert lang["pattern"] == "^" + mod._LANGUAGE.pattern + "$"
-    nodes = {"doc"} | {
-        d["properties"]["type"]["const"]
-        for d in defs.values()
-        if "const" in d.get("properties", {}).get("type", {})
-    }
-    marks = set(defs["mark"]["oneOf"][0]["properties"]["type"]["enum"]) | {"link"}
-    assert nodes == ALLOWED_NODES
-    assert marks == ALLOWED_MARKS
+    assert mod._HREF.pattern == adf_validate.HREF.pattern
+    assert mod._LANGUAGE.pattern == adf_validate.LANGUAGE.pattern
+    assert mod.MAX_NODES == adf_validate.MAX_NODES
+    assert mod.MAX_NEST * 2 == adf_validate.MAX_DEPTH
+    assert mod.DEFAULT_BODY_CHARS == adf_validate.DEFAULT_BODY_CHARS

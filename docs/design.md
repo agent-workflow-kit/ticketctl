@@ -176,7 +176,7 @@ The user-facing list is [Residual risks](interface.md#residual-risks); the desig
 
 ## Platforms
 
-Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
+Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. `jsonschema` is a development-only dependency: a test generates documents from `schemas/adf.json` and checks that the code allowlist and the schema accept the same documents. Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
 
 ## Architecture constraints this design adds
 

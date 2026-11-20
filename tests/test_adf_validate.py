@@ -1,4 +1,4 @@
-"""The ADF allowlist validator and the --format adf input path (docs/interface.md, ADF allowlist)."""
+"""The ADF allowlist validator and the --format adf input path (interface.md, ADF allowlist)."""
 
 from __future__ import annotations
 
@@ -307,8 +307,16 @@ def test_extra_missing_or_misplaced_parts_in_a_block_are_refused(bad: Any) -> No
         {"type": "text", "text": "a", "marks": [{"type": "strong", "x": 1}]},
         {"type": "text", "text": "a", "marks": [{"type": "link"}]},
         {"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {}}]},
-        {"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {"href": "https://a.test/", "title": "t"}}]},
-        {"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {"href": "https://a.test/"}, "x": 1}]},
+        {
+            "type": "text",
+            "text": "a",
+            "marks": [{"type": "link", "attrs": {"href": "https://a.test/", "title": "t"}}],
+        },
+        {
+            "type": "text",
+            "text": "a",
+            "marks": [{"type": "link", "attrs": {"href": "https://a.test/"}, "x": 1}],
+        },
         {"type": "text", "text": "a", "marks": [{"type": "link", "attrs": []}]},
         {"type": "text", "text": "a", "marks": [mark("strong"), mark("strong")]},
         {"type": "text", "text": "a", "marks": [link("https://a.test/"), link("https://b.test/")]},
@@ -392,7 +400,9 @@ def test_unsafe_link_hrefs_are_refused_with_the_path_named(href: str) -> None:
     assert field_of(d) == "content[0].content[1].marks[0].attrs.href"
 
 
-@pytest.mark.parametrize("href", [5, None, True, ["https://a.test/"], {"u": "https://a.test/"}, 1.5])
+@pytest.mark.parametrize(
+    "href", [5, None, True, ["https://a.test/"], {"u": "https://a.test/"}, 1.5]
+)
 def test_a_non_string_href_is_refused(href: Any) -> None:
     assert field_of(doc(para(txt("a", link(href))))).endswith("attrs.href")
 
@@ -472,7 +482,14 @@ def test_the_error_never_echoes_the_rejected_value() -> None:
 
 
 def test_hostile_attribute_names_are_sanitized_and_capped_in_the_path() -> None:
-    d = doc(para(txt("a", {"type": "link", "attrs": {"href": "https://a.test/", "\x1b[2J‮" + "k" * 500: 1}})))
+    d = doc(
+        para(
+            txt(
+                "a",
+                {"type": "link", "attrs": {"href": "https://a.test/", "\x1b[2J‮" + "k" * 500: 1}},
+            )
+        )
+    )
     path = refused(d).details["field"]
     assert "\x1b" not in path and "‮" not in path
     assert len(path) < 200
@@ -591,7 +608,21 @@ def test_a_shared_subtree_counts_every_use() -> None:
 
 def test_never_raises_anything_but_input_error_on_random_json() -> None:
     rng = random.Random(1)
-    atoms: list[Any] = [None, True, False, 0, 1, -1, 10**30, 1.5, "", "a", "doc", "text", "paragraph"]
+    atoms: list[Any] = [
+        None,
+        True,
+        False,
+        0,
+        1,
+        -1,
+        10**30,
+        1.5,
+        "",
+        "a",
+        "doc",
+        "text",
+        "paragraph",
+    ]
 
     def rand(depth: int) -> Any:
         r = rng.random()
@@ -744,7 +775,9 @@ def mutate(d: Any, rng: random.Random) -> Any:
     elif action == "dupe" and isinstance(parent, list):
         parent.insert(key, copy.deepcopy(parent[key]))
     elif action == "swap" and isinstance(parent, dict) and "type" in parent:
-        parent["type"] = rng.choice(["paragraph", "text", "listItem", "heading", "doc", "hardBreak"])
+        parent["type"] = rng.choice(
+            ["paragraph", "text", "listItem", "heading", "doc", "hardBreak"]
+        )
     return d
 
 
@@ -793,12 +826,21 @@ def test_parse_refuses_what_validate_refuses_with_the_path() -> None:
 
 
 def test_a_json_escaped_control_character_is_refused() -> None:
-    parse_refused('{"type":"doc","version":1,"content":[{"type":"paragraph","content":'
-                  '[{"type":"text","text":"a\\u0000b"}]}]}', "node_not_allowed")
-    parse_refused('{"type":"doc","version":1,"content":[{"type":"paragraph","content":'
-                  '[{"type":"text","text":"a\\u202eb"}]}]}', "node_not_allowed")
-    parse_refused('{"type":"doc","version":1,"content":[{"type":"paragraph","content":'
-                  '[{"type":"text","text":"a\\ud800b"}]}]}', "node_not_allowed")
+    parse_refused(
+        '{"type":"doc","version":1,"content":[{"type":"paragraph","content":'
+        '[{"type":"text","text":"a\\u0000b"}]}]}',
+        "node_not_allowed",
+    )
+    parse_refused(
+        '{"type":"doc","version":1,"content":[{"type":"paragraph","content":'
+        '[{"type":"text","text":"a\\u202eb"}]}]}',
+        "node_not_allowed",
+    )
+    parse_refused(
+        '{"type":"doc","version":1,"content":[{"type":"paragraph","content":'
+        '[{"type":"text","text":"a\\ud800b"}]}]}',
+        "node_not_allowed",
+    )
 
 
 @pytest.mark.parametrize(
@@ -827,7 +869,12 @@ def test_malformed_json_nan_and_duplicate_keys_are_refused(text: str) -> None:
 
 @pytest.mark.parametrize("text", ["[]", "null", "5", '"doc"', "true", "{}"])
 def test_valid_json_that_is_not_a_document_is_node_not_allowed(text: str) -> None:
-    assert parse_refused(text, "node_not_allowed").details["field"] in ("$", "version", "type", "content")
+    assert parse_refused(text, "node_not_allowed").details["field"] in (
+        "$",
+        "version",
+        "type",
+        "content",
+    )
 
 
 def test_duplicate_key_with_different_escape_is_still_a_duplicate() -> None:
@@ -835,7 +882,9 @@ def test_duplicate_key_with_different_escape_is_still_a_duplicate() -> None:
 
 
 def test_a_huge_integer_literal_is_refused_not_an_unhandled_error() -> None:
-    parse_refused('{"type":"doc","version":1,"content":[],"n":' + "9" * 100_000 + "}", "invalid_value")
+    parse_refused(
+        '{"type":"doc","version":1,"content":[],"n":' + "9" * 100_000 + "}", "invalid_value"
+    )
     parse_refused(
         '{"type":"doc","version":' + "9" * 5000 + ',"content":[]}',
         "invalid_value",
@@ -877,9 +926,7 @@ def test_input_over_four_times_body_chars_is_body_too_large_before_parsing() -> 
 
 def test_text_over_the_body_limit_is_body_too_large() -> None:
     parse_refused(dumps(doc(para(txt("a" * 101)))), "body_too_large", body_chars=100)
-    parse_refused(
-        dumps(doc(para(txt("a" * 100)))), "body_too_large", body_chars=100, reserve=1
-    )
+    parse_refused(dumps(doc(para(txt("a" * 100)))), "body_too_large", body_chars=100, reserve=1)
     parse_adf_json(dumps(doc(para(txt("a" * 100)))), body_chars=100)
 
 
@@ -887,7 +934,9 @@ def test_a_document_with_no_visible_text_is_empty_body() -> None:
     parse_refused(dumps(doc()), "empty_body")
     parse_refused(dumps(doc(para())), "empty_body")
     parse_refused(dumps(doc(para(txt(" \n\t")))), "empty_body")
-    parse_refused(dumps(doc({"type": "paragraph", "content": [{"type": "hardBreak"}]})), "empty_body")
+    parse_refused(
+        dumps(doc({"type": "paragraph", "content": [{"type": "hardBreak"}]})), "empty_body"
+    )
     parse_adf_json(dumps(doc(para(txt("<U+0000>")))))
 
 
@@ -919,7 +968,10 @@ def test_body_hash_is_sha256_of_canonical_json() -> None:
 
 
 def test_identical_markdown_and_adf_input_give_the_same_hash() -> None:
-    md = "# Title\n\nSome **bold** and `code` and [a link](https://example.test/x?y=1).\n\n- one\n- two\n  1. nested\n\n> quote\n\n```py\nx = 1\n```\n"
+    md = (
+        "# Title\n\nSome **bold** and `code` and [a link](https://example.test/x?y=1).\n\n"
+        "- one\n- two\n  1. nested\n\n> quote\n\n```py\nx = 1\n```\n"
+    )
     converted = markdown_to_adf(md)
     prepared = parse_adf_json(json.dumps(converted, indent=2, sort_keys=False, ensure_ascii=False))
     shuffled = parse_adf_json(json.dumps(converted, sort_keys=True))

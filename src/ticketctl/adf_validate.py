@@ -70,7 +70,9 @@ MARK_TYPES = ("strong", "em", "code", "link")
 Node = dict[str, Any]
 _Path = tuple[Any, Any] | None  # a linked list: (parent, segment)
 
-_BLOCKS = frozenset({"paragraph", "heading", "codeBlock", "bulletList", "orderedList", "blockquote"})
+_BLOCKS = frozenset(
+    {"paragraph", "heading", "codeBlock", "bulletList", "orderedList", "blockquote"}
+)
 _INLINE = frozenset({"text", "hardBreak"})
 _CONTAINERS = frozenset({"bulletList", "orderedList", "listItem", "blockquote"})
 _LISTS = frozenset({"bulletList", "orderedList"})
@@ -189,8 +191,13 @@ def _queue_children(
         return count
     if t in _CONTAINERS:
         depth += 1
-    kind = {"paragraph": "inline", "heading": "inline", "codeBlock": "code", "bulletList": "item",
-            "orderedList": "item"}.get(t, "block")
+    kind = {
+        "paragraph": "inline",
+        "heading": "inline",
+        "codeBlock": "code",
+        "bulletList": "item",
+        "orderedList": "item",
+    }.get(t, "block")
     return _queue(node, path, depth, kind, stack, count, node_budget)
 
 
@@ -256,7 +263,9 @@ def _check_text(node: Node, path: _Path, chars: int, char_budget: int) -> int:
     if chars > char_budget:
         raise _too_large("too much text")
     if sanitize_body(text) != text:
-        raise _fail("node_not_allowed", "text has a control or bidirectional character", path, "text")
+        raise _fail(
+            "node_not_allowed", "text has a control or bidirectional character", path, "text"
+        )
     if "marks" in node:
         _check_marks(node["marks"], path)
     return chars
