@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import traceback
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
@@ -71,6 +72,14 @@ def site_text(**overrides: str) -> str:
     lines.update(overrides)
     body = "\n".join(f"    {v}" for v in lines.values() if v)
     return f"sites:\n  main:\n{body}\n"
+
+
+def assert_clean(err: ConfigError) -> None:
+    """No chained exception and no sentinel in repr, str or the full formatted traceback."""
+    assert err.__context__ is None and err.__cause__ is None
+    assert SENTINEL not in repr(err)
+    assert SENTINEL not in str(err)
+    assert SENTINEL not in "".join(traceback.format_exception(err))
 
 
 def expect_error(home: Home, text: str, key: str | None = None, **env: str) -> ConfigError:
@@ -404,7 +413,12 @@ def test_env_default_site_grammar(home: Home, value: str) -> None:
 
 
 def test_env_overrides_a_config_default_site_that_is_valid(home: Home) -> None:
-    home.main(MINIMAL + "default_site: main\n")
+    home.main(
+        MINIMAL + "  other:\n    url: https://other.test\n    email: a@b.test\n"
+        "    token_env: T2\ndefault_site: main\n"
+    )
+    assert home.load().config.default_site == "main"
+    assert home.load(TICKETCTL_DEFAULT_SITE="other").config.default_site == "other"
     with pytest.raises(ConfigError):
         home.load(TICKETCTL_DEFAULT_SITE="ghost")
 
@@ -1010,8 +1024,7 @@ def test_sentinel_in_malformed_yaml_never_in_error(home: Home) -> None:
         assert SENTINEL not in str(exc.value)
         assert SENTINEL not in repr(exc.value)
         assert SENTINEL not in "".join(map(str, exc.value.args))
-        assert exc.value.__cause__ is None or SENTINEL not in str(exc.value.__cause__)
-        assert exc.value.__suppress_context__ or exc.value.__context__ is None
+        assert_clean(exc.value)
 
 
 def test_syntax_error_names_the_file_and_line(home: Home) -> None:
@@ -1058,6 +1071,7 @@ def test_sentinel_in_invalid_values_never_in_error(home: Home) -> None:
             home.load()
         assert SENTINEL not in str(exc.value), text
         assert SENTINEL not in (exc.value.key or ""), text
+        assert_clean(exc.value)
 
 
 def test_duplicate_keys_refused(home: Home) -> None:
@@ -1259,7 +1273,7 @@ def test_error_is_not_chained_to_yaml_internals(home: Home) -> None:
     with pytest.raises(ConfigError) as exc:
         home.load()
     assert exc.value.__cause__ is None
-    assert exc.value.__suppress_context__ is True
+    assert exc.value.__context__ is None
 
 
 def test_validation_error_is_not_chained(home: Home) -> None:
@@ -1267,7 +1281,7 @@ def test_validation_error_is_not_chained(home: Home) -> None:
     with pytest.raises(ConfigError) as exc:
         home.load()
     assert exc.value.__cause__ is None
-    assert exc.value.__suppress_context__ is True
+    assert exc.value.__context__ is None
 
 
 def test_error_carries_constraint_and_key_in_message(home: Home) -> None:
@@ -1277,13 +1291,361 @@ def test_error_carries_constraint_and_key_in_message(home: Home) -> None:
     assert err.reason == "config_invalid"
 
 
-def test_no_environment_reads_beyond_declared_names(home: Home) -> None:
-    # The loader consults only the mapping it is given.
+def test_unrelated_environment_names_do_not_change_the_result(home: Home) -> None:
     home.main()
-    assert load_config(env={**home.env, "UNRELATED": SENTINEL}).config.sites
+    base = home.load().config
+    noisy = home.load(
+        UNRELATED=SENTINEL, TICKETCTL_TOKEN=SENTINEL, TICKETCTL_EMAIL=SENTINEL, TEST_TOKEN=SENTINEL
+    )
+    assert noisy.config == base
+    assert SENTINEL not in repr(noisy.config)
 
 
-def test_loader_is_a_fresh_object_each_time(home: Home) -> None:
+def test_loads_are_equal_but_independent_objects(home: Home) -> None:
     home.main()
-    a: Callable[[], Config] = lambda: home.load().config  # noqa: E731
-    assert a() is not a()
+    a = home.load().config
+    b = home.load().config
+    assert a == b
+    assert a is not b
+    assert a.sites is not b.sites
+    a.sites["extra"] = a.sites["main"]
+    assert "extra" not in b.sites
+    assert "extra" not in home.load().config.sites
+
+
+# --- review round 1 -----------------------------------------------------------------------------
+
+HUGE = "9" * 5000
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        MINIMAL + f"timeout: {HUGE}\n",
+        MINIMAL + f"limits:\n  retry_after_max: {HUGE}\n",
+        site_text(board=f"board: {HUGE}"),
+        MINIMAL + f"me:\n  name: x\nattribution:\n  enabled: true\nhooks:\n  pre-create:\n"
+        f"    - cmd: x\n      timeout: {HUGE}\n",
+    ],
+)
+def test_huge_yaml_integer_is_a_config_error(home: Home, text: str) -> None:
+    home.main(text)
+    with pytest.raises(ConfigError) as exc:
+        home.load()
+    assert exc.value.code == "invalid_config"
+    assert HUGE not in str(exc.value)
+    assert exc.value.__context__ is None and exc.value.__cause__ is None
+
+
+@pytest.mark.parametrize("path", ["//", "///", "/a//", "/a//b", "/a/./b", "/a/../b"])
+def test_url_empty_segments_rejected(home: Home, path: str) -> None:
+    expect_error(home, site_text(url=f"url: https://example.test{path}"), "sites.main.url")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"), [("", ""), ("/", ""), ("/a/", "/a"), ("/a/b", "/a/b")]
+)
+def test_url_single_trailing_slash_accepted(home: Home, path: str, expected: str) -> None:
+    home.main(site_text(url=f"url: https://example.test{path}"))
+    assert str(home.load().config.sites["main"].url) == "https://example.test" + expected
+
+
+CAPS = [
+    ("timeout", "24h", "25h", lambda t: MINIMAL + f"timeout: {t}\n"),
+    ("connect", "24h", "1441m", lambda t: site_text(timeouts=f"timeouts: {{connect: {t}}}")),
+    ("read", "24h", "86401s", lambda t: site_text(timeouts=f"timeouts: {{read: {t}}}")),
+    ("cache_ttl", "365d", "366d", lambda t: site_text(cache_ttl=f"cache_ttl: {t}")),
+    ("cache_ttl", "8760h", "8761h", lambda t: site_text(cache_ttl=f"cache_ttl: {t}")),
+    (
+        "retry_after_max",
+        "365d",
+        "366d",
+        lambda t: MINIMAL + f"limits:\n  retry_after_max: {t}\n",
+    ),
+    (
+        "retry_after_max",
+        "31536000",
+        "31536001",
+        lambda t: MINIMAL + f"limits:\n  retry_after_max: {t}\n",
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "ok", "bad", "build"), CAPS)
+def test_duration_caps(
+    home: Home, name: str, ok: str, bad: str, build: Callable[[str], str]
+) -> None:
+    home.main(build(ok))
+    home.load()
+    err = expect_error(home, build(bad))
+    assert "at most" in err.constraint, name
+
+
+def test_cache_ttl_overflow_value_is_refused(home: Home) -> None:
+    expect_error(home, site_text(cache_ttl="cache_ttl: 999999999d"), "sites.main.cache_ttl")
+
+
+def _schema() -> dict:  # type: ignore[type-arg]
+    import json
+
+    return json.loads((ROOT / "schemas" / "config.json").read_text(encoding="utf-8"))
+
+
+def _branch_types(node: dict) -> set[str]:  # type: ignore[type-arg]
+    # A $ref branch counts as the type of its string-only target.
+    return {b.get("type", "string") for b in node["oneOf"]}
+
+
+def test_schema_durations_accept_bare_integers() -> None:
+    schema = _schema()
+    defs = schema["$defs"]
+    assert _branch_types(defs["duration"]) == {"integer", "string"}
+    assert _branch_types(defs["duration_or_zero"]) == {"integer", "string"}
+    zero = next(b for b in defs["duration_or_zero"]["oneOf"] if b["type"] == "integer")
+    assert zero["minimum"] == 0
+    pos = next(b for b in defs["duration"]["oneOf"] if b["type"] == "integer")
+    assert pos["minimum"] == 1
+    site = defs["site"]["properties"]
+    assert site["cache_ttl"]["$ref"].endswith("duration_or_zero")
+    assert schema["properties"]["limits"]["properties"]["retry_after_max"]["$ref"].endswith(
+        "duration_or_zero"
+    )
+    assert site["timeouts"]["properties"]["connect"]["$ref"].endswith("/duration")
+
+
+def test_schema_timeout_branches_do_not_overlap() -> None:
+    # An integer must match exactly one oneOf branch, so the string branch refs a string-only def.
+    schema = _schema()
+    branches = schema["properties"]["timeout"]["oneOf"]
+    assert [b.get("type") for b in branches] == ["integer", None]
+    assert branches[1]["$ref"].endswith("duration_string")
+    assert _schema()["$defs"]["duration_string"]["type"] == "string"
+
+
+def test_schema_sites_may_be_empty_or_absent() -> None:
+    schema = _schema()
+    assert "sites" not in schema.get("required", [])
+    assert "minProperties" not in schema["properties"]["sites"]
+
+
+def test_schema_queries_exclude_logical_names_like_fields_extra() -> None:
+    site = _schema()["$defs"]["site"]["properties"]
+    extra = site["fields"]["properties"]["extra"]["propertyNames"]["not"]["enum"]
+    queries = site["queries"]["propertyNames"]["not"]["enum"]
+    assert queries == extra == list(config_module.LOGICAL_FIELDS)
+
+
+def test_schema_documents_caps_and_normalized_url() -> None:
+    schema = _schema()
+    site = schema["$defs"]["site"]["properties"]
+    assert "365d" in site["cache_ttl"]["description"]
+    assert "365d" in schema["properties"]["limits"]["properties"]["retry_after_max"]["description"]
+    assert "24h" in site["timeouts"]["description"]
+    assert "lower-case" in site["url"]["description"]
+
+
+def test_file_default_site_is_validated_before_env_override(home: Home) -> None:
+    home.main(MINIMAL + "default_site: ghost\n")
+    with pytest.raises(ConfigError) as exc:
+        home.load(TICKETCTL_DEFAULT_SITE="main")
+    assert exc.value.key == "default_site"
+
+
+def test_env_default_site_with_no_sites_is_not_config_invalid(home: Home) -> None:
+    home.main("")
+    loaded = home.load(TICKETCTL_DEFAULT_SITE="main")
+    assert loaded.config.sites == {}
+    with pytest.raises(ConfigError) as exc:
+        loaded.config.require_sites()
+    assert exc.value.reason == "no_sites"
+
+
+def test_env_default_site_naming_no_configured_site_still_refused(home: Home) -> None:
+    home.main()
+    with pytest.raises(ConfigError) as exc:
+        home.load(TICKETCTL_DEFAULT_SITE="ghost")
+    assert exc.value.key == "TICKETCTL_DEFAULT_SITE"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"a: [{SENTINEL}\n",
+        f"a: b: {SENTINEL}\n",
+        f"!!python/object/apply:os.system [{SENTINEL}]\n",
+        f"&a {SENTINEL}: 1\n",
+        MINIMAL + f"timeout: {SENTINEL}\n",
+        MINIMAL + f"limits:\n  body_chars: {SENTINEL}\n",
+        f"{SENTINEL}: 1\n{SENTINEL}: 2\n",
+    ],
+)
+def test_errors_have_no_context_and_leak_nothing(home: Home, text: str) -> None:
+    home.main(text)
+    with pytest.raises(ConfigError) as exc:
+        home.load()
+    assert_clean(exc.value)
+
+
+def test_env_timeout_error_is_clean(home: Home) -> None:
+    home.main()
+    with pytest.raises(ConfigError) as exc:
+        home.load(TICKETCTL_TIMEOUT=SENTINEL)
+    assert_clean(exc.value)
+
+
+def test_read_file_uses_o_noctty(home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    home.main()
+    flags: list[int] = []
+    real_open = os.open
+
+    def spy(path: object, flag: int, *args: int) -> int:
+        flags.append(flag)
+        return real_open(path, flag, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(config_module.os, "open", spy)
+    home.load()
+    assert flags and all(f & os.O_NOCTTY for f in flags)
+
+
+def test_dropin_listing_stops_after_the_cap(home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    home.main()
+    for i in range(config_module.MAX_DROPINS + 40):
+        home.write(f"config.d/{i:04}.yaml", "{}\n")
+    seen: list[str] = []
+    real_scandir = os.scandir
+
+    class Spy:
+        def __init__(self, path: object) -> None:
+            self.inner = real_scandir(path)  # type: ignore[call-overload]
+
+        def __enter__(self) -> Spy:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.inner.close()
+
+        def __iter__(self) -> Spy:
+            return self
+
+        def __next__(self) -> os.DirEntry[str]:
+            entry = next(self.inner)
+            seen.append(entry.name)
+            return entry
+
+    monkeypatch.setattr(config_module.os, "scandir", Spy)
+    with pytest.raises(ConfigError, match="too many drop-in files"):
+        home.load()
+    assert len(seen) == config_module.MAX_DROPINS + 1
+
+
+def test_dropin_directory_owned_by_someone_else_refused(
+    home: Home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root may read anything")
+    home.main()
+    home.write("config.d/a.yaml", "{}\n")
+    real_stat = os.stat
+    uid = os.geteuid()
+
+    class Fake:
+        def __init__(self, info: os.stat_result) -> None:
+            self.st_mode = info.st_mode
+            self.st_uid = uid + 1
+
+    def fake_stat(path: object, *args: object, **kw: object) -> object:
+        info = real_stat(path, *args, **kw)  # type: ignore[arg-type]
+        return Fake(info) if str(path).endswith("config.d") else info
+
+    monkeypatch.setattr(config_module.os, "stat", fake_stat)
+    with pytest.raises(ConfigError, match="owner"):
+        home.load()
+
+
+@pytest.mark.parametrize("value", ["010", "0x10", "0b11", "1_0", "1:30", "+5", "0o7", "1e3", "1.5"])
+def test_yaml_one_one_numbers_are_not_durations(home: Home, value: str) -> None:
+    expect_error(home, MINIMAL + f"timeout: {value}\n", "timeout")
+    expect_error(
+        home,
+        MINIMAL + f"hooks:\n  pre-create:\n    - cmd: x\n      timeout: {value}\n",
+        "hooks.pre-create[0].timeout",
+    )
+
+
+def test_plain_integers_still_work_for_durations(home: Home) -> None:
+    home.main(MINIMAL + "timeout: 30\nhooks:\n  pre-create:\n    - cmd: x\n      timeout: 5\n")
+    cfg = home.load().config
+    assert cfg.timeout == timedelta(seconds=30)
+    assert cfg.hooks["pre-create"][0].timeout == timedelta(seconds=5)
+
+
+def test_negative_integer_is_a_range_error_not_a_string(home: Home) -> None:
+    expect_error(home, MINIMAL + "timeout: -5\n", "timeout")
+
+
+def test_loose_numbers_do_not_leak_into_the_global_loader() -> None:
+    assert yaml.safe_load("a: 010") == {"a": 8}
+
+
+NULL_KEYS = [
+    site_text(email_env="email_env:") + "",
+    site_text(account_id="account_id: null"),
+    site_text(board="board: null"),
+    site_text(fields="fields: {estimate: null}"),
+    site_text(transitions="transitions: {assign_on_start: null}"),
+    site_text(transitions="transitions: {default_resolution: null}"),
+    site_text(cache_ttl="cache_ttl: null"),
+    site_text(projects="projects: null"),
+    MINIMAL + "default_site: null\n",
+    MINIMAL + "me:\n  name: null\n",
+    MINIMAL + "me:\n  jira: null\n",
+    MINIMAL + "timeout: null\n",
+    MINIMAL + "hooks:\n",
+]
+
+
+@pytest.mark.parametrize("text", NULL_KEYS)
+def test_explicit_null_is_rejected(home: Home, text: str) -> None:
+    err = expect_error(home, text)
+    assert err.key
+    assert "null" in err.constraint
+
+
+def test_null_email_with_email_env_is_rejected(home: Home) -> None:
+    text = site_text(email="email: null", email_env="email_env: MAIL_VAR")
+    expect_error(home, text, "sites.main.email")
+
+
+def test_null_in_a_dropin_cannot_unset_a_value(home: Home) -> None:
+    home.main(MINIMAL + "default_site: main\n")
+    home.write("config.d/a.yaml", "default_site: null\n")
+    with pytest.raises(ConfigError) as exc:
+        home.load()
+    assert exc.value.key == "default_site"
+
+
+def test_omitted_optional_keys_stay_fine(home: Home) -> None:
+    home.main()
+    assert home.load().config.sites["main"].board is None
+
+
+@pytest.mark.parametrize("value", ["1000000000000000000", "0", "-3", "10000000000000000000"])
+def test_board_id_out_of_range_rejected(home: Home, value: str) -> None:
+    expect_error(home, site_text(board=f"board: {value}"), "sites.main.board")
+
+
+def test_board_id_bounds_accepted(home: Home) -> None:
+    home.main(site_text(board="board: 999999999999999999"))
+    assert home.load().config.sites["main"].board == 999999999999999999
+    home.main(site_text(board="board: 1"))
+    assert home.load().config.sites["main"].board == 1
+
+
+@pytest.mark.parametrize("value", ["' '", "'   '", '"\\t"', "''"])
+def test_board_name_blank_rejected(home: Home, value: str) -> None:
+    expect_error(home, site_text(board=f"board: {value}"), "sites.main.board")
+
+
+def test_board_name_accepted(home: Home) -> None:
+    home.main(site_text(board="board: Team Board"))
+    assert home.load().config.sites["main"].board == "Team Board"

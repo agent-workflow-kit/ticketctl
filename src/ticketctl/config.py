@@ -38,6 +38,7 @@ from pydantic import (
 MAX_FILE_BYTES = 1024 * 1024
 MAX_DROPINS = 64
 MAX_YAML_DEPTH = 32
+MAX_BOARD_ID = 10**18 - 1
 
 ENV_PREFIX = "TICKETCTL_"
 ENV_SCALARS = ("TIMEOUT", "DEFAULT_SITE")
@@ -154,6 +155,7 @@ def _fmt(delta: timedelta) -> str:
 
 _ONE_DAY = timedelta(hours=24)
 _ONE_SECOND = timedelta(seconds=1)
+_ONE_YEAR = timedelta(days=365)
 
 
 def _converter(**options: Any) -> Callable[[object], timedelta]:
@@ -165,7 +167,7 @@ def _converter(**options: Any) -> Callable[[object], timedelta]:
 
 Timeout = Annotated[timedelta, BeforeValidator(_converter(minimum=_ONE_SECOND, maximum=_ONE_DAY))]
 PositiveDuration = Annotated[timedelta, BeforeValidator(_converter(maximum=_ONE_DAY))]
-CacheDuration = Annotated[timedelta, BeforeValidator(_converter(zero_ok=True))]
+CacheDuration = Annotated[timedelta, BeforeValidator(_converter(zero_ok=True, maximum=_ONE_YEAR))]
 HookTimeout = Annotated[
     timedelta,
     BeforeValidator(
@@ -256,7 +258,8 @@ def _split_url(raw: str) -> tuple[str, str, int | None, str]:
         raise ValueError("must not contain userinfo")
     host, port = _split_netloc(netloc)
     if path not in ("", "/"):
-        for part in path.rstrip("/").split("/")[1:]:
+        body = path[:-1] if path.endswith("/") else path
+        for part in body.split("/")[1:]:
             if part in ("", ".", ".."):
                 raise ValueError("must not have empty, '.' or '..' path segments")
     path = path.rstrip("/")
@@ -353,11 +356,13 @@ def _board(value: object) -> int | str:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ValueError("must be a board id (positive integer) or a board name")
     if isinstance(value, int):
-        if value < 1:
-            raise ValueError("must be a positive integer")
+        if not 1 <= value <= MAX_BOARD_ID:
+            raise ValueError("must be a positive integer of at most 18 digits")
         return value
     if not 1 <= len(value) <= 256:
         raise ValueError("must be 1 to 256 characters")
+    if not value.strip():
+        raise ValueError("must not be blank")
     return _no_control(value)
 
 
@@ -489,17 +494,37 @@ class _StrictLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep)
 
 
+# YAML 1.1 reads `010`, `0x10`, `0b11`, `1_0`, `1:30` and `+5` as integers; a duration or board must
+# never come from those. Only plain decimal integers (optionally negative, so a negative is a range
+# error) resolve as int on this loader; everything else stays a string and fails the grammar.
+_INT_TAG = "tag:yaml.org,2002:int"
+_StrictLoader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag != _INT_TAG]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_StrictLoader.add_implicit_resolver(
+    _INT_TAG, re.compile(r"^-?(?:0|[1-9][0-9]*)$"), list("-0123456789")
+)
+
+
 def _parse_yaml(text: str, source: Path) -> dict[str, Any]:
+    # The message is captured in the handler and raised after it, so the ConfigError has neither a
+    # cause nor a context: the parser exceptions can echo the input.
+    failure: str | None = None
+    data: Any = None
     try:
         data = yaml.load(text, Loader=_StrictLoader)  # noqa: S506 - a SafeLoader subclass
     except _Rejected as exc:
-        raise ConfigError(exc.constraint, source=source) from None
+        failure = exc.constraint
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
-        where = f" (line {mark.line + 1})" if mark is not None else ""
-        raise ConfigError(f"invalid YAML{where}", source=source) from None
+        failure = f"invalid YAML (line {mark.line + 1})" if mark is not None else "invalid YAML"
+    except ValueError:
+        failure = "invalid YAML scalar"
     except RecursionError:
-        raise ConfigError("YAML nesting is too deep", source=source) from None
+        failure = "YAML nesting is too deep"
+    if failure is not None:
+        raise ConfigError(failure, source=source)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -512,11 +537,14 @@ def _parse_yaml(text: str, source: Path) -> dict[str, Any]:
 
 def _read_file(path: Path) -> str:
     """Read one config file: a regular file, owned by the user or root, not world-writable."""
+    failure: str | None = None
+    fd = -1
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
     except OSError as exc:
-        name = errno.errorcode.get(exc.errno or 0, "error")
-        raise ConfigError(f"cannot open the file ({name})", source=path) from None
+        failure = f"cannot open the file ({errno.errorcode.get(exc.errno or 0, 'error')})"
+    if failure is not None:
+        raise ConfigError(failure, source=path)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -531,12 +559,14 @@ def _read_file(path: Path) -> str:
             try:
                 chunk = os.read(fd, MAX_FILE_BYTES + 1 - total)
             except OSError as exc:
-                name = errno.errorcode.get(exc.errno or 0, "error")
-                raise ConfigError(f"cannot read the file ({name})", source=path) from None
+                failure = f"cannot read the file ({errno.errorcode.get(exc.errno or 0, 'error')})"
+                break
             if not chunk:
                 break
             chunks.append(chunk)
             total += len(chunk)
+        if failure is not None:
+            raise ConfigError(failure, source=path)
         if total > MAX_FILE_BYTES:
             raise ConfigError(f"is too large (maximum {MAX_FILE_BYTES} bytes)", source=path)
     finally:
@@ -544,42 +574,55 @@ def _read_file(path: Path) -> str:
     try:
         return b"".join(chunks).decode("utf-8")
     except UnicodeDecodeError:
-        raise ConfigError("is not valid UTF-8", source=path) from None
+        failure = "is not valid UTF-8"
+    raise ConfigError(failure, source=path)
 
 
 def _exists(path: Path) -> bool:
+    failure: str | None = None
     try:
         os.lstat(path)
     except FileNotFoundError:
         return False
     except OSError as exc:
-        name = errno.errorcode.get(exc.errno or 0, "error")
-        raise ConfigError(f"cannot access the path ({name})", source=path) from None
+        failure = f"cannot access the path ({errno.errorcode.get(exc.errno or 0, 'error')})"
+    if failure is not None:
+        raise ConfigError(failure, source=path)
     return True
 
 
 def _dropins(directory: Path) -> list[Path]:
+    failure: str | None = None
+    info: os.stat_result | None = None
     try:
         info = os.stat(directory)
     except FileNotFoundError:
         return []
     except OSError as exc:
-        name = errno.errorcode.get(exc.errno or 0, "error")
-        raise ConfigError(f"cannot access the directory ({name})", source=directory) from None
+        failure = f"cannot access the directory ({errno.errorcode.get(exc.errno or 0, 'error')})"
+    if failure is not None or info is None:
+        raise ConfigError(failure or "cannot access the directory", source=directory)
     if not stat.S_ISDIR(info.st_mode):
         raise ConfigError("must be a directory", source=directory)
+    if info.st_uid not in (os.geteuid(), 0):
+        raise ConfigError("owner must be the current user or root", source=directory)
     if info.st_mode & stat.S_IWOTH:
         raise ConfigError("is world-writable", source=directory)
+    names: list[str] = []
     try:
-        names = sorted(
-            n for n in os.listdir(directory) if n.endswith(".yaml") and not n.startswith(".")
-        )
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name.endswith(".yaml") and not entry.name.startswith("."):
+                    names.append(entry.name)
+                    if len(names) > MAX_DROPINS:
+                        break
     except OSError as exc:
-        name = errno.errorcode.get(exc.errno or 0, "error")
-        raise ConfigError(f"cannot list the directory ({name})", source=directory) from None
+        failure = f"cannot list the directory ({errno.errorcode.get(exc.errno or 0, 'error')})"
+    if failure is not None:
+        raise ConfigError(failure, source=directory)
     if len(names) > MAX_DROPINS:
         raise ConfigError(f"too many drop-in files (maximum {MAX_DROPINS})", source=directory)
-    return [directory / n for n in names]
+    return [directory / n for n in sorted(names)]
 
 
 def _config_dir(env: Mapping[str, str]) -> Path:
@@ -642,7 +685,21 @@ def _path(loc: tuple[int | str, ...]) -> str:
     return out
 
 
+def _reject_nulls(node: object, loc: tuple[int | str, ...] = ()) -> None:
+    """An explicit null is never a value: omit the key instead (no key accepts null)."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _reject_nulls(value, (*loc, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            _reject_nulls(value, (*loc, index))
+    elif node is None and loc:
+        raise ConfigError("must not be null (omit the key instead)", key=_path(loc))
+
+
 def _validate(merged: dict[str, Any]) -> Config:
+    _reject_nulls(merged)
+    failure: tuple[str, str | None] | None = None
     try:
         return Config.model_validate(merged)
     except ValidationError as exc:
@@ -650,7 +707,8 @@ def _validate(merged: dict[str, Any]) -> Config:
         message = first["msg"].removeprefix("Value error, ")
         extra = exc.error_count() - 1
         more = f" ({extra} more error{'s' if extra != 1 else ''})" if extra else ""
-        raise ConfigError(message + more, key=_path(first["loc"]) or None) from None
+        failure = (message + more, _path(first["loc"]) or None)
+    raise ConfigError(failure[0], key=failure[1])
 
 
 def _check(config: Config) -> None:
@@ -696,21 +754,25 @@ def _check_default_site(config: Config, site: str | None, key: str) -> None:
 
 def _apply_env(config: Config, env: Mapping[str, str]) -> tuple[Config, list[str]]:
     update: dict[str, Any] = {}
-    default_key = "default_site"
+    # The file's own default_site is checked first, so a valid environment value cannot mask it.
+    _check_default_site(config, config.default_site, "default_site")
     timeout = env.get(f"{ENV_PREFIX}TIMEOUT", "")
     if timeout:
+        problem: str | None = None
         try:
             update["timeout"] = parse_duration(timeout, minimum=_ONE_SECOND, maximum=_ONE_DAY)
         except ValueError as exc:
-            raise ConfigError(str(exc), key=f"{ENV_PREFIX}TIMEOUT") from None
+            problem = str(exc)
+        if problem is not None:
+            raise ConfigError(problem, key=f"{ENV_PREFIX}TIMEOUT")
     default_site = env.get(f"{ENV_PREFIX}DEFAULT_SITE", "")
     if default_site:
         default_key = f"{ENV_PREFIX}DEFAULT_SITE"
         if re.fullmatch(SITE_NAME, default_site) is None:
             raise ConfigError(f"must match {SITE_NAME}", key=default_key)
+        if config.sites:  # with no sites, `require_sites` reports no_sites instead
+            _check_default_site(config, default_site, default_key)
         update["default_site"] = default_site
-    effective = update.get("default_site", config.default_site)
-    _check_default_site(config, effective, default_key)
     top_level = {k for k in Config.model_fields if k not in ("timeout", "default_site")}
     warnings: list[str] = []
     for name in sorted(env):

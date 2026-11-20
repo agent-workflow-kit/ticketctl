@@ -13,7 +13,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/site"
       },
-      "minProperties": 1
+      "description": "Optional: an absent or empty sites is a valid empty configuration (the loader then reports no_sites when a command needs a site)."
     },
     "default_site": {
       "type": "string",
@@ -28,7 +28,7 @@
           "maximum": 86400
         },
         {
-          "$ref": "#/$defs/duration"
+          "$ref": "#/$defs/duration_string"
         }
       ],
       "default": 120,
@@ -82,7 +82,7 @@
         "retry_after_max": {
           "$ref": "#/$defs/duration_or_zero",
           "default": "60s",
-          "description": "Longest Retry-After honored; also bounded by the remaining command time."
+          "description": "Longest Retry-After honored; also bounded by the remaining command time. At most 365d (loader check)."
         }
       },
       "additionalProperties": false
@@ -108,7 +108,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -142,7 +142,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -178,7 +178,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -212,7 +212,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -248,7 +248,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -282,7 +282,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -318,7 +318,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -352,7 +352,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -388,7 +388,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -422,7 +422,7 @@
                     "maximum": 600
                   },
                   {
-                    "$ref": "#/$defs/duration"
+                    "$ref": "#/$defs/duration_string"
                   }
                 ],
                 "default": 30,
@@ -445,20 +445,33 @@
       "default": {}
     }
   },
-  "required": [
-    "sites"
-  ],
   "additionalProperties": false,
   "$defs": {
     "duration": {
-      "type": "string",
-      "pattern": "^[1-9][0-9]{0,8}(?:ms|s|m|h|d)?$",
-      "description": "An integer with a unit (ms, s, m, h, d), or a bare integer meaning seconds; positive."
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        {
+          "$ref": "#/$defs/duration_string"
+        }
+      ],
+      "description": "A positive duration: an integer with a unit (ms, s, m, h, d), or a bare integer meaning seconds. Per-key maximums are in each key's description (loader checks)."
     },
     "duration_or_zero": {
-      "type": "string",
-      "pattern": "^(?:0|[1-9][0-9]{0,8})(?:ms|s|m|h|d)?$",
-      "description": "As duration, and 0 (cache_ttl: no cache; retry_after_max: never wait)."
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999999999
+        },
+        {
+          "$ref": "#/$defs/duration_string_or_zero"
+        }
+      ],
+      "description": "As duration, and 0 (cache_ttl: no cache; retry_after_max: never wait). Per-key maximums are in each key's description (loader checks)."
     },
     "field_mapping": {
       "oneOf": [
@@ -520,7 +533,7 @@
           "format": "uri",
           "pattern": "^https?://[^\\s/?#@]+(?:/[^\\s?#]*)?$",
           "maxLength": 2048,
-          "description": "https site URL with a non-empty host, no userinfo, query or fragment; the loader lower-cases the host."
+          "description": "https site URL with a non-empty host, no userinfo, query or fragment. The loader lower-cases the scheme and host, so this schema describes the normalized lower-case form."
         },
         "allow_http": {
           "type": "boolean",
@@ -648,7 +661,21 @@
         "queries": {
           "type": "object",
           "propertyNames": {
-            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "not": {
+              "enum": [
+                "estimate",
+                "acceptance_criteria",
+                "sprint",
+                "parent",
+                "epic",
+                "labels",
+                "priority",
+                "assignee",
+                "resolution",
+                "due_date"
+              ]
+            }
           },
           "additionalProperties": {
             "type": "string",
@@ -675,7 +702,8 @@
         },
         "cache_ttl": {
           "$ref": "#/$defs/duration_or_zero",
-          "default": "24h"
+          "default": "24h",
+          "description": "Field-list and identity cache lifetime; 0 disables the cache; at most 365d (loader check)."
         },
         "timeouts": {
           "type": "object",
@@ -689,7 +717,8 @@
               "default": "30s"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Per-site timeouts; each connect and read is positive and at most 24h (loader check)."
         }
       },
       "required": [
@@ -749,6 +778,16 @@
         }
       ],
       "additionalProperties": false
+    },
+    "duration_string": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,8}(?:ms|s|m|h|d)?$",
+      "description": "A positive integer with a unit (ms, s, m, h, d), or a bare integer string meaning seconds."
+    },
+    "duration_string_or_zero": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,8})(?:ms|s|m|h|d)?$",
+      "description": "As duration_string, and 0."
     }
   }
 }
