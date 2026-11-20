@@ -18,6 +18,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | Module | Stage | Responsibility |
 |---|---|---|
 | `cli` | 0 | argparse subcommands, global flags, exit codes, human and `--json` output |
+| `commands`, `flags`, `errors` | 0 | the command registry, the global flags and their grammars, the exit-code table and the error envelope |
 | `config` | 0 | load and validate config (Pydantic), drop-ins, env overrides for top-level scalars, loader checks |
 | `gateway` | 0 | the only HTTP boundary: requests, auth header, timeouts, retry policy, pacing, redirect and proxy rules |
 | `sanitize` | 0 | the one sanitizer and the identifier grammars |

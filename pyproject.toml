@@ -1,6 +1,6 @@
 [project]
 name = "ticketctl"
-version = "0.0.1"
+version = "0.2.0"
 description = "Normalized ticket access (Jira first)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,6 +27,7 @@ dev = [
     "pyright>=1.1.380",
     "pymarkdownlnt>=0.9.41",
     "types-pyyaml>=6.0.12.20261113",
+    "jsonschema>=4.26.0",
 ]
 
 [tool.ruff]
