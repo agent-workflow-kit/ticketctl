@@ -11,8 +11,10 @@ provider's own answer that is not a usable list is exit 12 ``provider_changed``.
 ``load_site_fields(rt, site, gw, refresh=False, needs=())`` adds the site's ``fields`` config
 (:class:`fieldmap.SiteFields`). When the list came from the cache and a name in ``needs`` is mapped
 to a field the cached list lacks, the list is refetched once (a field created after the cache was
-written must not be reported missing); a fresh list is never refetched, and neither is a mere
-ambiguity or an unmapped, undiscovered field.
+written must not be reported missing); a fresh list is never refetched, a cached list fetched within
+the last ``REFETCH_AFTER`` (60 seconds) is not either (a mapping that stays missing must not cost a
+fetch on every command), and neither is a mere ambiguity or an unmapped, undiscovered field. A list
+too large to cache is fetched on every call, with one warning each time.
 
 Unverified against a real site: that ``GET /field``, ``/priority`` and ``/resolution`` answer a
 plain JSON array of objects with ``name`` strings, that the priority list is in rank order, and
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import cache
@@ -43,6 +46,7 @@ FIELD = "/rest/api/3/field"
 PRIORITY = "/rest/api/3/priority"
 RESOLUTION = "/rest/api/3/resolution"
 MAX_NAMES = 1000
+REFETCH_AFTER = timedelta(seconds=60)
 
 # Cache-read failures that only cost a refetch; any other state failure stays fatal.
 _CACHE_READ_DOWNGRADES = frozenset({"state_symlink", "state_type", "state_io"})
@@ -53,6 +57,7 @@ class LoadedFields:
     fields: tuple[ProviderField, ...]
     source: str  # "cache" or "provider"
     ignored: int = 0  # provider entries that were not usable (always 0 from the cache)
+    fetched_at: datetime | None = None  # when a cached list was fetched (None: just fetched)
 
 
 @dataclass(frozen=True)
@@ -76,10 +81,12 @@ def _fetch(gw: Gateway, path: str, what: str) -> Any:
     return response.data
 
 
-def _read(rt: Runtime, site_name: str, gw: Gateway, name: str, label: str) -> dict[str, Any] | None:
+def _read(
+    rt: Runtime, site_name: str, gw: Gateway, name: str, label: str
+) -> cache.CacheEntry | None:
     site = rt.config.sites[site_name]
     try:
-        return cache.read_cache(
+        return cache.read_entry(
             rt.state_dir,
             site_name,
             name,
@@ -113,9 +120,9 @@ def _write(
         rt.warn(f"warning: the {label} cache cannot be written ({exc.reason})")
 
 
-def _discard(rt: Runtime, site_name: str, name: str) -> None:
+def _discard(rt: Runtime, site_name: str, name: str, entry: cache.CacheEntry) -> None:
     try:
-        cache.discard_cache(rt.state_dir, site_name, name)
+        cache.discard_cache(rt.state_dir, site_name, name, ident=entry.ident)
     except StateError:
         pass  # the refetch below then fails to write too and warns
 
@@ -128,11 +135,11 @@ def load_fields(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> L
         stored = _read(rt, site_name, gw, "fields", "field list")
         if stored is not None:
             try:
-                parsed = parse_field_list(stored.get("fields"), strict=True)
+                parsed = parse_field_list(stored.doc.get("fields"), strict=True)
             except FieldListError:
-                _discard(rt, site_name, "fields")
+                _discard(rt, site_name, "fields", stored)
             else:
-                return LoadedFields(parsed.fields, "cache")
+                return LoadedFields(parsed.fields, "cache", fetched_at=stored.fetched_at)
     data = _fetch(gw, FIELD, "field list")
     try:
         parsed = parse_field_list(data)
@@ -164,7 +171,7 @@ def load_site_fields(
     config = rt.config.sites[site_name].fields
     loaded = load_fields(rt, site_name, gw, refresh=refresh)
     site_fields = SiteFields(loaded.fields, config, loaded.source)
-    if loaded.source == "cache":
+    if loaded.source == "cache" and _old_enough(loaded):
         for name in needs:
             try:
                 missing = site_fields.resolve(name).status is Status.MISSING
@@ -174,6 +181,11 @@ def load_site_fields(
                 loaded = load_fields(rt, site_name, gw, refresh=True)
                 return SiteFields(loaded.fields, config, loaded.source)
     return site_fields
+
+
+def _old_enough(loaded: LoadedFields) -> bool:
+    """A cached list is retried for a missing mapping only once it is older than a minute."""
+    return loaded.fetched_at is None or datetime.now(UTC) - loaded.fetched_at > REFETCH_AFTER
 
 
 # --- priorities and resolutions ---------------------------------------------------------------
@@ -206,9 +218,9 @@ def _load_names(
         stored = _read(rt, site_name, gw, name, label)
         if stored is not None:
             try:
-                return NameList(_names_from_cache(stored.get(name)), "cache")
+                return NameList(_names_from_cache(stored.doc.get(name)), "cache")
             except FieldListError:
-                _discard(rt, site_name, name)
+                _discard(rt, site_name, name, stored)
     data = _fetch(gw, path, label)
     try:
         names = _names_from_provider(data)

@@ -15,9 +15,14 @@ Public API:
     fetched in the future. A damaged cache never raises. A symlink, a non-regular file or a
     foreign owner is a :class:`StateError`, not a silent discard. ``ttl`` of zero always misses.
 
-``discard_cache(state_dir, site, name)``
+``read_entry(...) -> CacheEntry | None``
+    The same read, returning the document with its ``fetched_at`` and the ``(st_dev, st_ino)`` of
+    the file that was read (``read_cache`` is its document).
+
+``discard_cache(state_dir, site, name, *, ident=None)``
     Delete one cache file (a reader found its content unusable although the header was valid).
-    A missing file is not an error.
+    With ``ident`` (from :class:`CacheEntry`) only if it is still the file that was read, so a
+    concurrent fresh write is kept. A missing file is not an error.
 
 Readers never see a partial file: replacement is a rename.
 """
@@ -30,6 +35,7 @@ import os
 import secrets
 import stat
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -46,6 +52,13 @@ MAX_CACHE_BYTES = 8 * 1024 * 1024
 _CLOCK_SKEW = timedelta(minutes=5)
 _ORPHAN_AGE = 3600.0
 _TEMP_PREFIX = ".tmp-"
+
+
+@dataclass(frozen=True)
+class CacheEntry:
+    doc: dict[str, Any]
+    fetched_at: datetime
+    ident: tuple[int, int]  # (st_dev, st_ino) of the file that was read
 
 
 def email_sha256(email: str | None) -> str:
@@ -115,6 +128,20 @@ def read_cache(
     ttl: timedelta,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
+    entry = read_entry(state_dir, site, name, url=url, email=email, ttl=ttl, now=now)
+    return None if entry is None else entry.doc
+
+
+def read_entry(
+    state_dir: Path,
+    site: str,
+    name: str,
+    *,
+    url: str,
+    email: str | None,
+    ttl: timedelta,
+    now: datetime | None = None,
+) -> CacheEntry | None:
     filename = _check(site, name)
     if ttl <= timedelta(0):
         return None
@@ -152,12 +179,14 @@ def read_cache(
         if fetched is None or fetched > current + _CLOCK_SKEW or current - fetched > ttl:
             _discard(site_fd, filename, ident)
             return None
-        return doc
+        return CacheEntry(doc, fetched, ident)
     finally:
         os.close(site_fd)
 
 
-def discard_cache(state_dir: Path, site: str, name: str) -> None:
+def discard_cache(
+    state_dir: Path, site: str, name: str, *, ident: tuple[int, int] | None = None
+) -> None:
     filename = _check(site, name)
     root = state.open_dir(state_dir, create=False)
     if root is None:
@@ -169,7 +198,7 @@ def discard_cache(state_dir: Path, site: str, name: str) -> None:
     if site_fd is None:
         return
     try:
-        _discard(site_fd, filename)
+        _discard(site_fd, filename, ident)
     finally:
         os.close(site_fd)
 

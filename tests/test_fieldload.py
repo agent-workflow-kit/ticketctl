@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from ticketctl.fieldmap import Status
 from ticketctl.flags import Globals
 from ticketctl.gateway import GatewayError
 from ticketctl.runtime import Runtime
+from ticketctl.state import StateError
 
 FIELDS = "/rest/api/3/field"
 NS = "com.atlassian.jira.plugin.system.customfieldtypes"
@@ -65,6 +67,13 @@ class Harness:
 
     def cache_file(self, name: str = "fields") -> Path:
         return self.state / "cache" / "main" / f"{name}.json"
+
+    def age_cache(self, seconds: int, name: str = "fields") -> None:
+        """Rewrite the cache header so the file looks fetched ``seconds`` ago."""
+        doc = json.loads(self.cache_file(name).read_text())
+        stamp = datetime.now(UTC) - timedelta(seconds=seconds)
+        doc["fetched_at"] = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.cache_file(name).write_text(json.dumps(doc))
 
     def field_calls(self) -> int:
         return sum(1 for c in self.fake.calls if c.path == FIELDS)
@@ -144,7 +153,8 @@ def test_a_corrupt_cache_is_discarded_and_refetched(h: Harness, content: bytes) 
 def test_an_oversized_cache_is_discarded(h: Harness) -> None:
     rt = h.runtime()
     fieldload.load_fields(rt, "main", h.gw, refresh=False)
-    h.cache_file().write_bytes(b" " * (cache.MAX_CACHE_BYTES + 1))
+    text = h.cache_file().read_text()
+    h.cache_file().write_text(text + " " * (cache.MAX_CACHE_BYTES + 1 - len(text)))
     assert fieldload.load_fields(rt, "main", h.gw, refresh=False).source == "provider"
 
 
@@ -176,6 +186,9 @@ def test_a_future_dated_cache_is_refetched(h: Harness) -> None:
         {"fields": [{"id": "customfield_1", "name": "A"}, {"id": "customfield_1", "name": "B"}]},
         {"fields": [{"id": "a b", "name": "A"}]},
         {"fields": {"id": "x"}},
+        {"fields": [{"id": "customfield_1", "name": "A", "custom": "yes", "schema": None}]},
+        {"fields": [{"id": "customfield_1", "name": "A", "custom": True, "schema": "string"}]},
+        {"fields": [{"id": "customfield_1", "name": "A\x1b[0m", "custom": True, "schema": None}]},
         {},
     ],
 )
@@ -292,7 +305,7 @@ def test_get_with_ambiguous_points_still_needs_nothing_for_other_fields(h: Harne
     assert info.value.code == "ambiguous_field"
 
 
-def test_a_missing_mapping_from_a_cached_list_refetches_once(h: Harness) -> None:
+def test_a_missing_mapping_from_an_old_cached_list_refetches_once(h: Harness) -> None:
     rt = h.runtime("    fields:\n      extra:\n        late:\n          name: Late field\n")
     sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["late"])
     assert sf.resolve("late").status is Status.MISSING
@@ -305,24 +318,68 @@ def test_a_missing_mapping_from_a_cached_list_refetches_once(h: Harness) -> None
             "schema": {"type": "string"},
         }
     ]
+    h.age_cache(120)
     sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["late"])
     assert sf.source == "provider" and h.field_calls() == 2
     assert sf.resolve("late").need().id == "cf_late"
     assert fieldload.load_site_fields(rt, "main", h.gw, needs=["late"]).source == "cache"
 
 
-def test_a_persistent_missing_mapping_refetches_at_most_once_per_load(h: Harness) -> None:
+def test_a_missing_mapping_from_a_list_cached_within_a_minute_is_not_refetched(h: Harness) -> None:
     rt = h.runtime("    fields:\n      sprint:\n        id: cf_gone\n")
     fieldload.load_site_fields(rt, "main", h.gw)
-    before = h.field_calls()
+    h.age_cache(30)
     sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint"])
-    assert h.field_calls() == before + 1
+    assert sf.source == "cache" and h.field_calls() == 1
+
+
+def test_a_persistently_missing_mapping_costs_one_fetch_per_minute_not_per_command(
+    h: Harness,
+) -> None:
+    rt = h.runtime("    fields:\n      sprint:\n        id: cf_gone\n")
+    fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint"])
+    for _ in range(5):
+        fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint"])
+    assert h.field_calls() == 1
+    h.age_cache(120)
+    sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint"])
+    for _ in range(4):
+        sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint"])
+    assert h.field_calls() == 2
     assert sf.resolve("sprint").status is Status.MISSING
+
+
+def test_two_missing_names_refetch_once(h: Harness) -> None:
+    rt = h.runtime(
+        "    fields:\n      sprint:\n        id: cf_gone\n      epic:\n        id: cf_gone_too\n"
+    )
+    fieldload.load_site_fields(rt, "main", h.gw)
+    h.age_cache(120)
+    fieldload.load_site_fields(rt, "main", h.gw, needs=["sprint", "epic"])
+    assert h.field_calls() == 2
+
+
+def test_an_absent_undiscovered_field_does_not_refetch(h: Harness) -> None:
+    rt = h.runtime()
+    fieldload.load_site_fields(rt, "main", h.gw)
+    h.age_cache(120)
+    sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["acceptance_criteria", "epic"])
+    assert sf.resolve("acceptance_criteria").status is Status.ABSENT
+    assert sf.source == "cache" and h.field_calls() == 1
+
+
+def test_an_unknown_needed_name_does_not_refetch_or_raise(h: Harness) -> None:
+    rt = h.runtime()
+    fieldload.load_site_fields(rt, "main", h.gw)
+    h.age_cache(120)
+    sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["no_such_name"])
+    assert sf.source == "cache" and h.field_calls() == 1
 
 
 def test_ambiguity_and_unneeded_names_do_not_refetch(h: Harness) -> None:
     rt = h.runtime()
     fieldload.load_site_fields(rt, "main", h.gw)
+    h.age_cache(120)
     sf = fieldload.load_site_fields(rt, "main", h.gw, needs=["estimate", "sprint"])
     assert sf.source == "cache" and h.field_calls() == 1
 
@@ -384,6 +441,13 @@ def test_a_duplicate_priority_name_ranks_at_its_first_position(h: Harness) -> No
     assert got.names == ("A", "B", "A") and got.rank("A") == 0
 
 
+LISTS = [
+    ("priorities", "priority_list_body", fieldload.load_priorities, "/rest/api/3/priority"),
+    ("resolutions", "resolution_list_body", fieldload.load_resolutions, "/rest/api/3/resolution"),
+]
+
+
+@pytest.mark.parametrize(("name", "attr", "load", "path"), LISTS)
 @pytest.mark.parametrize(
     "body",
     [
@@ -397,12 +461,22 @@ def test_a_duplicate_priority_name_ranks_at_its_first_position(h: Harness) -> No
         [{"name": "n"}] * 1001,
     ],
 )
-def test_a_malformed_priority_list_is_provider_changed(h: Harness, body: Any) -> None:
-    h.fake.priority_list_body = body
+def test_a_malformed_name_list_is_provider_changed(
+    h: Harness, name: str, attr: str, load: Any, path: str, body: Any
+) -> None:
+    setattr(h.fake, attr, body)
     with pytest.raises((TicketctlError, GatewayError)) as info:
-        fieldload.load_priorities(h.runtime(), "main", h.gw)
+        load(h.runtime(), "main", h.gw)
     assert info.value.code == "provider_changed"
-    assert not h.cache_file("priorities").exists()
+    assert not h.cache_file(name).exists()
+
+
+@pytest.mark.parametrize(("name", "attr", "load", "path"), LISTS)
+def test_a_name_list_of_1000_entries_is_accepted(
+    h: Harness, name: str, attr: str, load: Any, path: str
+) -> None:
+    setattr(h.fake, attr, [{"id": str(n), "name": f"n{n}"} for n in range(1000)])
+    assert len(load(h.runtime(), "main", h.gw).names) == 1000
 
 
 def test_priority_names_are_sanitized(h: Harness) -> None:
@@ -411,14 +485,85 @@ def test_priority_names_are_sanitized(h: Harness) -> None:
     assert "\x1b" not in got.names[0] and "‮" not in got.names[0]
 
 
-def test_a_poisoned_priority_cache_is_discarded(h: Harness) -> None:
+@pytest.mark.parametrize(("name", "attr", "load", "path"), LISTS)
+@pytest.mark.parametrize("poison", [[1, 2], "x", None, [""], ["ok"] * 1001])
+def test_a_poisoned_name_cache_is_discarded(
+    h: Harness, name: str, attr: str, load: Any, path: str, poison: Any
+) -> None:
     rt = h.runtime()
-    fieldload.load_priorities(rt, "main", h.gw)
-    doc = json.loads(h.cache_file("priorities").read_text())
-    doc["priorities"] = [1, 2]
-    h.cache_file("priorities").write_text(json.dumps(doc))
-    assert fieldload.load_priorities(rt, "main", h.gw).source == "provider"
-    assert calls(h.fake, "/rest/api/3/priority") == 2
+    load(rt, "main", h.gw)
+    doc = json.loads(h.cache_file(name).read_text())
+    doc[name] = poison
+    h.cache_file(name).write_text(json.dumps(doc))
+    assert load(rt, "main", h.gw).source == "provider"
+    assert calls(h.fake, path) == 2
+    assert load(rt, "main", h.gw).source == "cache"
+
+
+@pytest.mark.parametrize(("name", "attr", "load", "path"), LISTS)
+def test_name_cache_entries_are_sanitized_on_read(
+    h: Harness, name: str, attr: str, load: Any, path: str
+) -> None:
+    rt = h.runtime()
+    load(rt, "main", h.gw)
+    doc = json.loads(h.cache_file(name).read_text())
+    doc[name] = ["Evil\x1b[31m\u202eName"]
+    h.cache_file(name).write_text(json.dumps(doc))
+    got = load(rt, "main", h.gw)
+    assert got.source == "cache"
+    assert "\x1b" not in got.names[0] and "\u202e" not in got.names[0]
+
+
+def test_a_cache_read_state_error_that_is_not_downgradable_is_raised(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise StateError("state_owner", "state file is not owned by the current user")
+
+    monkeypatch.setattr(cache, "read_entry", boom)
+    with pytest.raises(StateError) as info:
+        fieldload.load_fields(h.runtime(), "main", h.gw, refresh=False)
+    assert info.value.reason == "state_owner"
+    assert h.field_calls() == 0
+
+
+def test_a_poisoned_cache_is_discarded_by_the_identity_that_was_read(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = h.runtime()
+    fieldload.load_fields(rt, "main", h.gw, refresh=False)
+    doc = json.loads(h.cache_file().read_text())
+    doc["fields"] = "poison"
+    h.cache_file().write_text(json.dumps(doc))
+    seen: list[Any] = []
+    real = cache.discard_cache
+
+    def spy(*args: Any, **kwargs: Any) -> None:
+        seen.append(kwargs.get("ident"))
+        real(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "discard_cache", spy)
+    fieldload.load_fields(rt, "main", h.gw, refresh=False)
+    assert len(seen) == 1 and seen[0] is not None
+
+
+def test_a_list_too_large_to_cache_is_fetched_every_call_with_a_warning(h: Harness) -> None:
+    h.fake.extra_fields = [
+        {
+            "id": f"customfield_{n}",
+            "name": "\u00e9" * 200,
+            "custom": True,
+            "schema": {"type": "string"},
+        }
+        for n in range(2000, 9000)
+    ]
+    rt = h.runtime()
+    first = fieldload.load_fields(rt, "main", h.gw, refresh=False)
+    second = fieldload.load_fields(rt, "main", h.gw, refresh=False)
+    assert first.source == second.source == "provider" and len(second.fields) > 5000
+    assert h.field_calls() == 2
+    assert sum("cannot be written" in w for w in h.warnings) == 2
+    assert not h.cache_file().exists()
 
 
 def test_an_empty_priority_list_is_valid(h: Harness) -> None:

@@ -3,12 +3,15 @@
 ``convert(schema, raw, part) -> Converted(value, incomplete)`` never raises. The supported types
 are rich text (a ``string`` field holding an ADF document, rendered to Markdown), ``string``,
 ``number``, ``date``, ``datetime`` (UTC, ``Z``, to the second), ``option`` (its ``value``), ``user``
-(an account object without any email address) and ``array`` of ``string``, ``option``, ``user`` or
-of objects with a ``name`` or ``value``. A null value is a known empty value. Anything else, a
-value that does not fit its schema and an unknown or missing schema give ``None`` and name
-``part`` (``fields.<name>``) in ``incomplete``. Text is sanitized and capped at 4096 characters
-(an extra field is single-line text, not a body); an array is cut at 1000 items; either cut names
-``<part>.truncated``.
+(an account object built without reading ``emailAddress``) and ``array`` of ``string``,
+``number``, ``date``, ``datetime``, ``option``, ``user`` or of objects with a ``name`` or
+``value``. A null value is a known empty value. Anything else, a value that does not fit its
+schema and an unknown or missing schema give ``None`` and name
+``part`` (``fields.<name>``) in ``incomplete``. An integer above 2**63 in absolute value is
+unknown. Text is sanitized and capped at 4096 characters: an extra field is single-line text, plain
+or rendered from ADF. With ``body=True`` (a body-class field such as ``acceptance_criteria``) a
+plain string keeps its line breaks and both plain and rendered text use the body cap; an array is
+cut at 1000 items; any cut names ``<part>.truncated``.
 
 Unverified against a real site: the value shapes of option, user and array items (``value`` or
 ``name``), and that a rich-text custom field answers an ADF document under the ``string`` type.
@@ -24,9 +27,11 @@ from typing import Any
 
 from .adf_render import render_adf
 from .fieldmap import FieldSchema
-from .sanitize import CAPS, GRAMMARS, sanitize_field
+from .sanitize import CAPS, GRAMMARS, cap_text, sanitize_field
 
 TEXT_CAP = CAPS["title"]
+BODY_CAP = CAPS["body"]
+MAX_INT = 2**63
 MAX_ITEMS = 1000
 UNKNOWN_USER = "unknown user"
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -49,11 +54,20 @@ class _NoFit(Exception):
 class _Cut:
     """Collects whether any text was cut."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, body: bool = False) -> None:
         self.cut = False
+        self.body = body
 
-    def text(self, raw: str) -> str:
-        out, was_cut = sanitize_field(raw, cap=TEXT_CAP)
+    def text(self, raw: str, *, whole: bool = False) -> str:
+        """Sanitize and cap ``raw``; ``whole`` (a body string) keeps line breaks, body cap."""
+        keep = whole and self.body
+        out, was_cut = sanitize_field(raw, cap=BODY_CAP if keep else TEXT_CAP, body=keep)
+        self.cut = self.cut or was_cut
+        return out
+
+    def rendered(self, text: str) -> str:
+        """Cap already sanitized text (rendered ADF)."""
+        out, was_cut = cap_text(text, BODY_CAP if self.body else TEXT_CAP)
         self.cut = self.cut or was_cut
         return out
 
@@ -62,6 +76,8 @@ def _number(raw: object) -> int | float:
     if isinstance(raw, bool) or not isinstance(raw, int | float):
         raise _NoFit
     if isinstance(raw, float) and not math.isfinite(raw):
+        raise _NoFit
+    if isinstance(raw, int) and abs(raw) > MAX_INT:
         raise _NoFit
     return raw
 
@@ -85,7 +101,7 @@ def _datetime(raw: object) -> str:
         raise _NoFit from None
     if parsed.tzinfo is None:
         raise _NoFit
-    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return parsed.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _user(raw: object, cut: _Cut) -> dict[str, Any]:
@@ -120,6 +136,12 @@ def _item(items: str | None, raw: object, cut: _Cut) -> Any:
         if not isinstance(raw, dict) or not isinstance(raw.get("value"), str):
             raise _NoFit
         return cut.text(raw["value"])
+    if items == "number":
+        return _number(raw)
+    if items == "date":
+        return _date(raw)
+    if items == "datetime":
+        return _datetime(raw)
     if items is None or items in ("issuelinks", "issuelink"):
         raise _NoFit
     return _named(raw, cut)
@@ -136,10 +158,10 @@ def _convert(schema: FieldSchema, raw: Any, part: str, cut: _Cut) -> tuple[Any, 
     if kind == "string":
         if isinstance(raw, dict) and raw.get("type") == "doc":
             rendered = render_adf(raw, part)
-            return rendered.text, rendered.incomplete
+            return cut.rendered(rendered.text), rendered.incomplete
         if not isinstance(raw, str):
             raise _NoFit
-        return cut.text(raw), ()
+        return cut.text(raw, whole=True), ()
     if kind == "option":
         if not isinstance(raw, dict) or not isinstance(raw.get("value"), str):
             raise _NoFit
@@ -156,12 +178,12 @@ def _convert(schema: FieldSchema, raw: Any, part: str, cut: _Cut) -> tuple[Any, 
     raise _NoFit
 
 
-def convert(schema: FieldSchema | None, raw: object, part: str) -> Converted:
+def convert(schema: FieldSchema | None, raw: object, part: str, *, body: bool = False) -> Converted:
     if schema is None or schema.type not in _KNOWN:
         return Converted(None, (part,))
     if raw is None:
         return Converted(None)
-    cut = _Cut()
+    cut = _Cut(body=body)
     try:
         value, incomplete = _convert(schema, raw, part, cut)
     except _NoFit:

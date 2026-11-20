@@ -8,9 +8,11 @@ Public API:
     The provider's ``GET /field`` answer (or the cached copy) as :class:`ProviderField` objects.
     The list is untrusted: a non-list or one over ``MAX_FIELDS`` entries is a
     :class:`FieldListError`; a malformed entry (no usable id or name, an id outside the grammar)
-    is ignored and counted; every entry of a duplicated id is dropped (two fields cannot share an
-    id, so the list is not believed for it); names and schema strings are sanitized, scrubbed and
-    capped. ``strict`` (the cache read) refuses a list that needed any of that.
+    (including a ``custom`` that is not a boolean) is ignored and counted; every entry of a
+    duplicated id is dropped (two fields cannot share an id, so the list is not believed for it);
+    names and schema strings are sanitized, scrubbed and capped. ``strict`` (the cache read)
+    refuses a list that needed any of that and any entry that is not exactly the stored document
+    shape (so a changed name, schema or ``custom`` is a poisoned cache).
 
 ``resolve(fields, logical, mapping) -> Resolution``
     One logical name against the list. A configured mapping (``name`` exact and case-sensitive,
@@ -50,6 +52,8 @@ MAX_CANDIDATES = 50
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _SCHEMA_TYPE_CAP = 128
 _SCHEMA_CUSTOM_CAP = 256
+_FIELD_ID = re.compile(r"customfield_[0-9]+")
+ID_MARKER = "<id>"
 
 STORY_POINTS_SUFFIX = ":jsw-story-points"
 FLOAT_SUFFIX = "customfieldtypes:float"
@@ -138,6 +142,8 @@ def _entry(raw: object) -> ProviderField | None:
     name = raw.get("name")
     if not isinstance(fid, str) or _ID.fullmatch(fid) is None or not isinstance(name, str):
         return None
+    if "custom" in raw and not isinstance(raw["custom"], bool):
+        return None
     return ProviderField(
         fid,
         sanitize_field(name, cap=CAPS["name"])[0],
@@ -160,6 +166,8 @@ def parse_field_list(data: object, *, strict: bool = False) -> ParsedFields:
     ignored = len(data) - len(kept)
     if strict and ignored:
         raise FieldListError("the field list holds entries that are not valid")
+    if strict and [f.to_document() for f in kept] != data:
+        raise FieldListError("the field list holds entries that are not as stored")
     return ParsedFields(kept, ignored)
 
 
@@ -180,13 +188,16 @@ class Resolution:
 
     def candidate_labels(self) -> list[str]:
         """Display names of the candidates (sorted); a shared name gets its schema appended."""
+        cap = CAPS["name"]
         names = [f.name for f in self.fields]
         labels = []
         for f in self.fields:
-            label = f.name
+            name = _FIELD_ID.sub(ID_MARKER, f.name)
             if names.count(f.name) > 1:
-                label = f"{f.name} ({f.schema_key or 'no schema'})"
-            labels.append(cap_text(label, CAPS["name"])[0])
+                key = _FIELD_ID.sub(ID_MARKER, f.schema_key or "no schema")
+                suffix = f" ({cap_text(key, cap // 2)[0]})"
+                name = cap_text(name, cap - len(suffix))[0] + suffix
+            labels.append(cap_text(name, cap)[0])
         return sorted(labels)
 
     def _hint(self, site: str | None) -> str:

@@ -160,5 +160,82 @@ def test_a_long_array_is_cut_and_says_so() -> None:
     assert incomplete == (f"{PART}.truncated",)
 
 
-def test_a_non_finite_or_huge_number_is_handled() -> None:
-    assert conv(S("number"), 10**30) == (10**30, ())
+def test_a_number_up_to_two_to_the_63_is_kept() -> None:
+    assert conv(S("number"), 2**63) == (2**63, ())
+    assert conv(S("number"), -(2**63)) == (-(2**63), ())
+
+
+@pytest.mark.parametrize("raw", [2**63 + 1, -(2**63) - 1, 10**30])
+def test_a_huge_integer_is_unknown(raw: int) -> None:
+    assert conv(S("number"), raw) == (None, (PART,))
+
+
+def test_a_year_below_1000_is_zero_padded() -> None:
+    assert conv(S("datetime"), "0999-01-01T00:00:00Z") == ("0999-01-01T00:00:00Z", ())
+
+
+def test_an_overflowing_datetime_is_unknown_and_does_not_raise() -> None:
+    assert conv(S("datetime"), "0001-01-01T00:00:00+05:30") == (None, (PART,))
+
+
+@pytest.mark.parametrize(
+    ("schema", "raw", "expected"),
+    [
+        (S("array", "number"), [1, 2.5], [1, 2.5]),
+        (S("array", "date"), ["2026-03-04"], ["2026-03-04"]),
+        (S("array", "datetime"), ["2026-03-04T10:00:00+02:00"], ["2026-03-04T08:00:00Z"]),
+    ],
+)
+def test_arrays_of_numbers_and_dates_convert(schema: FieldSchema, raw: Any, expected: Any) -> None:
+    assert conv(schema, raw) == (expected, ())
+
+
+@pytest.mark.parametrize(
+    ("schema", "raw"),
+    [
+        (S("array", "number"), ["1"]),
+        (S("array", "date"), ["nope"]),
+        (S("array", "datetime"), ["2026-03-04T10:00:00"]),
+    ],
+)
+def test_arrays_of_numbers_and_dates_that_do_not_fit_are_unknown(
+    schema: FieldSchema, raw: Any
+) -> None:
+    assert conv(schema, raw) == (None, (PART,))
+
+
+def test_an_extra_string_is_single_line() -> None:
+    assert conv(S("string"), "a\nb\tc")[0] == "a b c"
+
+
+def test_an_extra_string_holding_adf_is_capped_at_4096() -> None:
+    doc = {
+        "type": "doc",
+        "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "w" * 6000}]}],
+    }
+    value, incomplete = conv(S("string"), doc)
+    assert len(value) <= 4096 and value.endswith("<truncated>")
+    assert incomplete == (f"{PART}.truncated",)
+
+
+def test_body_mode_keeps_line_breaks_in_plain_strings() -> None:
+    out = convert(S("string"), "line one\nline two\r\nline three", PART, body=True)
+    assert out.value == "line one\nline two\nline three" and out.incomplete == ()
+
+
+def test_body_mode_uses_the_body_cap_for_plain_strings() -> None:
+    out = convert(S("string"), "x" * 5000, PART, body=True)
+    assert out.value == "x" * 5000 and out.incomplete == ()
+    huge = convert(S("string"), "x" * 1_000_001, PART, body=True)
+    assert len(huge.value) == 1_000_000 and huge.incomplete == (f"{PART}.truncated",)
+
+
+def test_body_mode_renders_adf_beyond_4096() -> None:
+    doc = {
+        "type": "doc",
+        "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "w" * 6000}]}],
+    }
+    out = convert(S("string"), doc, PART, body=True)
+    assert out.value == "w" * 6000 and out.incomplete == ()

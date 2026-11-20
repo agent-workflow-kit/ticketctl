@@ -195,16 +195,44 @@ def test_a_missing_schema_key_is_none_and_non_string_parts_are_dropped() -> None
     assert b.schema == fieldmap.FieldSchema("array", None, None)
 
 
-def test_custom_is_true_only_for_the_boolean_true() -> None:
-    for value, expected in (
-        (True, True),
-        (False, False),
-        ("true", False),
-        (1, False),
-        (None, False),
-    ):
+def test_custom_is_a_boolean_or_absent() -> None:
+    for value, expected in ((True, True), (False, False)):
         raw = {"id": "customfield_1", "name": "X", "custom": value}
         assert fieldmap.parse_field_list([raw]).fields[0].custom is expected
+    assert fieldmap.parse_field_list([{"id": "a", "name": "X"}]).fields[0].custom is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, [], {}])
+def test_a_non_boolean_custom_makes_the_entry_malformed(value: object) -> None:
+    raw = {"id": "customfield_1", "name": "X", "custom": value}
+    result = fieldmap.parse_field_list([entry("summary", "Summary"), raw])
+    assert [f.id for f in result.fields] == ["summary"]
+    assert result.ignored == 1
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        {"custom": "true"},
+        {"custom": None},
+        {"schema": "string"},
+        {"schema": []},
+        {"schema": {"type": "string", "x": 1}},
+        {"name": "Name\x1b[31m"},
+        {"name": "X" * 300},
+        {"schema": {"type": "string\n"}},
+        {"extra": 1},
+    ],
+)
+def test_strict_parsing_refuses_a_poisoned_entry(tamper: dict[str, Any]) -> None:
+    good = fieldmap.parse_field_list([entry("customfield_1", "X")]).fields[0].to_document()
+    with pytest.raises(fieldmap.FieldListError):
+        fieldmap.parse_field_list([{**good, **tamper}], strict=True)
+
+
+def test_strict_parsing_accepts_a_stored_null_schema() -> None:
+    doc = {"id": "a", "name": "A", "custom": False, "schema": None}
+    assert fieldmap.parse_field_list([doc], strict=True).ignored == 0
 
 
 def test_document_round_trip_is_stable() -> None:
@@ -447,6 +475,86 @@ def test_a_huge_candidate_set_is_capped_in_the_envelope() -> None:
         res.need()
     assert info.value.details is not None
     assert len(info.value.details["candidates"]) <= fieldmap.MAX_CANDIDATES
+
+
+def test_a_candidate_label_keeps_its_schema_suffix_when_the_name_is_long() -> None:
+    entries = [
+        entry(f"customfield_{n}", "N" * 256, "number", custom=f"{NS}:float{n}") for n in range(80)
+    ]
+    res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="N" * 256))
+    labels = res.candidate_labels()
+    assert len(set(labels)) == 80
+    assert all(len(label) <= 256 and label.endswith(")") for label in labels)
+
+
+def test_a_candidate_label_never_exceeds_the_name_cap() -> None:
+    entries = [
+        entry("customfield_1", "Twin", "number", custom="c" * 256),
+        entry("cf_two", "Twin", "number", custom="d" * 256),
+    ]
+    res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="Twin"))
+    assert all(len(label) <= 256 for label in res.candidate_labels())
+
+
+def test_a_candidate_label_never_shows_a_custom_field_id() -> None:
+    entries = [
+        entry("customfield_1", "Twin customfield_90001", "number", custom=f"{NS}:float"),
+        entry("cf_two", "Twin customfield_90001", "number", custom="customfield_90002:x"),
+    ]
+    res = fieldmap.resolve(parsed(entries), "estimate", mapping(name="Twin customfield_90001"))
+    labels = res.candidate_labels()
+    assert all("customfield_" not in label for label in labels)
+    assert any("<id>" in label for label in labels)
+    with pytest.raises(TicketctlError) as info:
+        res.need()
+    assert "customfield_" not in str(info.value.details)
+
+
+def test_sixty_candidates_yield_exactly_fifty_in_the_envelope() -> None:
+    entries = [
+        entry(f"customfield_{n}", f"Twin {n:02d}", "number", custom=f"{NS}:float")
+        for n in range(60)
+    ]
+    res = fieldmap.resolve(parsed(entries), "estimate", mapping(schema=f"{NS}:float"))
+    with pytest.raises(TicketctlError) as info:
+        res.need()
+    assert info.value.details is not None
+    assert len(info.value.details["candidates"]) == 50
+    cfg = Fields(estimate=mapping(schema=f"{NS}:float"))
+    (problem,) = [p for p in fieldmap.SiteFields(parsed(entries), cfg).problems()]
+    assert len(problem.candidates) == 50
+
+
+def test_a_mapping_by_name_does_not_match_a_prefix() -> None:
+    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(name="Story"))
+    assert res.status is Status.MISSING
+
+
+def test_a_mapping_by_id_is_case_sensitive() -> None:
+    res = fieldmap.resolve(parsed(site_entries()), "estimate", mapping(id=F_ESTIMATE.upper()))
+    assert res.status is Status.MISSING
+
+
+@pytest.mark.parametrize(
+    ("logical", "custom"),
+    [
+        ("estimate", f"{NS}:jsw-story-points-y"),
+        ("estimate", "jsw-story-points"),
+        ("sprint", "gh-sprint"),
+        ("sprint", "x:gh-sprint-y"),
+        ("epic", "gh-epic-link"),
+        ("epic", "x:gh-epic-link-y"),
+    ],
+)
+def test_the_discovery_suffix_must_be_a_suffix_with_its_colon(logical: str, custom: str) -> None:
+    entries = [entry("customfield_1", "Other", "string", custom=custom)]
+    assert fieldmap.resolve(parsed(entries), logical, None).status is Status.ABSENT
+
+
+def test_an_absent_field_is_not_a_missing_mapping() -> None:
+    entries = [entry("customfield_1", "Other")]
+    res = fieldmap.resolve(parsed(entries), "epic", None)
+    assert res.status is Status.ABSENT
 
 
 # --- SiteFields: logical names and extras -----------------------------------------------------
