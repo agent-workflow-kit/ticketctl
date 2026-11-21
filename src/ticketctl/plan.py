@@ -85,6 +85,10 @@ class Planned:
     the hooks. ``key`` is null for create, ``hash_key`` is what the hash holds in its ``key``
     place (the project for create, else the key). For a no-op, ``already_posted``, ``reused`` and
     ``comment_id`` describe the existing object (and ``existing_key`` the reused ticket).
+    ``hook`` holds the facts of the resolve read that the hook payloads need and that the hash does
+    not (``project``, ``ticket``, ``current_status`` and ``target_status`` as ``{name, category}``,
+    ``resolution``, ``assign``, ``sprints``, ``create``, optionally ``fields_changed``); see
+    ``ticketctl.hooks.build_payload``. Never ticket text.
     """
 
     steps: list[Step]
@@ -101,6 +105,7 @@ class Planned:
     reused: bool = False
     comment_id: str | None = None
     existing_key: str | None = None
+    hook: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.hash_key is None:

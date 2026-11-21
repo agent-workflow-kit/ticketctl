@@ -20,8 +20,8 @@ Order, with the guarantees the tests pin:
    ``--yes``, takes no lock, writes no audit and runs no hook.
 5. **Confirm:** interactive runs go through ``Seams.confirm`` (#24 owns the dialog); a
    non-interactive run without ``--yes`` is exit 13 ``confirmation_required``.
-6. **Pre hooks** through ``Seams.hooks`` (#25 owns execution): a veto is exit 11, an escalation is
-   exit 13 unless ``--override-escalation``.
+6. **Pre hooks** through ``Seams.hooks`` (``ticketctl.hooks.HookRunner`` unless a test substitutes
+   it): a veto is exit 11, an escalation is exit 13 unless ``--override-escalation``.
 7. **Lock and fresh check:** with a dedupe key ``Seams.lock`` is taken (#32), the action reads
    again, and a hash that differs from the held plan is exit 20 ``stale_ticket`` with the new plan
    (no steps left is ``unchanged``). The steps that run are the held plan's.
@@ -38,7 +38,6 @@ is made, so no rich-text path (a comment, a description, a ``--set`` value, a ho
 reach the provider unvalidated whatever the action does.
 
 TODO(#24): the confirmation dialog on ``/dev/tty`` (``Seams.confirm``).
-TODO(#25): hook execution, payloads and decision ids (``Seams.hooks``), the hook hash of the audit.
 TODO(#26): the remaining partial and ``outcome_unknown`` result shaping and the audit-failure
 paths beyond what this engine needs.
 TODO(#32): the dedupe lock and the create lag guard (``Seams.lock``).
@@ -358,13 +357,14 @@ class HookResult:
 
 @dataclass
 class PostInfo:
-    """What a ``post-`` hook is told (the payload itself is #25's)."""
+    """What a ``post-`` hook is told (``ticketctl.hooks.build_payload`` makes the payload)."""
 
     result: str  # ok, failed, partial, unknown
     error: dict[str, str | None] | None
     steps: list[dict[str, str]]
     provider_ids: list[str]
     changed: bool | None
+    key: str | None = None  # the created ticket's key (post-create's object_id)
 
 
 class Hooks(Protocol):
@@ -382,25 +382,6 @@ class Hooks(Protocol):
         decision_ids: list[str],
         info: PostInfo,
     ) -> None: ...
-
-
-class NoHooks:
-    """TODO(#25): replaced by the hook runner."""
-
-    def pre(
-        self, plan: dict[str, Any], planned: Planned, attempt_id: str, decision_ids: list[str]
-    ) -> HookResult:
-        return HookResult()
-
-    def post(
-        self,
-        plan: dict[str, Any],
-        planned: Planned,
-        attempt_id: str,
-        decision_ids: list[str],
-        info: PostInfo,
-    ) -> None:
-        return None
 
 
 def _no_lock(planned: Planned, ctx: Context) -> AbstractContextManager[None]:
@@ -425,7 +406,7 @@ class Seams:
     gateway: Gateway | None = None
     interactive: Callable[[], bool] | None = None
     confirm: Callable[[dict[str, Any]], bool] | None = None
-    hooks: Hooks = field(default_factory=NoHooks)  # todo(#25): the real runner
+    hooks: Hooks | None = None  # None: the real runner (ticketctl.hooks.HookRunner)
     lock: Callable[[Planned, Context], AbstractContextManager[None]] = _no_lock
     attempt_id: Callable[[], str] = _new_attempt_id
 
@@ -630,6 +611,12 @@ def execute(
         return _Run(rt, site, action, seams or Seams()).run()
 
 
+def _real_hooks(rt: Runtime) -> Hooks:
+    from .hooks import HookRunner  # hooks.py imports this module
+
+    return HookRunner(rt)
+
+
 class _Run:
     def __init__(self, rt: Runtime, site: str, action: WriteAction, seams: Seams) -> None:
         self.rt = rt
@@ -637,6 +624,7 @@ class _Run:
         self.site = site
         self.action = action
         self.seams = seams
+        self.hooks = seams.hooks if seams.hooks is not None else _real_hooks(rt)
         self.audit_incomplete = False
         self.extra_warnings: list[str] = []
         self.config_hashes: list[str] | OSError = []
@@ -652,7 +640,6 @@ class _Run:
         except ValueError:
             raise usage_error("invalid_argument", "invalid actor") from None
         self._flag_rules()
-        self._refuse_unrunnable_hooks()
         try:  # once, before the confirmation and the hooks; an error surfaces at the audit
             self.config_hashes = _config_file_hashes(self.rt)
         except OSError as exc:
@@ -678,20 +665,6 @@ class _Run:
             self.action.name,
         )  # fmt: skip
         return self._flow(ctx)
-
-    def _refuse_unrunnable_hooks(self) -> None:
-        """Fail closed: a hook that is configured or given cannot be run by the default seam."""
-        if not isinstance(self.seams.hooks, NoHooks) or self.g.dry_run:
-            return
-        family = hook_family(self.action.name)
-        configured = any(self.rt.config.hooks.get(f"{phase}-{family}") for phase in ("pre", "post"))
-        if configured or self.g.hooks:  # todo(#25): the runner replaces this refusal
-            raise TicketctlError(
-                "internal",
-                "a hook is configured or given but the hook runner is not available; "
-                "nothing was sent",
-                reason="hooks_unavailable",
-            )
 
     def _flag_rules(self) -> None:
         g = self.g
@@ -731,7 +704,7 @@ class _Run:
         self._confirm(plan, decision_ids)  # step 5
 
         try:
-            hook_result = self.seams.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
+            hook_result = self.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
         except TicketctlError as err:
             if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
                 err.details = {"plan": plan, "decision_ids": decision_ids, **(err.details or {})}
@@ -914,7 +887,7 @@ class _Run:
                 ctx, planned, result="ok", steps=done, key=key, comment_id=comment_id,
                 attempt_id=ctx.attempt_id, decision_ids=decision_ids, warnings=warnings,
             )  # fmt: skip
-            info = PostInfo("ok", None, _kinds(done), provider_ids, True)
+            info = PostInfo("ok", None, _kinds(done), provider_ids, True, key)
             return _Outcome(result, None, info)
 
         err, unknown, audit_refused = failure
@@ -945,7 +918,7 @@ class _Run:
             key=key,
         )
         info = PostInfo(
-            "partial", error_info, _kinds(done), provider_ids, None if unknown else True
+            "partial", error_info, _kinds(done), provider_ids, None if unknown else True, key
         )
         return _Outcome(None, envelope, info)
 
@@ -1012,7 +985,7 @@ class _Run:
         if outcome.info is None:
             return
         try:
-            self.seams.hooks.post(plan, planned, ctx.attempt_id, decision_ids, outcome.info)
+            self.hooks.post(plan, planned, ctx.attempt_id, decision_ids, outcome.info)
         except Exception:  # noqa: BLE001 - a post hook is never fatal
             with contextlib.suppress(Exception):
                 self.rt.warn("warning: a post hook failed")
