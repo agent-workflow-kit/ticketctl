@@ -358,7 +358,7 @@ def test_traceback_only_with_debug(
 
 
 def test_stub_handler_is_exit_one(capsys: pytest.CaptureFixture[str]) -> None:
-    status, out, _ = run(capsys, "--json", "export")  # owned by #36
+    status, out, _ = run(capsys, "--json", "sprint", "remove", "AB-1")  # owned by #34
     assert status == 1
     assert _check_envelope(out)["code"] == "internal"
 
@@ -917,9 +917,9 @@ def test_process_usage_error_exit_two_with_envelope(tmp_path: Path) -> None:
 
 
 def test_process_unexpected_exception_exit_one_without_traceback(tmp_path: Path) -> None:
-    r = _proc(tmp_path, "export", "--json")  # a stub (#36)
+    r = _proc(tmp_path, "sprint", "remove", "AB-1", "--json", "--dry-run")  # a stub (#34)
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
     assert _check_envelope(r.stdout)["code"] == "internal"
-    r = _proc(tmp_path, "export", debug=True)
+    r = _proc(tmp_path, "sprint", "remove", "AB-1", "--dry-run", debug=True)
     assert r.returncode == 1 and "Traceback" in r.stderr

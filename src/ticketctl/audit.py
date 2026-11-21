@@ -30,7 +30,7 @@ written because no such key exists, and each free-text value is checked against 
 pattern. Every string that passes is then sanitized and scrubbed (``sanitize.render``), and the
 JSON is written with ``ensure_ascii=True``. Neither file is read or written outside the flock.
 
-TODO(#36): ``export``.
+``export`` (``exportcmd.py``) reads ``audit.jsonl`` without the flock, with the same tolerance.
 """
 
 from __future__ import annotations
