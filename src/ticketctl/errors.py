@@ -71,7 +71,7 @@ def _spec(exit_: int, *reasons: str, **kw: bool) -> CodeSpec:
 _EXIT_20 = ("stale_ticket", "precondition_failed", "no_such_transition")
 
 CODES: dict[str, CodeSpec] = {
-    "internal": _spec(1, "audit_failed"),
+    "internal": _spec(1, "audit_failed", "hooks_unavailable"),
     "usage": _spec(
         2,
         "human_only",

@@ -49,8 +49,6 @@ KINDS = ("cli", "hooks")
 # Schemas whose command or hook is not implemented yet, with the owning issue. Remove an entry in
 # the PR that adds the first golden file for it.
 PENDING: dict[str, int] = {
-    "cli/plan.json": 23,
-    "cli/result.json": 23,
     "cli/transition.json": 28,
     "cli/comment.json": 29,
     "cli/update.json": 30,

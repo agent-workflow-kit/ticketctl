@@ -1,0 +1,27 @@
+{
+  "action": "transition",
+  "already_posted": false,
+  "attempt_id": "0123456789abcdef",
+  "changed": false,
+  "comment_id": null,
+  "decision_ids": [],
+  "key": "DEMO-1",
+  "result": "partial",
+  "reused": false,
+  "site": "main",
+  "steps": [
+    {
+      "kind": "assign",
+      "status": "done"
+    },
+    {
+      "code": "rejected",
+      "kind": "transition",
+      "status": "failed"
+    }
+  ],
+  "url": "https://tracker.example.test/browse/DEMO-1",
+  "warnings": [
+    "assign_added"
+  ]
+}

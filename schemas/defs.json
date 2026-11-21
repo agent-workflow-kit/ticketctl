@@ -81,7 +81,8 @@
         "body_near_limit",
         "duplicate_dedupe_matches",
         "assign_skipped",
-        "audit_incomplete"
+        "audit_incomplete",
+        "decision_ids_truncated"
       ]
     },
     "warnings": {
@@ -209,7 +210,8 @@
         "already_exists",
         "declined",
         "locked",
-        "audit_failed"
+        "audit_failed",
+        "hooks_unavailable"
       ]
     },
     "incomplete": {
@@ -724,12 +726,26 @@
           "$ref": "#/$defs/site_name"
         },
         "key": {
-          "$ref": "#/$defs/key"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/key"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "url": {
-          "type": "string",
-          "format": "uri",
-          "maxLength": 2048
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "changed": {
           "type": "boolean"
@@ -816,7 +832,7 @@
         "decision_ids",
         "warnings"
       ],
-      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back."
+      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. key and url are null only when a create landed and the provider's answer held no valid key. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back."
     },
     "error_body": {
       "type": "object",
@@ -899,7 +915,7 @@
         "key",
         "details"
       ],
-      "description": "reason is required for exits 2 (usage, invalid_config), 20 (equal to the code) and 22 (invalid_request); null otherwise, except locked (unavailable) and audit_failed (internal).",
+      "description": "reason is required for exits 2 (usage, invalid_config), 20 (equal to the code) and 22 (invalid_request); null otherwise, except locked (unavailable), audit_failed and hooks_unavailable (internal).",
       "allOf": [
         {
           "if": {
@@ -1035,7 +1051,8 @@
               "reason": {
                 "enum": [
                   null,
-                  "audit_failed"
+                  "audit_failed",
+                  "hooks_unavailable"
                 ]
               }
             }
