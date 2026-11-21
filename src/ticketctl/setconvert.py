@@ -127,7 +127,7 @@ def _from_input_error(exc: InputError) -> TicketctlError:
 # ---- classification ----------------------------------------------------------------------------
 
 
-def _rich(field: ProviderField) -> bool:
+def is_rich(field: ProviderField) -> bool:
     schema = field.schema
     if schema is None:
         return False
@@ -240,6 +240,18 @@ def _items(text: str) -> list[str]:
     return data
 
 
+def _distinct(items: list[Any]) -> list[Any]:
+    """The items without repeats, in order (a list field holds a set)."""
+    seen: set[str] = set()
+    out: list[Any] = []
+    for item in items:
+        mark = json.dumps(item, sort_keys=True)
+        if mark not in seen:
+            seen.add(mark)
+            out.append(item)
+    return out
+
+
 def _item(kind: str, text: str, allowed: tuple[str, ...] | None, ctx: ValueContext) -> Any:
     if kind == "string":
         return _line(text, "item", CAPS["label"])
@@ -277,7 +289,8 @@ def _convert_text(r: Resolved, text: str, ctx: ValueContext) -> Any:
         items = _items(text)
         if not items:
             raise _refuse("the array is empty; use name= to clear")
-        return [_item(schema.items, i, allowed, ctx) for i in items]
+        converted = [_item(schema.items, i, allowed, ctx) for i in items]
+        return _distinct(converted)
     shown = cap_text(sanitize_line(kind), 64)[0]
     raise _refuse(f"fields of type {shown} are not supported by --set")
 
@@ -350,7 +363,7 @@ def _convert(r: Resolved, ctx: ValueContext) -> FieldValue:
         return _clear(r)
     if r.field.schema is None:
         raise _refuse("the field's type is unknown, so its value cannot be converted")
-    if _rich(r.field):
+    if is_rich(r.field):
         if source.kind == "inline":
             raise _refuse("a rich-text value needs @path or - (an inline value is refused)")
         body = _read(r, ctx, body=True)

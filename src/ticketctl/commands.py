@@ -26,6 +26,7 @@ from . import (
     sprintscmd,
     transitioncmd,
     transitionscmd,
+    updatecmd,
     writeflow,
 )
 from .flags import (
@@ -197,7 +198,7 @@ def _update(p: argparse.ArgumentParser) -> None:
     _key(p)
     _add(p, "--title")
     _add(p, "--title-file")
-    _add(p, "--assign")
+    _add(p, "--assign", type=updatecmd.assign_arg, metavar="me|none|ACCOUNT")
     _add(p, "--add-label", action="append")
     _add(p, "--remove-label", action="append")
     _add(p, "--set", action="append")
@@ -323,7 +324,14 @@ def _specs() -> list[CommandSpec]:
             ("comment",), w, "post a comment", commentcmd.comment, _comment, writeflow.human
         ),
         CommandSpec(("create",), w, "create a ticket", _stub(31), _create),
-        CommandSpec(("update",), w, "update a ticket", _stub(30), _update),
+        CommandSpec(
+            ("update",),
+            w,
+            "update a ticket",
+            updatecmd.update,
+            _update,
+            writeflow.human,
+        ),
         CommandSpec(
             ("sprint", "add"),
             w,
