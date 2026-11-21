@@ -10,7 +10,8 @@ Rules this module settles where the interface leaves room (all conservative):
 
 * ``own`` is true only when the author's account id equals the resolved ``me`` account id, an
   exact, case-sensitive match. An author with no usable id is never own.
-* The ``ticketctl.meta`` property is read for an own comment only. A forged property on another
+* The ``ticketctl.meta`` property is read for an own comment only, and its key is compared
+  exactly (a case-different key is another property). A forged property on another
   account's comment is ignored: ``authored_by_ticketctl`` false, ``actor_kind`` and both hashes
   null. On an own comment the property being present at all makes ``authored_by_ticketctl`` true
   (a consumer that distrusts ticketctl's own comments then keeps distrusting a damaged property);

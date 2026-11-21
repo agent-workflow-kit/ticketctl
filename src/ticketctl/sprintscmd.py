@@ -7,10 +7,13 @@ into a board id; ``sprint add|remove`` (#34) reuses it. Its order, per the inter
    looked up; any other text is a board name, matched case-insensitively and exactly (``str.lower``
    on both sides, so ``Ab`` and ``aB`` are the same name) against the boards of the site (``GET
    /rest/agile/1.0/board``, pages of 50, at most 5 pages). Several matches exit 21
-   ``ambiguous_board``, none exit 10 ``not_found`` with ``details.option: board``.
+   ``ambiguous_board``, none exit 10 ``not_found`` with ``details.option: board``. One match in a
+   search that the page cap cut off is exit 12 ``lookup_incomplete`` (a second board of that name
+   may lie beyond): the message asks for the board id.
 2. Else the scrum boards of ``--project``, else of the site's only project (``GET
    /rest/agile/1.0/board?projectKeyOrId=KEY&type=scrum``, also filtered on ``type == "scrum"``
-   here): one is used, several exit 21 ``ambiguous_board``, none exit 10 ``not_found``.
+   here): one is used, several exit 21 ``ambiguous_board``, none exit 10 ``not_found``; one in a
+   cut-off listing is exit 12 ``lookup_incomplete`` like a name.
 3. Else, with no project to derive from, exit 2 ``missing_option``.
 
 ``sprints list`` reads ``GET /rest/agile/1.0/board/{id}/sprint?state=...&startAt=...&maxResults=50``
@@ -30,7 +33,8 @@ Unverified against a real site: the agile shapes (``values``, ``isLast``, ``orig
 ``startDate``, ``endDate``, board ``type`` and ``name``), that ``state`` accepts a single state name
 and ``projectKeyOrId`` and ``type`` filter the board list, that ``GET /board`` returns the boards
 the user may see in pages of 50, and that a 404 on ``/board/{id}/sprint`` means the board is
-missing or hidden.
+missing or hidden, and that a 400 on it means a board without sprints (exit 22 ``invalid_value``
+with ``details.option: board``).
 """
 
 from __future__ import annotations
@@ -45,7 +49,7 @@ from .config import Site
 from .errors import TicketctlError, usage_error
 from .flags import Globals
 from .gateway import Gateway
-from .readutil import object_error, warn_incomplete
+from .readutil import hide_field_ids, object_error, warn_incomplete
 from .runtime import for_site, load_runtime, open_gateway
 from .sanitize import CAPS, GRAMMARS, query, sanitize_field, segment
 from .timestamps import normalize_ts
@@ -76,8 +80,8 @@ def effective_limit(value: int | None) -> int:
 # --- sprint objects ----------------------------------------------------------------------------
 
 
-def _int(value: object) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 10**18:
+def _int(value: object, *, low: int = 0) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and low <= value < 10**18:
         return value
     return None
 
@@ -96,12 +100,15 @@ def sprint_object(raw: object, marks: set[str]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         marks.add("sprints")
         return None
-    sid, board = _int(raw.get("id")), _int(raw.get("originBoardId"))
+    sid, board = _int(raw.get("id")), _int(raw.get("originBoardId"), low=1)
     name, state = raw.get("name"), raw.get("state")
     if sid is None or board is None or not isinstance(name, str) or state not in STATES:
         marks.add("sprints.unreadable")
         return None
-    shown, cut = sanitize_field(name, cap=CAPS["name"])
+    shown, cut = sanitize_field(hide_field_ids(name), cap=CAPS["name"])
+    if not shown.strip():
+        marks.add("sprints.unreadable")  # blank to a reader (zero-width text shows a marker)
+        return None
     if cut:
         marks.add("sprints.truncated")
     return {
@@ -133,6 +140,13 @@ def _page(
         if not named:  # a 404 of the collection endpoint is a provider change
             raise TicketctlError(
                 "provider_changed", f"unexpected answer from the provider ({response.status})"
+            )
+        if response.status == 400:  # a board without sprints (a kanban board) answers 400
+            raise TicketctlError(
+                "invalid_request",
+                "the board does not support sprints; name a scrum board with --board <id>",
+                reason="invalid_value",
+                details={"option": "board"},
             )
         raise object_error(response.status, "board", option="board")
     if not isinstance(response.data, dict):
@@ -172,7 +186,7 @@ def list_boards(gw: Gateway, extra: dict[str, object] | None = None) -> tuple[li
 def _candidates(boards: list[Board]) -> list[str]:
     out = []
     for b in sorted(boards, key=lambda b: b.id):
-        label, _ = sanitize_field(b.name, cap=CAPS["name"])
+        label, _ = sanitize_field(hide_field_ids(b.name), cap=CAPS["name"])
         out.append(f"{b.id} ({label})")
     return out
 
@@ -182,6 +196,15 @@ def _ambiguous(boards: list[Board], what: str) -> TicketctlError:
         "ambiguous_board",
         f"{what} matches several boards; name one with --board <id>",
         details={"candidates": _candidates(boards)},
+    )
+
+
+def _incomplete(what: str) -> TicketctlError:
+    """One board matched, but the search was cut off, so a second match may lie beyond it."""
+    return TicketctlError(
+        "lookup_incomplete",
+        f"{what} matched one board, but the board search was cut off before the end; "
+        "name the board with --board <id>",
     )
 
 
@@ -228,6 +251,8 @@ def resolve_board(
         if not found:
             more = "" if complete else " (only the first boards were searched)"
             raise _no_board(f"no board has that name{more}")
+        if not complete:
+            raise _incomplete("the board name")
         return found[0].id
     derived = (
         project if project is not None else (site.projects[0] if len(site.projects) == 1 else None)
@@ -236,12 +261,15 @@ def resolve_board(
         raise usage_error(
             "missing_option", "no board: give --board or --project (or set the site's board)"
         )
-    boards, _ = list_boards(gw, {"projectKeyOrId": derived, "type": "scrum"})
+    boards, complete = list_boards(gw, {"projectKeyOrId": derived, "type": "scrum"})
     scrum = [b for b in boards if b.type == "scrum"]
     if len(scrum) > 1:
         raise _ambiguous(scrum, "the project")
     if not scrum:
-        raise _no_board("the project has no scrum board")
+        more = "" if complete else " (only the first boards were searched)"
+        raise _no_board(f"the project has no scrum board{more}")
+    if not complete:
+        raise _incomplete("the project")
     return scrum[0].id
 
 

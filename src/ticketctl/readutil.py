@@ -3,7 +3,8 @@
 * :func:`object_error` is the envelope of a non-2xx answer of an endpoint that names an object (a
   404 is exit 10 ``not_found``, any other status the gateway did not already raise is exit 12
   ``provider_changed``).
-* :func:`hide_field_ids` keeps a provider custom field id out of text that is printed as a name.
+* :func:`hide_field_ids` keeps a provider custom field id out of text that is printed as a name; it
+  writes the same ``<id>`` marker as the field commands (docs/interface.md, Field mapping).
 * :func:`warn_incomplete` prints the one stderr line that stands for the ``incomplete`` list of a
   command whose schema has no place for it (``comments``, ``transitions``, ``sprints``).
 """
@@ -14,6 +15,7 @@ import re
 from collections.abc import Iterable
 
 from .errors import TicketctlError
+from .fieldmap import ID_MARKER
 from .runtime import Runtime
 
 _FIELD_ID = re.compile(r"customfield_[0-9]+", re.IGNORECASE | re.ASCII)
@@ -32,7 +34,7 @@ def object_error(status: int, what: str, **details: str) -> TicketctlError:
 
 def hide_field_ids(text: str) -> str:
     """``text`` with every ``customfield_N`` id replaced (no field id is printed outside fields)."""
-    return _FIELD_ID.sub("field", text)
+    return _FIELD_ID.sub(ID_MARKER, text)
 
 
 def warn_incomplete(rt: Runtime, what: str, parts: Iterable[str]) -> None:

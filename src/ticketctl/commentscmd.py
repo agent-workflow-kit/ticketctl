@@ -13,15 +13,18 @@ through ``comment_object.comment_object`` (the same object ``get --comments`` pr
 
 Bounds: at most 1000 raw comments are looked at (the dedupe cap), at most 20 page requests, and the
 loop stops at the first empty page, so a provider that repeats a page, sends short pages or
-ignores ``startAt`` cannot make it run on. The scan also stops as soon as ``limit + 1`` matches
-are in hand (one more than printed, which is how ``truncated`` is known).
+ignores ``startAt`` cannot make it run on. The scan never stops early on the strength of the
+provider's order: the whole bounded window is read and sorted here, so a provider that ignores
+``orderBy`` still yields the true oldest (or newest) ``limit`` comments of the window.
 
 ``total`` is the provider's comment count before the filters (never less than the comments seen).
 ``truncated`` is true when the limit or a bound stopped the scan with more comments unread or
-matching, and when the provider gave no usable count. The schema has no ``incomplete`` list, so
-parts that could not be read (a dropped comment, a repeated id, a missing count) are one stderr
-warning. ``key`` is the requested key in canonical form; a moved ticket's new key is not printed
-here (the comment endpoint resolves the old key).
+matching, when a page ended the scan (empty, or not a comment list) while the count says more
+remain, when the provider gave no usable count, and when a comment was dropped or a repeated id
+was skipped (the schema has no ``incomplete`` list, so this is how stdout shows that the listing
+is not the whole thread). Those parts, and a count that is missing, are also one stderr warning
+(which ``--quiet`` drops). ``key`` is the requested key in canonical form; a moved ticket's new
+key is not printed here (the comment endpoint resolves the old key).
 
 ``--since`` takes the one time grammar: an RFC 3339 timestamp with ``Z`` or an offset, a date
 (00:00 UTC) or a duration ``<n>m|h|d|w`` counted back from now. It is judged before any request.
@@ -137,6 +140,7 @@ def scan_comments(
     start = scanned = requests = 0
     total: int | None = None
     more = False  # comments are known or suspected to remain unread
+    dropped = False  # a comment was dropped or a repeated id skipped
     while True:
         if requests >= MAX_REQUESTS:
             more = True
@@ -178,17 +182,18 @@ def scan_comments(
             obj = comment_object(item, me_account_id, own_marks)
             if obj is None:
                 marks |= own_marks
+                dropped = True
             elif obj["id"] in seen:
                 marks.add("comments")  # a repeated id is kept once
+                dropped = True
             else:
                 seen.add(obj["id"])
                 if (since is None or obj["created"] >= since) and (not own_only or obj["own"]):
                     matches.append((obj, own_marks))
         scanned += len(chunk)
         start += len(raw)
-        if len(matches) > limit:
-            break
         if not raw:
+            more = total is None or start < total
             break
         if scanned >= MAX_SCAN:
             more = total is None or start < total or len(raw) > len(chunk)
@@ -201,7 +206,7 @@ def scan_comments(
     shown = matches[:limit]
     for _, own_marks in shown:
         marks |= own_marks
-    truncated = len(matches) > limit or more
+    truncated = len(matches) > limit or more or dropped
     if total is None:
         marks.add("comments")  # no usable count: the page is unknown to be complete
         total = scanned

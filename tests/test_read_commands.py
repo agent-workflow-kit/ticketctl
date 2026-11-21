@@ -154,6 +154,44 @@ def ids(doc: dict[str, Any]) -> list[str]:
     return [c["id"] for c in doc["items"]]
 
 
+def rows(count: int, first: int = 1) -> list[dict[str, Any]]:
+    """``count`` raw comments, ids ``first``..., one minute apart, oldest first."""
+    return [
+        raw_comment(
+            str(first + n),
+            (BASE + timedelta(minutes=first + n)).strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
+        )
+        for n in range(count)
+    ]
+
+
+def serve(
+    fake: FakeProvider,
+    served: list[dict[str, Any]],
+    *,
+    total: int | None = None,
+    page_cap: int | None = None,
+    whole: bool = False,
+) -> list[tuple[int, int]]:
+    """Answer the comment endpoint from ``served`` in that order, whatever ``orderBy`` says.
+
+    ``page_cap`` caps a page below ``maxResults``; ``whole`` ignores ``maxResults`` (the page is
+    the rest of the list). The returned list collects the ``(startAt, size)`` of every page.
+    """
+    seen: list[tuple[int, int]] = []
+
+    def page(call: Any, key: str) -> Out:
+        start = int(call.one("startAt", "0"))
+        size = int(call.one("maxResults", "100"))
+        chunk = served[start:] if whole else served[start : start + min(size, page_cap or size)]
+        seen.append((start, len(chunk)))
+        count = len(served) if total is None else total
+        return Out(200, {"startAt": start, "maxResults": size, "total": count, "comments": chunk})
+
+    override(fake, "GET", "/comment", page)
+    return seen
+
+
 def golden(command: str, case: str, doc: Any) -> None:
     assert_golden("cli", command, case, doc)
 
@@ -254,6 +292,7 @@ def test_an_own_comment_with_no_property_list_fails_closed(env: Env, talk: FakeP
     (c,) = doc["items"]
     assert c["own"] and c["authored_by_ticketctl"] is True and c["actor_kind"] is None
     assert "warning" in err and "comments" in err
+    assert doc["truncated"] is False  # the comment is listed, so nothing was dropped
 
 
 def test_since_filters_on_created_inclusively(env: Env, talk: FakeProvider) -> None:
@@ -273,6 +312,50 @@ def test_since_with_a_duration_counts_back_from_now(env: Env, talk: FakeProvider
     assert commentscmd.since_cutoff("2d", now) == "2026-02-27T16:00:00Z"
     assert commentscmd.since_cutoff("1w", now) == "2026-02-22T16:00:00Z"
     assert commentscmd.since_cutoff("3h", now) == "2026-03-01T13:00:00Z"
+
+
+def test_a_duration_since_cuts_at_the_clock_of_the_command(
+    env: Env, talk: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return datetime(2026, 3, 1, 15, 45, tzinfo=UTC)
+
+    monkeypatch.setattr(commentscmd, "datetime", Clock)
+    # the comments are at 15:00, 15:10, 15:20, 15:30 and 15:40
+    _, doc, _ = env.json("comments", "DEMO-1", "--since", "20m")  # cut-off 15:25
+    assert ids(doc) == ["104", "105"]
+    _, edge, _ = env.json("comments", "DEMO-1", "--since", "25m")  # cut-off 15:20, inclusive
+    assert ids(edge) == ["103", "104", "105"]
+    _, hours, _ = env.json("comments", "DEMO-1", "--since", "1h")
+    assert len(hours["items"]) == 5
+
+
+def test_since_with_newest_first_filters_from_the_newest_end(env: Env, talk: FakeProvider) -> None:
+    _, doc, _ = env.json(
+        "comments", "DEMO-1", "--since", "2026-03-01T15:20:00Z", "--newest-first", "--limit", "2"
+    )
+    assert ids(doc) == ["105", "104"] and doc["truncated"] is True and doc["total"] == 5
+    _, all_of_them, _ = env.json(
+        "comments", "DEMO-1", "--since", "2026-03-01T15:20:00Z", "--newest-first"
+    )
+    assert ids(all_of_them) == ["105", "104", "103"] and all_of_them["truncated"] is False
+
+
+def test_since_on_a_thread_above_the_window_filters_inside_the_first_1000(
+    env: Env, site: FakeProvider
+) -> None:
+    for n in range(1100):
+        add(site, "DEMO-1", str(2000 + n), "x", n)
+    cut = (BASE + timedelta(minutes=1050)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _, oldest, _ = env.json("comments", "DEMO-1", "--since", cut)
+    assert oldest["items"] == [] and oldest["truncated"] is True  # only the oldest 1000 were read
+    _, newest, _ = env.json(
+        "comments", "DEMO-1", "--since", cut, "--newest-first", "--limit", "200"
+    )
+    assert len(newest["items"]) == 50  # the newest end holds every match
+    assert newest["truncated"] is True  # the window still stopped short of the 100 oldest
 
 
 @pytest.mark.parametrize(
@@ -362,8 +445,123 @@ def test_a_provider_that_ignores_startat_cannot_loop(env: Env, talk: FakeProvide
     override(talk, "GET", "/comment", page)
     code, doc, err = env.json("comments", "DEMO-1")
     assert code == 0 and ids(doc) == ["5"] and doc["truncated"] is True
-    assert len(comment_paths(talk)) == commentscmd.MAX_REQUESTS
+    assert len(comment_paths(talk)) == 20
     assert "comments" in err  # the repeated ids
+
+
+def test_an_empty_first_page_with_a_larger_total_is_truncated(env: Env, talk: FakeProvider) -> None:
+    serve(talk, [], total=7)
+    code, doc, _ = env.json("comments", "DEMO-1")
+    assert code == 0 and doc["items"] == [] and doc["total"] == 7 and doc["truncated"] is True
+
+
+def test_an_empty_page_after_some_comments_is_truncated(env: Env, talk: FakeProvider) -> None:
+    serve(talk, rows(100), total=250)  # the second page is empty
+    _, doc, _ = env.json("comments", "DEMO-1", "--limit", "200")
+    assert len(doc["items"]) == 100 and doc["total"] == 250 and doc["truncated"] is True
+
+
+def test_an_empty_page_when_the_limit_is_met_is_truncated(env: Env, talk: FakeProvider) -> None:
+    serve(talk, rows(200), total=500)
+    _, doc, _ = env.json("comments", "DEMO-1", "--limit", "200")
+    assert len(doc["items"]) == 200 and doc["total"] == 500 and doc["truncated"] is True
+
+
+def test_a_complete_scan_ending_on_the_count_is_not_truncated(env: Env, talk: FakeProvider) -> None:
+    serve(talk, rows(120))
+    _, doc, _ = env.json("comments", "DEMO-1", "--limit", "200")
+    assert len(doc["items"]) == 120 and doc["truncated"] is False
+
+
+def test_a_dropped_comment_makes_the_listing_truncated(env: Env, talk: FakeProvider) -> None:
+    good = raw_comment("1", "2026-03-01T09:00:00.000-0600")
+    reply(talk, "GET", "/comment", {"total": 2, "comments": [good, {**good, "id": "has space"}]})
+    code, doc, err = env.json("comments", "DEMO-1")
+    assert code == 0 and ids(doc) == ["1"] and doc["total"] == 2 and doc["truncated"] is True
+    assert "warning" in err
+    quiet = env.run("--quiet", "comments", "DEMO-1")
+    assert quiet[0] == 0 and quiet[2] == ""  # --quiet drops the warning, the flag stays
+
+
+def test_an_unreadable_time_drops_the_comment_and_truncates(env: Env, talk: FakeProvider) -> None:
+    good = raw_comment("1", "2026-03-01T09:00:00.000-0600")
+    reply(
+        talk,
+        "GET",
+        "/comment",
+        {"total": 2, "comments": [good, {**good, "id": "2", "created": "x"}]},
+    )
+    _, doc, _ = env.json("comments", "DEMO-1")
+    assert ids(doc) == ["1"] and doc["truncated"] is True
+
+
+def test_a_repeated_comment_id_makes_the_listing_truncated(env: Env, talk: FakeProvider) -> None:
+    good = raw_comment("1", "2026-03-01T09:00:00.000-0600")
+    reply(talk, "GET", "/comment", {"total": 2, "comments": [good, good]})
+    _, doc, _ = env.json("comments", "DEMO-1")
+    assert ids(doc) == ["1"] and doc["truncated"] is True
+
+
+def test_a_provider_ignoring_order_by_still_returns_the_true_oldest(
+    env: Env, site: FakeProvider
+) -> None:
+    serve(site, list(reversed(rows(250))))  # newest first although the request says oldest first
+    _, doc, _ = env.json("comments", "DEMO-1", "--limit", "5")
+    assert ids(doc) == ["1", "2", "3", "4", "5"] and doc["truncated"] is True
+    assert len(comment_paths(site)) == 3  # the whole window is read before the cut
+    _, newest, _ = env.json("comments", "DEMO-1", "--limit", "2", "--newest-first")
+    assert ids(newest) == ["250", "249"]
+
+
+def test_one_page_larger_than_the_allowance_is_cut_at_1000(env: Env, site: FakeProvider) -> None:
+    seen = serve(site, rows(1500), whole=True)
+    _, doc, _ = env.json("comments", "DEMO-1", "--newest-first", "--limit", "1")
+    assert ids(doc) == ["1000"] and doc["total"] == 1500 and doc["truncated"] is True
+    assert seen == [(0, 1500)]
+
+
+def test_short_pages_advance_start_by_the_items_received(env: Env, site: FakeProvider) -> None:
+    seen = serve(site, rows(100), page_cap=30)
+    _, doc, _ = env.json("comments", "DEMO-1", "--limit", "200")
+    assert [start for start, _ in seen] == [0, 30, 60, 90]
+    assert len(doc["items"]) == 100 and doc["truncated"] is False
+
+
+def test_the_default_limit_is_50(env: Env, site: FakeProvider) -> None:
+    serve(site, rows(60))
+    _, doc, _ = env.json("comments", "DEMO-1")
+    assert len(doc["items"]) == 50 and doc["truncated"] is True
+    assert commentscmd.DEFAULT_LIMIT == 50 and commentscmd.effective_limit(None) == 50
+
+
+VALID_META = {"v": 1, "actor_kind": "human", "body_sha256": HASH_A}
+
+
+@pytest.mark.parametrize(
+    "value", ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": "1"}, {}], ids=repr
+)
+def test_a_damaged_property_on_an_own_comment_is_still_authored_by_the_tool(
+    env: Env, site: FakeProvider, value: Any
+) -> None:
+    add(site, "DEMO-1", "301", "own", 0, props={META: value})
+    add(site, "DEMO-1", "302", "other", 1, author=OTHER_ACCOUNT, props={META: value})
+    code, doc, err = env.json("comments", "DEMO-1")
+    by_id = {c["id"]: c for c in doc["items"]}
+    assert code == 0 and err == ""
+    mine, other = by_id["301"], by_id["302"]
+    assert mine["authored_by_ticketctl"] is True
+    assert (mine["actor_kind"], mine["body_sha256"], mine["dedupe_key_sha256"]) == (None,) * 3
+    assert other["authored_by_ticketctl"] is False and other["actor_kind"] is None
+
+
+def test_a_property_key_that_differs_in_case_is_not_the_property(
+    env: Env, site: FakeProvider
+) -> None:
+    add(site, "DEMO-1", "301", "own", 0, props={"Ticketctl.Meta": VALID_META})
+    _, doc, _ = env.json("comments", "DEMO-1")
+    (mine,) = doc["items"]
+    assert mine["own"] is True and mine["authored_by_ticketctl"] is False
+    assert (mine["actor_kind"], mine["body_sha256"]) == (None, None)
 
 
 def test_a_missing_total_is_unknown_and_truncated(env: Env, talk: FakeProvider) -> None:
@@ -530,10 +728,85 @@ def test_hostile_transitions(env: Env, site: FakeProvider) -> None:
     assert by_id["6"]["has_screen"] is True and not re.search(r"[\u202e\x07]", by_id["6"]["name"])
     assert by_id["7"]["required_fields"] == []
     fields = by_id["8"]["required_fields"]
-    assert [f["name"] for f in fields] == ["field", "unknown field", "Has field inside"]
+    assert [f["name"] for f in fields] == ["<id>", "unknown field", "Has <id> inside"]
     assert fields[0]["allowed_values"] == ["a", "b", "c"] and len(fields[0]["kind"]) <= 64
     assert fields[1]["kind"] == "unknown" and "allowed_values" not in fields[1]
     assert not CUSTOM_ID.search(json.dumps(doc))
+
+
+def _transition(tid: str, **kw: Any) -> dict[str, Any]:
+    to = {"name": "Done", "statusCategory": {"key": "done"}}
+    return {"id": tid, "name": f"t{tid}", "to": to, "hasScreen": False, "fields": {}, **kw}
+
+
+def test_repeated_transition_ids_are_kept_once_in_the_list(env: Env, site: FakeProvider) -> None:
+    listed = [_transition("1"), _transition("1", name="again"), _transition("2")]
+    reply(site, "GET", "/transitions", {"transitions": listed})
+    code, doc, err = env.json("transitions", "DEMO-1")
+    assert code == 0 and "warning" in err
+    assert [(t["id"], t["name"]) for t in doc["transitions"]] == [("1", "t1"), ("2", "t2")]
+
+
+def test_optional_fields_do_not_count_against_the_required_field_cap(
+    env: Env, site: FakeProvider
+) -> None:
+    fields: dict[str, Any] = {
+        f"cf_{n}": {"required": False, "name": f"Opt {n}"} for n in range(250)
+    }
+    fields["cf_must"] = {"required": True, "name": "Must", "schema": {"type": "string"}}
+    reply(site, "GET", "/transitions", {"transitions": [_transition("1", fields=fields)]})
+    code, doc, err = env.json("transitions", "DEMO-1")
+    assert code == 0 and err == ""
+    (t,) = doc["transitions"]
+    assert [f["name"] for f in t["required_fields"]] == ["Must"]
+
+
+def test_more_than_200_required_fields_are_cut_with_a_warning(env: Env, site: FakeProvider) -> None:
+    fields = {f"cf_{n}": {"required": True, "name": f"Req {n}"} for n in range(230)}
+    reply(site, "GET", "/transitions", {"transitions": [_transition("1", fields=fields)]})
+    code, doc, err = env.json("transitions", "DEMO-1")
+    assert code == 0 and "warning" in err and "required_fields" in err
+    assert len(doc["transitions"][0]["required_fields"]) == 200
+
+
+@pytest.mark.parametrize("flag", ["true", 1, None, [], {}])
+def test_a_required_flag_that_is_not_a_boolean_is_warned_about(
+    env: Env, site: FakeProvider, flag: Any
+) -> None:
+    fields = {"cf_a": {"required": flag, "name": "Odd"}}
+    reply(site, "GET", "/transitions", {"transitions": [_transition("1", fields=fields)]})
+    code, doc, err = env.json("transitions", "DEMO-1")
+    assert code == 0 and doc["transitions"][0]["required_fields"] == []
+    assert "warning" in err and "required_fields" in err
+
+
+def test_a_field_without_a_required_flag_is_silently_optional(env: Env, site: FakeProvider) -> None:
+    fields = {"cf_a": {"name": "Plain"}, "cf_b": {"required": False, "name": "No"}}
+    reply(site, "GET", "/transitions", {"transitions": [_transition("1", fields=fields)]})
+    code, _, err = env.json("transitions", "DEMO-1")
+    assert code == 0 and err == ""
+
+
+def test_an_uppercase_field_id_in_a_name_is_hidden(env: Env, site: FakeProvider) -> None:
+    fields = {"cf_a": {"required": True, "name": "CUSTOMFIELD_90001 and CustomField_2"}}
+    reply(site, "GET", "/transitions", {"transitions": [_transition("1", fields=fields)]})
+    _, doc, _ = env.json("transitions", "DEMO-1")
+    assert doc["transitions"][0]["required_fields"][0]["name"] == "<id> and <id>"
+    assert not CUSTOM_ID.search(json.dumps(doc))
+
+
+def test_a_transition_name_that_is_blank_is_dropped(env: Env, site: FakeProvider) -> None:
+    listed = [
+        _transition("1", name=""),
+        _transition("2", name="   "),
+        _transition("3", name="\u200b"),
+        _transition("4", name="Real"),
+    ]
+    reply(site, "GET", "/transitions", {"transitions": listed})
+    code, doc, err = env.json("transitions", "DEMO-1")
+    assert code == 0 and "warning" in err
+    # a zero-width name is shown as a visible marker, so it is not blank to a reader
+    assert [(t["id"], t["name"]) for t in doc["transitions"]] == [("3", "<U+200B>"), ("4", "Real")]
 
 
 @pytest.mark.parametrize("bad", [None, [], "x", {"transitions": "no"}, {}])
@@ -671,7 +944,9 @@ def test_a_bad_board_value(env: Env, site: FakeProvider, board: str) -> None:
     assert (code, doc["error"]["reason"]) == (22, "invalid_value")
 
 
-def test_board_names_are_matched_over_pages_and_stop_at_5(env: Env, site: FakeProvider) -> None:
+def _board_pages(site: FakeProvider) -> None:
+    """A provider with endless pages of 50 boards named B1, B2, ... (never ``isLast``)."""
+
     def page(call: Any) -> Out:
         start = int(call.one("startAt", "0"))
         values = [
@@ -680,15 +955,71 @@ def test_board_names_are_matched_over_pages_and_stop_at_5(env: Env, site: FakePr
         return Out(200, {"isLast": False, "values": values})
 
     override(site, "GET", "/board", page)
-    code, doc, _ = env.json("sprints", "list", "--board", "b120")
-    # B120 sits on the third page; the fake knows only board 1, so its sprint call is the 404
-    assert code == 10 and any(c.path == "/rest/agile/1.0/board/120/sprint" for c in site.calls)
-    assert (
-        len([c for c in site.calls if c.path == "/rest/agile/1.0/board"]) == 5
-    )  # all pages: a name match must see every board
-    site.calls.clear()
+
+
+def board_calls(site: FakeProvider) -> list[Any]:
+    return [c for c in site.calls if c.path == "/rest/agile/1.0/board"]
+
+
+def test_a_name_with_no_match_after_5_pages_is_not_found(env: Env, site: FakeProvider) -> None:
+    _board_pages(site)
     code, doc, _ = env.json("sprints", "list", "--board", "nothing")
-    assert code == 10 and len([c for c in site.calls if c.path == "/rest/agile/1.0/board"]) == 5
+    assert code == 10 and doc["error"]["details"]["option"] == "board"
+    assert len(board_calls(site)) == 5  # a name match must see every board it can
+    assert "first boards were searched" in doc["error"]["message"]
+
+
+def test_a_single_name_match_in_a_cut_off_search_is_refused(env: Env, site: FakeProvider) -> None:
+    _board_pages(site)
+    code, doc, _ = env.json("sprints", "list", "--board", "b120")
+    assert code == 12 and doc["error"]["code"] == "lookup_incomplete"
+    assert doc["error"]["retryable"] is False and "--board" in doc["error"]["message"]
+    assert len(board_calls(site)) == 5
+    assert not [c for c in site.calls if c.path.endswith("/sprint")]  # no sprint call was made
+
+
+def test_a_name_matching_twice_in_a_cut_off_search_is_still_ambiguous(
+    env: Env, site: FakeProvider
+) -> None:
+    def page(call: Any) -> Out:
+        start = int(call.one("startAt", "0"))
+        values = [{"id": start + i + 1, "name": "Same", "type": "scrum"} for i in range(50)]
+        return Out(200, {"isLast": False, "values": values})
+
+    override(site, "GET", "/board", page)
+    code, doc, _ = env.json("sprints", "list", "--board", "same")
+    assert code == 21 and doc["error"]["code"] == "ambiguous_board"
+
+
+def test_a_single_project_board_in_a_cut_off_listing_is_refused(
+    env: Env, site: FakeProvider
+) -> None:
+    def page(call: Any) -> Out:
+        start = int(call.one("startAt", "0"))
+        values = [
+            {"id": start + i + 1, "name": f"B{start + i + 1}", "type": "kanban"} for i in range(50)
+        ]
+        if start == 0:
+            values[0]["type"] = "scrum"  # the only scrum board of the first 250
+        return Out(200, {"isLast": False, "values": values})
+
+    override(site, "GET", "/board", page)
+    code, doc, _ = env.json("sprints", "list")
+    assert code == 12 and doc["error"]["code"] == "lookup_incomplete"
+    assert "--board" in doc["error"]["message"]
+
+
+def test_a_cut_off_project_listing_with_no_scrum_board_is_not_found(
+    env: Env, site: FakeProvider
+) -> None:
+    def page(call: Any) -> Out:
+        start = int(call.one("startAt", "0"))
+        values = [{"id": start + i + 1, "name": "K", "type": "kanban"} for i in range(50)]
+        return Out(200, {"isLast": False, "values": values})
+
+    override(site, "GET", "/board", page)
+    code, doc, _ = env.json("sprints", "list")
+    assert code == 10 and doc["error"]["details"]["option"] == "board"
 
 
 def test_sprint_paging_ends_on_a_provider_that_never_stops(env: Env, site: FakeProvider) -> None:
@@ -777,6 +1108,81 @@ def test_a_404_on_the_board_listing_is_a_provider_change(env: Env, site: FakePro
     reply(site, "GET", "/board", {"errorMessages": ["gone"]}, status=404)
     code, doc, _ = env.json("sprints", "list")
     assert code == 12 and doc["error"]["code"] == "provider_changed"
+
+
+def test_a_400_on_the_board_sprint_path_means_the_board_has_no_sprints(
+    env: Env, site: FakeProvider
+) -> None:
+    reply(site, "GET", "/sprint", {"errorMessages": ["no sprints"]}, status=400)
+    code, doc, _ = env.json("sprints", "list", "--board", "1")
+    assert (code, doc["error"]["code"], doc["error"]["reason"]) == (
+        22,
+        "invalid_request",
+        "invalid_value",
+    )
+    assert doc["error"]["details"]["option"] == "board"
+    assert "sprint" in doc["error"]["message"] and "no sprints" not in doc["error"]["message"]
+
+
+def test_a_400_on_the_board_list_stays_a_provider_change(env: Env, site: FakeProvider) -> None:
+    reply(site, "GET", "/board", {"errorMessages": ["bad"]}, status=400)
+    code, doc, _ = env.json("sprints", "list")
+    assert code == 12 and doc["error"]["code"] == "provider_changed"
+
+
+def test_a_blank_sprint_name_is_dropped_and_a_zero_width_one_is_visible(
+    env: Env, site: FakeProvider
+) -> None:
+    def sprint(sid: int, name: str, **kw: Any) -> dict[str, Any]:
+        return {"id": sid, "name": name, "state": "active", "originBoardId": 1, **kw}
+
+    rows = [sprint(1, ""), sprint(2, "   "), sprint(3, "\u200b"), sprint(4, "Real")]
+    reply(site, "GET", "/sprint", {"isLast": True, "values": rows})
+    code, doc, err = env.json("sprints", "list", "--board", "1")
+    assert code == 0 and "warning" in err
+    assert [(s["id"], s["name"]) for s in doc["sprints"]] == [(3, "<U+200B>"), (4, "Real")]
+
+
+@pytest.mark.parametrize("origin", [0, -1])
+def test_a_sprint_with_an_origin_board_below_one_is_dropped(
+    env: Env, site: FakeProvider, origin: int
+) -> None:
+    rows = [
+        {"id": 1, "name": "Zero", "state": "active", "originBoardId": origin},
+        {"id": 2, "name": "Fine", "state": "active", "originBoardId": 1},
+    ]
+    reply(site, "GET", "/sprint", {"isLast": True, "values": rows})
+    code, doc, err = env.json("sprints", "list", "--board", "1")
+    assert code == 0 and [s["id"] for s in doc["sprints"]] == [2] and "warning" in err
+    reply(site, "GET", "/sprint/(\\d+)", rows[0])
+    assert env.json("sprints", "show", "1")[0] == 12
+
+
+def test_field_ids_in_sprint_and_board_names_are_hidden(env: Env, site: FakeProvider) -> None:
+    rows = [{"id": 1, "name": "Sprint CUSTOMFIELD_90001 x", "state": "active", "originBoardId": 1}]
+    reply(site, "GET", "/sprint", {"isLast": True, "values": rows})
+    _, doc, _ = env.json("sprints", "list", "--board", "1")
+    assert doc["sprints"][0]["name"] == "Sprint <id> x"
+    assert not CUSTOM_ID.search(json.dumps(doc))
+    two_boards(site, names=("Twin customfield_90002", "twin customfield_90002"))
+    code, doc, _ = env.json("sprints", "list", "--board", "TWIN CUSTOMFIELD_90002")
+    assert code == 21
+    assert doc["error"]["details"]["candidates"] == ["1 (Twin <id>)", "2 (twin <id>)"]
+
+
+def test_the_default_sprint_limit_is_50(env: Env, site: FakeProvider) -> None:
+    def page(call: Any, board: str) -> Out:
+        start = int(call.one("startAt", "0"))
+        size = int(call.one("maxResults", "50"))
+        values = [
+            {"id": n + 1, "name": f"S{n + 1}", "state": "closed", "originBoardId": 1}
+            for n in range(start, min(start + size, 80))
+        ]
+        return Out(200, {"isLast": start + size >= 80, "values": values})
+
+    override(site, "GET", "/sprint", page)
+    _, doc, _ = env.json("sprints", "list", "--board", "1")
+    assert len(doc["sprints"]) == 50
 
 
 def test_sprints_show(env: Env, site: FakeProvider) -> None:

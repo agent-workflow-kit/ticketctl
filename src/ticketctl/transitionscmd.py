@@ -13,7 +13,9 @@ that is dropped is one stderr warning, because the schema has no ``incomplete`` 
   caller could not act on it. A repeated id is kept once (the first); at most 500 are read.
 * ``required_fields`` lists only fields whose ``required`` is exactly ``true``, in the provider's
   field order, with the field's display name (a name that is a provider custom field id, or
-  contains one, has the id replaced: no ``customfield_N`` is printed). ``kind`` is the schema
+  contains one, has the id replaced by ``<id>``: no ``customfield_N`` is printed). A field whose
+  ``required`` is present but not a boolean is left out and named in the warning. At most 200
+  required fields are kept (optional fields do not count against that cap). ``kind`` is the schema
   ``type`` of the field (at most 64 characters, ``unknown`` when missing). ``allowed_values``
   is present only when the provider listed some: each entry's ``name``, else ``value``, at most
   200 values of at most 256 characters. A required field without a readable name is listed as
@@ -88,12 +90,17 @@ def _required_fields(raw: object, marks: set[str]) -> list[dict[str, Any]]:
     if not isinstance(raw, dict):
         return []
     out: list[dict[str, Any]] = []
-    for count, field in enumerate(raw.values()):
-        if count >= MAX_FIELDS:
+    for field in raw.values():
+        if not isinstance(field, dict):
+            continue
+        required = field.get("required", False)  # absent means optional, present must be a bool
+        if required is not True:
+            if required is not False:
+                marks.add("required_fields")  # not a boolean: neither required nor optional
+            continue
+        if len(out) >= MAX_FIELDS:
             marks.add("required_fields.truncated")
             break
-        if not isinstance(field, dict) or field.get("required") is not True:
-            continue
         name = _text(field.get("name"), CAPS["name"], marks, "required_fields")
         if not name:
             marks.add("required_fields")
@@ -129,7 +136,7 @@ def transition_object(raw: object, marks: set[str]) -> dict[str, Any] | None:
     tid = _id(raw.get("id"))
     name = _text(raw.get("name"), CAPS["name"], marks, "name")
     target = _target(raw.get("to"), marks)
-    if tid is None or not name or target is None:
+    if tid is None or not (name and name.strip()) or target is None:
         marks.add("transitions.unreadable")
         return None
     fields = raw.get("fields")
