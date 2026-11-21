@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import resource
 import select
 import signal
 import subprocess
@@ -106,6 +107,7 @@ class Session:
                 self._drain(master, 10.0, until=PROMPT)
             started = time.monotonic()
             if flood:
+                os.set_blocking(master, False)
                 writer = threading.Thread(target=_flood, args=(master, stop), daemon=True)
                 writer.start()
             if signal_after_prompt is not None:
@@ -140,6 +142,8 @@ def _flood(master: int, stop: threading.Event) -> None:
             _, writable, _ = select.select([], [master], [], 0.05)
             if writable:
                 os.write(master, chunk)
+        except BlockingIOError:
+            continue
         except (OSError, ValueError):
             return
 
@@ -258,6 +262,10 @@ def test_only_the_cap_stops_an_endless_line(tmp_path: Path) -> None:
     assert s.elapsed < 4.0
 
 
+@pytest.mark.skipif(
+    resource.getrlimit(resource.RLIMIT_NOFILE)[1] < 1200,
+    reason="the hard descriptor limit is below what the case needs",
+)
 def test_a_descriptor_select_cannot_wait_on_is_unavailable_before_the_dialog(
     tmp_path: Path,
 ) -> None:

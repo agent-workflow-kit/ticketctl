@@ -104,10 +104,12 @@ class Planned:
     holds the outbound texts (a comment body, a created ticket's title and description, the
     rendered text of a rich-text change). ``build_plan`` refuses the plan, before any dialog, unless
     everything sent is shown: every step ``body_sha256`` and every ``bodies[*].sha256`` is the hash
-    of a ``shown`` text; every change whose ``to`` is a string or a number or a boolean has a
+    of a ``shown`` text; every change whose ``to`` is anything but ``None``, ``[]`` or a non-empty
+    list of strings (a string, number, boolean, dict, or a list with any non-string item) has a
     ``shown`` text of the same label (and, for a string, the text is equal or its hash is a step or
     ``bodies`` hash); a list of strings is shown by the dialog from the change itself. An action
-    fills ``shown`` for every such value (the dialog is the human's only view of what is sent).
+    must supply, through ``shown``, the rendered text of every non-string change value (the dialog
+    is the human's only view of what is sent).
     """
 
     steps: list[Step]
@@ -186,8 +188,8 @@ def _require_shown(planned: Planned) -> None:
             raise ValueError("a body hash in the plan has no shown text with that hash")
     for change in planned.changes:
         to = change.get("to")
-        if not isinstance(to, (str, bool, int, float)):
-            continue  # None, a summarized value, or a list the dialog shows from the change
+        if to is None or to == [] or (isinstance(to, list) and all(isinstance(i, str) for i in to)):
+            continue  # nothing, or a list of strings the dialog shows from the change itself
         label = str(change.get("name"))
         same = [s for s in planned.shown if s.label == label]
         if not same:

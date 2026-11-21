@@ -260,9 +260,26 @@ def test_a_same_label_shown_text_of_another_label_does_not_count() -> None:
 
 
 @pytest.mark.parametrize(
-    "to", [None, {"name": "Done", "category": "done"}, [{"id": "1"}], [], {"x": 1}]
+    "to", [{"name": "Done", "category": "done"}, [{"id": "1"}], {"x": 1}, ["a", 1]]
 )
-def test_a_change_value_that_is_summarized_needs_no_shown_text(to: Any) -> None:
+def test_a_non_string_change_value_with_no_shown_text_is_refused(to: Any) -> None:
+    plan = planned(steps=[], changes=[{"name": "cf_1", "from": None, "to": to}])
+    with pytest.raises(ValueError, match="shown"):
+        build_plan("update", "main", "human:x", plan)
+
+
+@pytest.mark.parametrize("to", [{"name": "Done", "category": "done"}, [{"id": "1"}]])
+def test_a_non_string_change_value_with_a_same_label_shown_text_passes(to: Any) -> None:
+    plan = planned(
+        steps=[],
+        changes=[{"name": "cf_1", "from": None, "to": to}],
+        shown=[ShownText("cf_1", "rendered text")],
+    )
+    build_plan("update", "main", "human:x", plan)
+
+
+@pytest.mark.parametrize("to", [None, []])
+def test_an_absent_or_empty_change_value_needs_no_shown_text(to: Any) -> None:
     plan = planned(steps=[], changes=[{"name": "cf_1", "from": None, "to": to}])
     build_plan("update", "main", "human:x", plan)
 

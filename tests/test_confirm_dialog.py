@@ -325,6 +325,14 @@ def test_a_label_list_over_the_total_cap_ends_in_a_marker_with_the_hash_of_the_l
     assert m.group(2) != sha(m.group(0))  # a notice text is never what is hashed
 
 
+def test_a_partially_shown_list_item_obeys_the_line_cap() -> None:
+    labels = ["x" * 500 for _ in range(30)] + ["y" * 15000]
+    out = compose(plan_of(changes=[{"name": "labels", "from": None, "to": labels}]))
+    lines = body_lines(out)
+    assert max(len(x) for x in lines) <= len("| ") + 500
+    assert any(x.startswith("| [... ") and "sha256 " in x for x in lines)
+
+
 def test_a_hostile_change_label_cannot_start_a_label_line() -> None:
     name = "warning: x"
     out = compose(plan_of(), [ShownText(name, "v", "line")])

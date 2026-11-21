@@ -170,7 +170,7 @@ def _list_blocks(name: str, items: list[str]) -> list[str]:
             out.extend(_block(f"{name}[{i}]", item, kind="line", sha=digest(item)))
             used += min(len(text), LINE_MAX_CHARS)
             continue
-        at = _cut_point(text, room) if room > 0 else 0
+        at = _cut_point(text, min(room, LINE_MAX_CHARS)) if room > 0 else 0
         left = sum(len(t) for t in rendered[i:]) - at
         full = digest("\n".join(items))
         if at > 0:

@@ -102,6 +102,7 @@ class StubTransition:
             ],
             key=self.key,
             warnings=["assign_added"] if wants_assign else [],
+            shown=[ShownText("status", f"{status} -> {self.to}")],
         )
 
     def check(self, ctx: Context, planned: Planned) -> None:

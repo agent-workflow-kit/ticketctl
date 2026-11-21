@@ -16,7 +16,10 @@ import tty
 
 # A regressed cap must fail fast, not eat memory: the child can never use more than 256 MiB.
 _LIMIT = 256 * 1024 * 1024
-resource.setrlimit(resource.RLIMIT_AS, (_LIMIT, _LIMIT))
+try:
+    resource.setrlimit(resource.RLIMIT_AS, (_LIMIT, _LIMIT))
+except (ValueError, OSError):  # not every platform (macOS) allows an address-space limit
+    pass
 
 from ticketctl import confirm_tty  # noqa: E402 - after the limit, so imports obey it
 from ticketctl.plan import ShownText  # noqa: E402
@@ -36,7 +39,10 @@ def main() -> int:
     if cfg.get("many_fds"):
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         top = hard if hard != resource.RLIM_INFINITY else 4096
-        resource.setrlimit(resource.RLIMIT_NOFILE, (min(top, 4096), hard))
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(top, 4096), hard))
+        except (ValueError, OSError):
+            pass
         held = [os.dup(0) for _ in range(cfg["many_fds"])]
     plan = {
         "action": "comment",
