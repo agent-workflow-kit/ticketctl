@@ -1,0 +1,37 @@
+{
+  "tool": "ticketctl",
+  "hook": "pre-comment",
+  "object_type": "ticket",
+  "object_id": "DEMO-2",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "auto:unknown",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "comment",
+    "steps": [
+      "add_comment"
+    ],
+    "plan_sha256": "602600270a31c2ba82d93a660dcdc6da230dd83eaf5fbbf886e64c85ce342398",
+    "current_status": {
+      "name": "In Progress",
+      "category": "indeterminate"
+    },
+    "dedupe_key": "h1"
+  },
+  "body": [
+    {
+      "sha256": "ed553056cb389dcf58a19a99b3fc6336203e0b05224de90e3f8b5a2389cded3d",
+      "bytes": 290
+    }
+  ],
+  "ticket": {
+    "type": "Task",
+    "subtask": false,
+    "status": "In Progress",
+    "priority": "Medium",
+    "assignee_account_id": "acct-0001",
+    "assignee_is_me": true
+  }
+}

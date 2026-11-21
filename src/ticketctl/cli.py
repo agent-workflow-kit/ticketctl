@@ -117,7 +117,7 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         setspec.check_offline(spec.path[0], getattr(ns, flag[2:]), flag)
     if spec.kind == "write":
         resolve_write_actor(g, me_name=lambda: _me_name(g))
-    # TODO(#28,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
+    # TODO(#28,#30,#31,#34): the remaining "exactly one of" and per-command rules.
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 
 

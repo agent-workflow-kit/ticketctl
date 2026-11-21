@@ -1076,14 +1076,20 @@ class _Run:
         return TicketctlError("internal", message, reason="audit_failed")
 
     def _retry_rules(self, err: TicketctlError, planned: Planned) -> None:
-        """``outcome_unknown`` of comment and create is retryable only with a dedupe key."""
-        if (
-            err.code == "outcome_unknown"
-            and self.action.name in CONFIRM_ACTIONS
-            and planned.dedupe_key is None
-        ):
+        """``outcome_unknown`` of comment and create is retryable only with a dedupe key.
+
+        An action whose dedupe lookup does not exist yet sets ``dedupe_lookup = False``: a keyed
+        re-run would post again, so the error is not retryable either (default: lookup works).
+        """
+        if err.code != "outcome_unknown" or self.action.name not in CONFIRM_ACTIONS:
+            return
+        if planned.dedupe_key is None:
             err.retryable = False
             err.message = f"{err.message}; re-run only with --dedupe-key"
+            err.args = (err.message,)
+        elif not getattr(self.action, "dedupe_lookup", True):
+            err.retryable = False
+            err.message = f"{err.message}; a re-run may post the comment again"
             err.args = (err.message,)
 
     def _post(
