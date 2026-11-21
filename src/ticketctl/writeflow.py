@@ -753,7 +753,9 @@ class _Run:
 
         lock = self._lock(ctx, planned)
         lock.__enter__()  # a failure to take the lock is before any send: it propagates
-        try:  # steps 7 and 8
+        interrupted: _Interrupt | None = None
+        outcome = _Outcome(None, None, None)
+        try:  # steps 7 and 8; the finally is the one release point for every exit
             fresh, fresh_plan = self._read(ctx, fresh=True)
             if not fresh.steps:
                 return self._unchanged(ctx, fresh, decision_ids)
@@ -765,13 +767,12 @@ class _Run:
                 )
             outcome = self._send(ctx, planned, held, decision_ids)
         except _Interrupt as stop:
+            interrupted = stop
+        finally:
             self._release(lock)
-            self._post(plan, planned, ctx, decision_ids, _Outcome(None, None, stop.info))
-            raise stop.exc from None
-        except BaseException:
-            self._release(lock)
-            raise
-        self._release(lock)
+        if interrupted is not None:
+            self._post(plan, planned, ctx, decision_ids, _Outcome(None, None, interrupted.info))
+            raise interrupted.exc from None
         self._post(plan, planned, ctx, decision_ids, outcome)
         if outcome.error is not None:
             raise outcome.error

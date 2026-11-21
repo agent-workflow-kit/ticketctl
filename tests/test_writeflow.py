@@ -8,6 +8,7 @@ nothing-unvalidated-reaches-the-gateway rule. The stub actions live in ``tests/w
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import re
@@ -1407,3 +1408,113 @@ def test_a_miscased_document_never_reaches_the_provider(world: World) -> None:
     held = world.hash_of(Sneaky("DEMO-2", "Done"))
     err = world.fail(Sneaky("DEMO-2", "Done"), yes=True, expect_plan=held)
     assert err.exit == 22 and world.writes() == []
+
+
+# ---------------------------------------------------------------------------------------------
+# Round 2 review findings
+# ---------------------------------------------------------------------------------------------
+
+
+class CountingLock:
+    """A lock that counts its entries and exits, as a real dedupe lock would hold a resource."""
+
+    def __init__(self) -> None:
+        self.enters = 0
+        self.exits = 0
+
+    def __enter__(self) -> None:
+        self.enters += 1
+
+    def __exit__(self, *exc: object) -> None:
+        self.exits += 1
+
+
+class FreshNoSteps(StubComment):
+    """The fresh read under the lock finds the work already done (reused/already posted)."""
+
+    def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+        planned = super().reduce(ctx, fresh=fresh)
+        return dataclasses.replace(planned, steps=[]) if fresh else planned
+
+
+def test_the_lock_is_released_exactly_once_when_the_fresh_read_has_no_steps(world: World) -> None:
+    lock = CountingLock()
+    hooks = Hooks()
+    held = world.hash_of(StubComment("DEMO-1", "again", dedupe_key="k-nosteps"))
+    out = world.run(
+        FreshNoSteps("DEMO-1", "again", dedupe_key="k-nosteps"),
+        yes=True,
+        expect_plan=held,
+        seams=Seams(hooks=hooks, lock=lambda p, c: lock),
+    )
+    assert out["result"] == "unchanged"
+    assert (lock.enters, lock.exits) == (1, 1)
+
+
+def test_the_lock_is_released_exactly_once_on_the_ok_path(world: World) -> None:
+    lock = CountingLock()
+    held = world.hash_of(StubComment("DEMO-1", "ok", dedupe_key="k-ok"))
+    out = world.run(
+        StubComment("DEMO-1", "ok", dedupe_key="k-ok"),
+        yes=True,
+        expect_plan=held,
+        seams=Seams(lock=lambda p, c: lock),
+    )
+    assert out["result"] == "ok"
+    assert (lock.enters, lock.exits) == (1, 1)
+
+
+def test_the_lock_is_released_exactly_once_on_the_error_path(world: World) -> None:
+    lock = CountingLock()
+    world.fake.inject(Fault("reset", method="POST", path="/comment", after_apply=True))
+    held = world.hash_of(StubComment("DEMO-1", "err", dedupe_key="k-err"))
+    err = world.fail(
+        StubComment("DEMO-1", "err", dedupe_key="k-err"),
+        yes=True,
+        expect_plan=held,
+        seams=Seams(lock=lambda p, c: lock),
+    )
+    assert err.code == "outcome_unknown"
+    assert (lock.enters, lock.exits) == (1, 1)
+
+
+def test_the_lock_is_released_once_before_the_post_hook_on_the_interrupt_path(
+    world: World,
+) -> None:
+    events: list[str] = []
+
+    class Ordered(CountingLock):
+        def __exit__(self, *exc: object) -> None:
+            events.append("unlock")
+            super().__exit__(*exc)
+
+    class KeyedBoom(Boom):
+        def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+            return dataclasses.replace(super().reduce(ctx, fresh=fresh), dedupe_key="k-int")
+
+    lock = Ordered()
+    hooks = Hooks()
+    hooks.post = lambda *a: events.append("post")  # type: ignore[method-assign]
+    held = world.hash_of(KeyedBoom(KeyboardInterrupt(), "DEMO-2", "Done"))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            KeyedBoom(KeyboardInterrupt(), "DEMO-2", "Done"),
+            yes=True,
+            expect_plan=held,
+            seams=Seams(hooks=hooks, lock=lambda p, c: lock),
+        )
+    assert (lock.enters, lock.exits) == (1, 1)
+    assert events == ["unlock", "post"]
+
+
+def test_a_mapping_with_version_and_content_is_a_document_even_when_not_adf() -> None:
+    with pytest.raises(InputError):
+        check_outbound({"payload": {"version": 3, "content": "plain text"}}, body_chars=30000)
+
+
+def test_a_configured_hook_refuses_even_a_run_that_would_be_a_noop(world: World) -> None:
+    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
+    world.fake.tickets["DEMO-2"].status = "Done"
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
+    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    assert world.writes() == [] and world.records() == []
