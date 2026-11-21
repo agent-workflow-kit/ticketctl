@@ -69,12 +69,12 @@ class CommentAction:
         key: str,
         body: str,
         *,
-        fmt: attribution.Format = "markdown",
+        fmt: str = "markdown",
         dedupe_key: str | None = None,
     ) -> None:
         self.key = key
         self.body = body
-        self.fmt = fmt
+        self.fmt: attribution.Format = "adf" if fmt == "adf" else "markdown"
         self.dedupe_key = dedupe_key
         self.rich: attribution.RichText | None = None
         self.body_chars = 0
@@ -100,8 +100,10 @@ class CommentAction:
         assert rich is not None and rich.doc is not None
         info = body_info(rich)
         fields = self._read_ticket(ctx)
-        status = fields.get("status") if isinstance(fields.get("status"), dict) else {}
-        category_raw = (status.get("statusCategory") or {}).get("key")
+        raw_status = fields.get("status")
+        status: dict[str, Any] = raw_status if isinstance(raw_status, dict) else {}
+        raw_cat = status.get("statusCategory")
+        category_raw = raw_cat.get("key") if isinstance(raw_cat, dict) else None
         category = category_raw if category_raw in CATEGORIES else None
 
         existing = self.find_existing(ctx, rich) if self.dedupe_key is not None else None
