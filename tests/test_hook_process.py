@@ -319,6 +319,76 @@ def test_a_terminating_signal_kills_the_hook_group(
             runner.wait()
 
 
+def test_a_second_signal_during_the_unwind_cannot_skip_the_reaping(
+    tmp_path: Path, pids: PidRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM unwinds the run; a SIGHUP landing before the cleanup must not interrupt it."""
+    resent: list[int] = []
+    real_kill = os.kill
+
+    def fake_kill(pid: int, sig: int) -> None:
+        if pid == os.getpid() and sig == signal.SIGHUP:
+            resent.append(sig)  # the deferred signal is re-sent after the handlers are restored
+            return
+        real_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+    real_disarm = gateway._disarm
+
+    def second_signal_first() -> None:
+        gateway._on_terminate(signal.SIGHUP, None)  # lands in the gap before the real disarm
+        real_disarm()
+
+    monkeypatch.setattr(gateway, "_disarm", second_signal_first)
+    seen: list[int] = []
+
+    def first_signal(pid: int) -> None:
+        seen.append(pid)
+        pids.add(pid)
+        gateway._on_terminate(signal.SIGTERM, None)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_hook(
+            script(tmp_path, "sleep.py", "import time\ntime.sleep(60)\n"),
+            stdin=b"",
+            env=ENV,
+            timeout=10.0,
+            on_start=first_signal,
+        )
+    (pgid,) = seen
+    assert _reaped(pgid)  # group killed and leader waited, not a zombie
+    assert resent == [signal.SIGHUP]
+
+
+def test_a_failing_reaper_start_kills_and_reaps_the_detached_child(
+    tmp_path: Path, pids: PidRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[int] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        proc = real_popen(*args, **kwargs)  # type: ignore[call-overload]
+        started.append(proc.pid)
+        pids.add(proc.pid)
+        return proc  # type: ignore[no-any-return]
+
+    class Boom:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(threading, "Thread", Boom)
+    with pytest.raises(KeyboardInterrupt):
+        spawn_detached(
+            script(tmp_path, "sleep.py", "import time\ntime.sleep(60)\n"), stdin=b"x", env=ENV
+        )
+    (pid,) = started
+    assert _reaped(pid)
+
+
 def test_the_registry_never_kills_an_unverified_pid(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[tuple[str, int]] = []
     monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append(("killpg", pid)))

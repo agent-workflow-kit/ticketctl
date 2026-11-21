@@ -1182,6 +1182,7 @@ def _on_terminate(signum: int, _frame: object) -> None:
     group. Once the cleanup has begun (disarmed) the signal is only remembered, never raised, so
     a second signal cannot skip the reaping; it is re-sent after the handlers are restored."""
     if _SIGNALS["armed"]:
+        _SIGNALS["armed"] = False  # disarm first: a later signal is only recorded, never raised
         raise KeyboardInterrupt
     _SIGNALS["pending"] = signum
 
@@ -1254,6 +1255,12 @@ def run_hook(
     running, and no process this call did not start is signaled (the group id belongs to the
     unreaped leader until then). Every exit path, an interrupt included, reaps the leader.
     """
+    pidfd: int | None = None  # state the cleanup needs is bound before the launch, so that
+    sel: selectors.BaseSelector | None = None  # no statement sits between Popen and the ``try``
+    out = bytearray()
+    err = bytearray()
+    truncated = {"out": False, "err": False}
+    timed_out = False
     proc = subprocess.Popen(  # noqa: S603 - argv list, no shell=True
         argv,
         stdin=subprocess.PIPE,
@@ -1264,14 +1271,8 @@ def run_hook(
         start_new_session=True,
         shell=False,
     )
-    pgid = proc.pid
-    pidfd: int | None = None
-    sel: selectors.BaseSelector | None = None
-    out = bytearray()
-    err = bytearray()
-    truncated = {"out": False, "err": False}
-    timed_out = False
     try:  # everything after the launch is inside: any failure kills and reaps the group
+        pgid = proc.pid
         if on_start is not None:
             on_start(pgid)
         sel = selectors.DefaultSelector()
@@ -1347,7 +1348,7 @@ def run_hook(
         # reap it. Runs for an interrupt too.
         _disarm()
         try:
-            _signal_group(pgid, signal.SIGKILL)
+            _signal_group(proc.pid, signal.SIGKILL)
             proc.wait()
         finally:
             if sel is not None:
@@ -1361,7 +1362,7 @@ def run_hook(
                     except OSError:
                         pass
     return HookRun(
-        pid=pgid,
+        pid=proc.pid,
         returncode=proc.returncode,
         stdout=bytes(out),
         stderr=bytes(err),
@@ -1385,21 +1386,33 @@ def spawn_detached(
     caller. A daemon thread reaps the child, so it never becomes a zombie of a long-lived caller.
     There is no timeout: the caller does not outlive its reach over the process.
     """
-    with tempfile.TemporaryFile() as source:
-        source.write(stdin)
-        source.flush()
-        source.seek(0)
-        proc = subprocess.Popen(  # noqa: S603 - argv list, no shell=True
-            argv,
-            stdin=source,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=dict(env),
-            close_fds=True,
-            start_new_session=True,
-            shell=False,
-        )
-    threading.Thread(target=proc.wait, daemon=True).start()  # first: on_start may raise
+    proc: subprocess.Popen[bytes] | None = None
+    reaper_started = False
+    try:
+        with tempfile.TemporaryFile() as source:
+            source.write(stdin)
+            source.flush()
+            source.seek(0)
+            proc = subprocess.Popen(  # noqa: S603 - argv list, no shell=True
+                argv,
+                stdin=source,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=dict(env),
+                close_fds=True,
+                start_new_session=True,
+                shell=False,
+            )
+        threading.Thread(target=proc.wait, daemon=True).start()  # first: on_start may raise
+        reaper_started = True
+        _disarm()  # the child has its watcher: a later signal is only remembered
+    finally:
+        if proc is not None and not reaper_started:  # no watcher will reap it: do it here
+            try:
+                _signal_group(proc.pid, signal.SIGKILL)
+            finally:
+                proc.wait()
+    assert proc is not None
     if on_start is not None:
         on_start(proc.pid)
     return proc.pid
