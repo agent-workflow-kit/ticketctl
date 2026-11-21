@@ -194,6 +194,18 @@ def test_a_secret_in_the_title_or_a_label_is_refused(env: Env) -> None:
     refused(env, "--add-label", SITE_TOKEN, reason="secret_in_body")
 
 
+def test_a_secret_as_the_assignee_is_refused(env: Env) -> None:
+    refused(env, "--assign", SITE_TOKEN, reason="secret_in_body")
+
+
+def test_a_secret_as_the_assignee_runs_no_hook_and_sends_nothing(env: Env) -> None:
+    out = env.root / "hook-ran"
+    env.use(hooks_=f"hooks:\n  pre-update:\n    - cmd: ': > {out}'")
+    refused(env, "--assign", SITE_TOKEN, reason="secret_in_body")
+    assert not out.exists()
+    assert env.writes() == []
+
+
 # ---- the plan ----------------------------------------------------------------------------------
 
 ALL = (
