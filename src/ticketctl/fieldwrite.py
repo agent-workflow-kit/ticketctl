@@ -1,4 +1,4 @@
-"""Field writes shared by ``update`` and, later, ``create`` (docs/interface.md, Field mapping, Value
+"""Field writes shared by ``update`` and ``create`` (docs/interface.md, Field mapping, Value
 grammar and Plan object).
 
 Pure logic plus one read helper; it sends nothing. A command resolves its ``--set`` assignments

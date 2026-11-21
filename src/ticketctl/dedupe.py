@@ -33,7 +33,8 @@ distrusts).
 The decision is a pure function (:func:`decide`) of the lock mtime, the audit records and the
 wall clock; waits go through an injectable :class:`Clock` so tests run on virtual time.
 
-TODO(#31): the ``create`` action calls :func:`guarded_lookup` from ``reduce(fresh=True)``.
+``createcmd.CreateAction`` calls :func:`guarded_lookup` from ``reduce(fresh=True)`` with
+``scope`` the project (``Planned.hash_key``).
 The comment dedupe (#33) needs no guard (its list is read-your-writes).
 """
 

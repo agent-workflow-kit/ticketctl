@@ -26,7 +26,7 @@ Hash and partial runs: the facts of ``set_fields`` are the values before the cha
 old values are gone) and a re-run with the old ``--expect-plan`` is exit 20 ``stale_ticket``
 carrying the new plan (one step, ``assign``); a re-run without it sends only the remaining step.
 
-``create`` (#31) reuses :mod:`ticketctl.fieldwrite` for the same conversion and comparison.
+``create`` reuses :mod:`ticketctl.fieldwrite` for the same conversion and comparison.
 """
 
 from __future__ import annotations
