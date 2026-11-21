@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -39,12 +40,16 @@ from .adf_render import render_adf
 from .config import LOGICAL_FIELDS
 from .errors import TicketctlError
 from .fieldmap import ProviderField, SiteFields, Status
-from .setconvert import FieldValue, ValueContext, convert_all
+from .setconvert import FieldValue, ValueContext, convert_all, is_rich
 from .setspec import Resolved
-from .timestamps import normalize_date, normalize_ts
+from .timestamps import MAX_LENGTH, normalize_date
 from .writeflow import Context
 
 _FIELD_ID = re.compile(r"customfield_[0-9]+")
+_STAMP = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,9}))?)?"
+    r"(?:(Z)|([+-])([0-9]{2}):?([0-9]{2}))"
+)
 _OBJECT_KEYS = ("accountId", "value", "name", "key")
 UNREADABLE: dict[str, Any] = {"unreadable": True}
 
@@ -66,7 +71,37 @@ class FieldEdit:
 
     @property
     def rich(self) -> bool:
-        return self.value.rich is not None
+        return is_rich(self.field)
+
+
+def _millis(raw: object) -> str | None:
+    """A provider datetime as UTC to the millisecond (the precision ``--set`` sends), else None.
+
+    Extra fractional digits are cut, not rounded, the way the converter cuts them.
+    """
+    if not isinstance(raw, str) or len(raw) > MAX_LENGTH:
+        return None
+    match = _STAMP.fullmatch(raw)
+    if match is None:
+        return None
+    year, month, day, hour, minute, second, frac, zulu, sign, off_h, off_m = match.groups()
+    try:
+        if zulu:
+            zone = UTC
+        else:
+            hours, minutes = int(off_h), int(off_m)
+            if hours > 23 or minutes > 59:
+                return None
+            delta = timedelta(hours=hours, minutes=minutes)
+            zone = timezone(-delta if sign == "-" else delta)
+        local = datetime(
+            int(year), int(month), int(day), int(hour), int(minute), int(second or 0), tzinfo=zone
+        )
+        utc = local.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None
+    ms = int((frac or "0").ljust(3, "0")[:3])
+    return f"{utc:%Y-%m-%dT%H:%M:%S}.{ms:03d}Z"
 
 
 # ---- naming and conversion ---------------------------------------------------------------------
@@ -139,7 +174,8 @@ def canon(raw: object, *, depth: int = 0) -> Any:
     if isinstance(raw, list):
         if not raw:
             return None
-        return sorted((canon(i, depth=depth + 1) for i in raw), key=_sort_key)
+        items = {_sort_key(c): c for c in (canon(i, depth=depth + 1) for i in raw)}
+        return [items[k] for k in sorted(items)]
     raise _Unreadable
 
 
@@ -160,7 +196,7 @@ def _canon_typed(edit: FieldEdit, raw: object) -> Any:
             raise _Unreadable  # a string in a number field does not fit its schema
         return _decimal(raw)
     if kind == "datetime" and raw is not None:
-        out = normalize_ts(raw)
+        out = _millis(raw)
         if out is None:
             raise _Unreadable
         return out
@@ -169,13 +205,15 @@ def _canon_typed(edit: FieldEdit, raw: object) -> Any:
         if out is None:
             raise _Unreadable
         return out
+    if kind == "string" and raw is not None and not isinstance(raw, str):
+        raise _Unreadable  # a string field holds text
     return canon(raw)
 
 
 def _target(edit: FieldEdit) -> Any:
     rich = edit.value.rich
-    if rich is not None:
-        return render_adf(rich.doc).text or None
+    if edit.rich:
+        return None if rich is None else render_adf(rich.doc).text or None
     return _canon_typed(edit, edit.value.payload)
 
 

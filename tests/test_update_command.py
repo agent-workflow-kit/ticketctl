@@ -30,10 +30,10 @@ from tests.fake_provider import (
     adf_paragraph,
 )
 from tests.golden import assert_golden, validator
+from tests.test_writeflow import TOKEN_VAR
 from ticketctl import hooks
 from ticketctl.cli import main
 
-TOKEN_VAR = "TICKETCTL_TEST_TOKEN"
 SITE_URL = "https://tracker.example.test"
 ATTEMPT_RE = re.compile(r"[0-9a-f]{16}")
 HUMAN = ("--actor", "human:tester")
@@ -596,9 +596,21 @@ def test_a_missing_ticket_is_not_found(env: Env) -> None:
 
 def test_a_moved_ticket_is_written_and_reported_under_its_canonical_key(env: Env) -> None:
     env.fake.move("DEMO-1", "DEMO-7")
-    code, result = env.apply("DEMO-1", "--title", "Renamed")
+    # the old key answers reads but not writes: a write under the typed key is a 404
+    env.fake.inject(
+        Fault("status", method="PUT", path="/DEMO-1(/assignee)?$", status=404, body="gone")
+    )
+    out = env.root / "hook-stdin"
+    env.use(hooks_=f"hooks:\n  pre-update:\n    - cmd: '/bin/cat > {out}'")
+    code, result = env.apply("DEMO-1", "--title", "Renamed", "--assign", "me", actor=HUMAN)
     assert code == 0 and result["key"] == "DEMO-7", result
     assert env.fake.tickets["DEMO-7"].summary == "Renamed"
+    assert env.fake.tickets["DEMO-7"].assignee == ME_ACCOUNT
+    puts = [c.path for c in env.writes() if c.method == "PUT"]
+    assert puts == ["/rest/api/3/issue/DEMO-7", "/rest/api/3/issue/DEMO-7/assignee"]
+    lines = (env.root / "state" / "ticketctl" / "audit.jsonl").read_text().splitlines()
+    assert {json.loads(line)["target"]["key"] for line in lines} == {"DEMO-7"}
+    assert json.loads(out.read_text())["object_id"] == "DEMO-7"
 
 
 # ---- hooks and audit ---------------------------------------------------------------------------
@@ -642,7 +654,7 @@ def test_a_veto_by_the_pre_hook_sends_nothing(env: Env) -> None:
     assert env.writes() == []
 
 
-def test_a_pre_update_hook_does_not_run_for_another_action(env: Env) -> None:
+def test_a_dry_run_runs_no_pre_update_hook(env: Env) -> None:
     out = env.root / "ran"
     env.use(hooks_=f"hooks:\n  pre-update:\n    - cmd: ': > {out}'")
     code, _ = env.doc("--dry-run", "update", "DEMO-1", "--title", "x")
@@ -751,3 +763,34 @@ def test_a_title_holding_markup_or_quotes_is_sent_as_is(env: Env) -> None:
     code, result = env.apply("DEMO-1", "--title", title)
     assert code == 0, result
     assert env.fake.tickets["DEMO-1"].summary == title
+
+
+def test_a_body_near_the_limit_warns_and_a_small_one_does_not(env: Env) -> None:
+    env.use(hooks_="limits:\n  body_chars: 100")
+    near = env.file("near.md", "x" * 95 + "\n")
+    small = env.file("small.md", "x" * 40 + "\n")
+    plan = env.plan_as(HUMAN, "DEMO-1", "--set", f"description=@{near}")
+    assert "body_near_limit" in plan["warnings"]
+    plan = env.plan_as(HUMAN, "DEMO-1", "--set", f"description=@{small}")
+    assert "body_near_limit" not in plan["warnings"]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"), [("DEMO-2", "none"), ("DEMO-1", OTHER_ACCOUNT), ("DEMO-2", OTHER_ACCOUNT)]
+)
+def test_the_hook_assign_fact_is_the_target_and_matches_the_schema(
+    env: Env, monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    seen: dict[str, Any] = {}
+    real = hooks.build_payload
+
+    def spy(hook: str, *a: Any, **kw: Any) -> dict[str, Any]:
+        seen[hook] = payload = real(hook, *a, **kw)
+        return payload
+
+    monkeypatch.setattr(hooks, "build_payload", spy)
+    env.use(hooks_="hooks:\n  pre-update:\n    - cmd: '/bin/cat > /dev/null'")
+    code, result = env.apply(key, "--assign", value)
+    assert code == 0, result
+    validator("hooks/pre-update.json").validate(seen["pre-update"])
+    assert seen["pre-update"]["plan"]["assign"] == value

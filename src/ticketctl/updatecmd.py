@@ -46,6 +46,7 @@ from .fieldwrite import (
     display_from,
     display_to,
     fact,
+    fields_body,
     read_object,
     same_value,
 )
@@ -192,8 +193,10 @@ class UpdateAction:
         both = sorted(set(self.add_labels) & set(self.remove_labels))
         if both:
             raise _invalid("the same label is in --add-label and --remove-label")
-        pc.check_secrets(*([self.title] if self.title is not None else []), *self.add_labels,
-                         *self.remove_labels)  # fmt: skip
+        named = [self.title] if self.title is not None else []
+        if self.assign not in (None, "me", "none"):
+            named.append(self.assign)
+        pc.check_secrets(*named, *self.add_labels, *self.remove_labels)
 
     def _read_title(self, pc: PrepareContext) -> str | None:
         if self._title_file is not None:
@@ -278,6 +281,7 @@ class UpdateAction:
         names: list[str] = []  # the fields the set_fields step writes
         body: dict[str, Any] = {}
         labels_update: list[dict[str, str]] = []
+        written: list[FieldEdit] = []
 
         if self.title is not None:
             current = fields.get("summary")
@@ -294,7 +298,7 @@ class UpdateAction:
             raw = fields.get(edit.field.id)
             if same_value(edit, raw):
                 continue
-            body[edit.field.id] = edit.value.payload
+            written.append(edit)
             names.append(edit.name)
             to = display_to(edit)
             changes.append({"name": edit.name, "from": display_from(edit, raw), "to": to})
@@ -307,6 +311,8 @@ class UpdateAction:
                     warnings.append("body_near_limit")
             elif isinstance(to, str | int | float | bool):
                 shown.append(ShownText(edit.name, str(to), "line"))
+
+        body.update(fields_body(written))
 
         if self.add_labels or self.remove_labels:
             current_labels = fields.get("labels")
@@ -349,7 +355,7 @@ class UpdateAction:
 
         hook: dict[str, Any] = {}
         if steps:
-            hook = self._hook_facts(ctx, fields, [c["name"] for c in changes], assign_label)
+            hook = self._hook_facts(ctx, fields, assign_label)
             if hook["current_status"]["category"] == "done":
                 warnings.append("closed_ticket")
         return Planned(
@@ -380,9 +386,7 @@ class UpdateAction:
         return hashlib.sha256(canonical_bytes(edit.value.payload)).hexdigest()
 
     @staticmethod
-    def _hook_facts(
-        ctx: Context, fields: dict[str, Any], changed: list[str], assign: str | None
-    ) -> dict[str, Any]:
+    def _hook_facts(ctx: Context, fields: dict[str, Any], assign: str | None) -> dict[str, Any]:
         """What the hook payloads need and the hash does not (names and ids, never ticket text)."""
         status, issuetype = fields.get("status"), fields.get("issuetype")
         category = None
@@ -394,7 +398,6 @@ class UpdateAction:
         assignee = _account(fields.get("assignee"))
         return {
             "current_status": {"name": status_name, "category": category},
-            "fields_changed": list(dict.fromkeys(changed)),
             "assign": assign,
             "ticket": {
                 "type": type_name,

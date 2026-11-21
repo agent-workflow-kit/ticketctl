@@ -104,6 +104,30 @@ def test_dates_and_datetimes_compare_by_instant() -> None:
     assert not same_value(stamp, "2026-04-01T12:00:00")  # naive: unknown, never equal
 
 
+def test_datetimes_compare_at_the_millisecond_the_converter_sends() -> None:
+    stamp = edit("datetime", "2026-04-01T12:00:00.000+0000")
+    assert not same_value(stamp, "2026-04-01T12:00:00.500+0000")
+    assert same_value(stamp, "2026-04-01T12:00:00.0004+0000")
+    other = edit("datetime", "2026-04-01T12:00:00.000+0000")
+    assert same_value(other, "2026-04-01T06:00:00.0009-0600")
+    assert same_value(other, "2026-04-01T06:00:00.000-06:00")
+    assert not same_value(edit("datetime", "2026-04-01T12:00:00.001+0000"), "2026-04-01T12:00:00Z")
+
+
+def test_a_string_field_holding_an_object_or_a_number_is_unreadable() -> None:
+    assert not same_value(edit("string", "x"), {"name": "x"})
+    assert not same_value(edit("string", "3"), 3)
+    assert fact(edit("string", "x"), {"name": "x"}) == UNREADABLE
+
+
+def test_duplicates_in_a_list_are_one_item() -> None:
+    assert canon(["a", "a", "b"]) == ["a", "b"]
+    assert same_value(edit("array", ["a", "a"], items="string"), ["a"])
+    assert same_value(
+        edit("array", [{"value": "a"}, {"value": "a"}], items="option"), [{"value": "a"}]
+    )
+
+
 def test_options_users_and_links_compare_by_name_account_or_key() -> None:
     assert same_value(edit("option", {"value": "High"}), {"value": "High", "id": "1"})
     assert not same_value(edit("option", {"value": "High"}), {"value": "high"})
@@ -146,6 +170,17 @@ def test_rich_facts_are_a_hash_of_the_rendered_text_and_display_is_the_text() ->
     assert display_to(e).strip() == "Same words"
     assert display_from(e, doc("Old")).strip() == "Old"
     assert display_from(e, "garbage") is None
+
+
+def test_clearing_a_rich_field_shows_the_rendered_text_and_a_hash_fact() -> None:
+    cleared = FieldEdit(
+        "description", FieldValue(rich_edit("x").field, "Description", None, None, True)
+    )
+    current = doc("Old words")
+    assert display_from(cleared, current) is not None
+    assert display_from(cleared, current).strip() == "Old words"
+    assert len(fact(cleared, current)) == 64
+    assert display_to(cleared) is None
 
 
 def test_numbers_are_displayed_as_numbers() -> None:
