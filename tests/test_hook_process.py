@@ -8,18 +8,21 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tests import hook_support
 from tests.hook_support import PidRegistry, alive, script, wait_dead, wait_file
 from ticketctl import gateway
 from ticketctl.gateway import run_hook, spawn_detached
 
-pytest_plugins = ["tests.hook_support"]  # the `pids` fixture
-
+pids = hook_support.pids  # the fixture, by name
 ENV = {"PATH": "", "LC_ALL": "C"}
 
 ECHO = """
@@ -199,3 +202,128 @@ def test_spawn_detached_hands_over_the_payload_without_waiting(
     assert pid > 0 and wait_file(out, 10)
     assert len(out.read_text()) == 700_000
     assert wait_dead(pid)  # reaped by its watcher, not a zombie
+
+
+# ---------------------------------------------------------------------------------------------
+# Round 1 hardening: set-up failures, SIGCHLD, SIGTERM and SIGHUP
+# ---------------------------------------------------------------------------------------------
+
+
+def _reaped(pid: int, seconds: float = 3.0) -> bool:
+    """True once the pid is gone altogether (not even a zombie)."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_failure_after_the_launch_still_kills_and_reaps_the_group(
+    tmp_path: Path, pids: PidRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom() -> None:
+        raise OSError("EMFILE")
+
+    fake = SimpleNamespace(
+        DefaultSelector=boom, EVENT_READ=1, EVENT_WRITE=2
+    )  # as if no descriptor were left
+    monkeypatch.setattr(gateway, "selectors", fake)
+    seen: list[int] = []
+
+    def remember(pid: int) -> None:
+        seen.append(pid)
+        pids.add(pid)
+
+    with pytest.raises(OSError):
+        run_hook(
+            script(tmp_path, "sleep.py", "import time\ntime.sleep(60)\n"),
+            stdin=b"",
+            env=ENV,
+            timeout=10.0,
+            on_start=remember,
+        )
+    (pid,) = seen
+    assert _reaped(pid)
+
+
+def test_a_failing_on_start_still_reaps_a_detached_child(tmp_path: Path, pids: PidRegistry) -> None:
+    seen: list[int] = []
+
+    def remember(pid: int) -> None:
+        seen.append(pid)
+        pids.add(pid)
+        raise RuntimeError("on_start failed")
+
+    with pytest.raises(RuntimeError):
+        spawn_detached(
+            script(tmp_path, "quick.py", "pass\n"), stdin=b"x", env=ENV, on_start=remember
+        )
+    (pid,) = seen
+    assert _reaped(pid)  # the watcher thread reaped it: no zombie
+
+
+def test_an_ignored_sigchld_does_not_hide_the_exit_status(
+    tmp_path: Path, pids: PidRegistry
+) -> None:
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        res = go(script(tmp_path, "exit13.py", "import sys\nsys.exit(13)\n"), pids)
+        assert res.returncode == 13
+        assert signal.getsignal(signal.SIGCHLD) is signal.SIG_IGN  # put back as it was
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+
+
+def test_handlers_are_put_back_after_a_run(tmp_path: Path, pids: PidRegistry) -> None:
+    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGCHLD)}
+    go(script(tmp_path, "ok.py", "pass\n"), pids)
+    assert {s: signal.getsignal(s) for s in before} == before
+
+
+RUNNER = """
+import sys
+from ticketctl.gateway import run_hook
+marker, hook = sys.argv[1], sys.argv[2]
+def started(pgid):
+    open(marker, "w").write(str(pgid))
+run_hook([sys.executable, "-I", hook], stdin=b"", env={"PATH": ""}, timeout=60.0, on_start=started)
+"""
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+def test_a_terminating_signal_kills_the_hook_group(
+    tmp_path: Path, pids: PidRegistry, sig: signal.Signals
+) -> None:
+    hook = script(tmp_path, "forever.py", "import time\ntime.sleep(60)\n")[-1]
+    marker = tmp_path / "pgid"
+    runner = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-I", "-c", RUNNER, str(marker), hook],
+        env={"PATH": "", "HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path)},
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+    )
+    pids.add(runner.pid)
+    try:
+        assert wait_file(marker, 10)
+        (pgid,) = pids.add_file(marker)
+        runner.send_signal(sig)
+        runner.wait(timeout=10)
+        assert wait_dead(pgid) and _reaped(pgid)
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait()
+
+
+def test_the_registry_never_kills_an_unverified_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append(("killpg", pid)))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(("kill", pid)))
+    registry = PidRegistry()
+    registry.recorded = [(4_000_001, None), (os.getpid(), "not-the-start-time")]
+    registry.kill_all()
+    assert sent == []

@@ -27,6 +27,8 @@ Public API: ``Target``, ``Deadline``, ``Gateway.request``, ``Response``, ``Gatew
 from __future__ import annotations
 
 import base64
+import contextlib
+import functools
 import http.client
 import ipaddress
 import json
@@ -41,7 +43,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import accumulate
@@ -1172,6 +1174,62 @@ def _close(fd: int) -> None:
         pass
 
 
+_SIGNALS = {"armed": False, "pending": 0}
+
+
+def _on_terminate(signum: int, _frame: object) -> None:
+    """SIGTERM and SIGHUP while a hook runs: unwind like SIGINT so the ``finally`` kills the
+    group. Once the cleanup has begun (disarmed) the signal is only remembered, never raised, so
+    a second signal cannot skip the reaping; it is re-sent after the handlers are restored."""
+    if _SIGNALS["armed"]:
+        raise KeyboardInterrupt
+    _SIGNALS["pending"] = signum
+
+
+def _disarm() -> None:
+    _SIGNALS["armed"] = False
+
+
+@contextlib.contextmanager
+def _hook_signals() -> Iterator[None]:
+    """For the duration of a hook run (main thread only): SIGTERM and SIGHUP raise
+    ``KeyboardInterrupt``, and an ignored SIGCHLD becomes the default one (an ignored SIGCHLD makes
+    the kernel reap the child, so its exit status, a veto included, would be lost). Everything is
+    restored in a ``finally`` that tolerates each restoration failing."""
+    if threading.current_thread() is not threading.main_thread():
+        if signal.getsignal(signal.SIGCHLD) is signal.SIG_IGN:
+            raise OSError("SIGCHLD is ignored: a hook's exit status cannot be read")
+        yield
+        return
+    saved: dict[int, Any] = {}
+    _SIGNALS["pending"] = 0
+    try:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            saved[sig] = signal.signal(sig, _on_terminate)
+        if signal.getsignal(signal.SIGCHLD) is signal.SIG_IGN:
+            saved[signal.SIGCHLD] = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        _SIGNALS["armed"] = True
+        yield
+    finally:
+        _disarm()
+        for sig, old in saved.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, signal.SIG_DFL if old is None else old)
+        pending, _SIGNALS["pending"] = _SIGNALS["pending"], 0
+        if pending:
+            os.kill(os.getpid(), pending)  # the interrupted command ends as the signal asks
+
+
+def _guarded[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        with _hook_signals():
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_guarded
 def run_hook(
     argv: list[str],
     *,
@@ -1208,14 +1266,15 @@ def run_hook(
     )
     pgid = proc.pid
     pidfd: int | None = None
-    sel = selectors.DefaultSelector()
+    sel: selectors.BaseSelector | None = None
     out = bytearray()
     err = bytearray()
     truncated = {"out": False, "err": False}
     timed_out = False
-    try:
+    try:  # everything after the launch is inside: any failure kills and reaps the group
         if on_start is not None:
             on_start(pgid)
+        sel = selectors.DefaultSelector()
         pidfd = _pidfd_open(pgid)
         assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
         for stream in (proc.stdin, proc.stdout, proc.stderr):
@@ -1286,11 +1345,13 @@ def run_hook(
     finally:
         # The one exit: kill what is left of the group while the leader is still unreaped, then
         # reap it. Runs for an interrupt too.
+        _disarm()
         try:
             _signal_group(pgid, signal.SIGKILL)
             proc.wait()
         finally:
-            sel.close()
+            if sel is not None:
+                sel.close()
             if pidfd is not None:
                 _close(pidfd)
             for stream in (proc.stdin, proc.stdout, proc.stderr):
@@ -1310,6 +1371,7 @@ def run_hook(
     )
 
 
+@_guarded
 def spawn_detached(
     argv: list[str],
     *,
@@ -1337,7 +1399,7 @@ def spawn_detached(
             start_new_session=True,
             shell=False,
         )
+    threading.Thread(target=proc.wait, daemon=True).start()  # first: on_start may raise
     if on_start is not None:
         on_start(proc.pid)
-    threading.Thread(target=proc.wait, daemon=True).start()
     return proc.pid

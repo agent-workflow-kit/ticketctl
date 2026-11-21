@@ -8,7 +8,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 - **Fake quirk switches.** The fake provider has a switch for each verified quirk (design.md, Live verification): silent-empty semantic JQL, the page cap with all fields, a done transition accepted without a resolution, the assignee validator on transitions out of the backlog, the 410 on the old search, offsets without a colon, ADF node variety, the three error body shapes, rate-limit headers, a label visible after a delay, a slow or dropped response.
 - **Pinned sibling schemas.** ticketctl calls no sibling tool, so nothing is pinned; consumers pin ticketctl's schemas, not the reverse.
 - **Process and live test split.** Unit and integration tests run offline in CI. Tests that start `ticketctl` as a process (exit codes, `/dev/tty` confirmation through a pty, hooks, locks, `flock`) are ordinary tests. Real-site tests are marked `live`, deselected by default, never run in CI, and need `TICKETCTL_LIVE=1`.
-- **Golden files.** Every `--json` output and hook payload has a golden file validated against `schemas/`.
+- **Golden files.** Every `--json` output has a golden file validated against `schemas/`; hook payloads are validated against `schemas/hooks/` in tests (there are no hook goldens).
 - **Spike regressions.** Every live-verified fact in design.md becomes a test or a `live` check (see each stage).
 - **`make verify`** (ruff, pyright, pytest, markdown lint) passes before every commit.
 - **Schemas are authoritative for shapes.** The private generator is not in the repo; after the first implementation stage the schemas are maintained in the repo by hand and checked by tests against the interface's enums.

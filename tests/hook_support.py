@@ -42,8 +42,8 @@ class PidRegistry:
 
     def kill_all(self) -> None:
         for pid, started in self.recorded:
-            if started is not None and _start_time(pid) != started:
-                continue  # reused or gone
+            if started is None or _start_time(pid) != started:
+                continue  # gone at registration, reused or gone since: never kill an unverified pid
             try:
                 os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):

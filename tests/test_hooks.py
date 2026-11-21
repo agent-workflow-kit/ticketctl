@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from tests import hook_support
 from tests.fake_provider import SITE_TOKEN, FakeProvider
 from tests.golden import validator
 from tests.hook_support import PidRegistry, shell_command, wait_dead, wait_file
@@ -28,8 +29,7 @@ from ticketctl.errors import TicketctlError
 from ticketctl.plan import Planned
 from ticketctl.writeflow import PostInfo, Seams
 
-pytest_plugins = ["tests.hook_support"]  # the `pids` fixture
-
+pids = hook_support.pids  # the fixture, by name
 PY = shell_command([sys.executable, "-I"])
 
 TICKET = {
@@ -96,7 +96,8 @@ class Rig:
             "payload = sys.stdin.read()\n"
             f"with open({str(self.log)!r}, 'a') as f:\n"
             f"    f.write(json.dumps({{'n': {self.count}, 'payload': json.loads(payload),"
-            " 'env': dict(os.environ), 'cwd': os.getcwd(), 'pid': os.getpid()}) + '\\n')\n"
+            " 'env': {k: v for k, v in os.environ.items() if k.startswith('TICKETCTL_')},"
+            " 'env_names': sorted(os.environ), 'cwd': os.getcwd(), 'pid': os.getpid()}) + '\\n')\n"
             f"{extra}\n"
             f"time.sleep({sleep})\n"
             f"sys.stderr.write({err!r})\n"
@@ -196,6 +197,10 @@ def test_the_environment_is_the_tools_minus_every_credential_variable(
     monkeypatch.setenv(other_email, "someone@example.test")
     monkeypatch.setenv("TICKETCTL_TEST_COPY", SITE_TOKEN)  # the token under another name
     monkeypatch.setenv("TICKETCTL_TEST_KEEP", "kept")
+    monkeypatch.setenv("TICKETCTL_TEST_AUTH", f"Basic {SITE_TOKEN}")  # embeds the token
+    monkeypatch.setenv("TICKETCTL_TEST_BEARER", f"Bearer {SITE_TOKEN}")
+    monkeypatch.setenv("TICKETCTL_TEST_PROXY", f"user:{SITE_TOKEN}@127.0.0.1:9")
+    monkeypatch.setenv("TICKETCTL_TEST_SHORT", "fake-token")  # a prefix of the token: kept
     monkeypatch.setenv("TICKETCTL_ID", "inherited")
     cmd = rig.hook()
     world.write_config(
@@ -209,8 +214,17 @@ def test_the_environment_is_the_tools_minus_every_credential_variable(
     assert env["TICKETCTL_HOOK"] == "pre-transition"
     assert env["TICKETCTL_ID"] == "DEMO-2" and env["TICKETCTL_OBJECT_TYPE"] == "ticket"
     assert env["TICKETCTL_TEST_KEEP"] == "kept"
-    present = [n for n in (TOKEN_VAR, other_token, other_email, "TICKETCTL_TEST_COPY") if n in env]
-    assert present == []  # names only: never a value in a failure message
+    stripped = (
+        TOKEN_VAR,
+        other_token,
+        other_email,
+        "TICKETCTL_TEST_COPY",
+        "TICKETCTL_TEST_AUTH",
+        "TICKETCTL_TEST_BEARER",
+        "TICKETCTL_TEST_PROXY",
+    )
+    assert [n for n in stripped if n in call["env_names"]] == []  # names only, never a value
+    assert env["TICKETCTL_TEST_SHORT"] == "fake-token"
     leaked = SITE_TOKEN in json.dumps(call)
     assert not leaked
     assert call["cwd"] == str(Path.cwd())
@@ -326,6 +340,59 @@ def test_a_missing_shell_refuses_before_any_write(
     assert world.writes() == [] and rig.calls() == []
 
 
+def test_a_missing_shell_refuses_for_a_post_only_hook_before_any_write(
+    rig: Rig, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig.config(post_transition=[rig.hook()])
+    monkeypatch.setattr(hooks, "SHELL", "/nonexistent/sh")
+    err = world.fail(new(), yes=True, expect_plan=world.hash_of(new()))
+    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    assert world.writes() == [] and rig.calls() == []
+
+
+def test_a_missing_shell_refuses_for_a_post_only_flag_hook_but_not_a_dry_run(
+    rig: Rig, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hooks, "SHELL", "/nonexistent/sh")
+    flag = ["post-transition=true"]
+    err = world.fail(new(), yes=True, expect_plan=world.hash_of(new()), hooks=flag)
+    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    assert world.writes() == []
+    assert world.run(new(), dry_run=True, hooks=flag)["plan_sha256"]  # no hook runs: no refusal
+
+
+def test_a_hook_that_popen_refuses_with_a_value_error_is_a_veto_or_a_warning(
+    rig: Rig,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def boom(*a: object, **k: object) -> None:
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(hooks, "run_hook", boom)
+    rig.config(pre_transition=[rig.hook()])
+    err = world.fail(new(), yes=True, expect_plan=world.hash_of(new()))
+    assert (err.exit, err.code) == (11, "vetoed") and "could not be started" in err.message
+    assert world.writes() == []
+    rig.config(post_transition=[rig.hook()])
+    assert run_ok(world)["result"] == "ok"
+    assert "post-transition could not be started" in capsys.readouterr().err
+
+
+def test_an_ignored_sigchld_does_not_turn_a_veto_into_a_pass(rig: Rig, world: World) -> None:
+    import signal
+
+    rig.config(pre_transition=[rig.hook(exit=1)])
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        err = world.fail(new(), yes=True, expect_plan=world.hash_of(new()))
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+    assert (err.exit, err.code) == (11, "vetoed") and "exited 1" in err.message
+    assert world.writes() == []
+
+
 def test_a_payload_that_lacks_a_fact_fails_closed(rig: Rig, world: World) -> None:
     rig.config(pre_transition=[rig.hook()])
     h = world.hash_of(StubTransition("DEMO-2", "Done"))  # the plain stub sets no hook facts
@@ -415,6 +482,15 @@ def test_more_than_16_ids_are_cut_with_the_truncation_warning(rig: Rig, world: W
     result = run_ok(world, decision_ids=["cli.1"])
     assert len(result["decision_ids"]) == 16 and result["decision_ids"][0] == "cli.1"
     assert "decision_ids_truncated" in result["warnings"]
+
+
+def test_more_than_64_ids_from_one_hook_warn_once(
+    rig: Rig, world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = json.dumps({"decision_id": [f"id.{i}" for i in range(65)]})
+    rig.config(pre_transition=[rig.hook(out=out)])
+    run_ok(world)
+    assert capsys.readouterr().err.count("decision id that was dropped") == 1
 
 
 def test_a_hook_cannot_change_the_plan_through_its_output(rig: Rig, world: World) -> None:
@@ -650,6 +726,36 @@ def test_a_payload_with_a_bad_fact_is_refused(bad: dict[str, Any]) -> None:
         hooks.build_payload(
             "pre-update", _plan("update"), _planned(**{**FACTS, **bad}), "0123456789abcdef", []
         )
+
+
+@pytest.mark.parametrize("assign", ["bad id!", "x" * 129, 5, ""])
+def test_a_bad_assign_target_is_refused(assign: object) -> None:
+    with pytest.raises(TicketctlError):
+        hooks.build_payload(
+            "pre-update",
+            _plan("update"),
+            _planned(**{**FACTS, "assign": assign}),
+            "0123456789abcdef",
+            [],
+        )
+    create = {"project": "DEMO", "create": {"type": "Task", "parent": None, "assign": assign}}
+    with pytest.raises(TicketctlError):
+        hooks.build_payload(
+            "pre-create", _plan("create", None), _planned(**create), "0123456789abcdef", []
+        )
+
+
+@pytest.mark.parametrize("assign", ["me", "none", "acct-0001", None])
+def test_a_valid_assign_target_is_carried(assign: str | None) -> None:
+    payload = hooks.build_payload(
+        "pre-update",
+        _plan("update"),
+        _planned(**{**FACTS, "assign": assign}),
+        "0123456789abcdef",
+        [],
+    )
+    assert payload["plan"]["assign"] == assign
+    validator("hooks/pre-update.json").validate(payload)
 
 
 def test_the_sprint_payload_needs_sprints() -> None:

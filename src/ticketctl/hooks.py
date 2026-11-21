@@ -21,7 +21,8 @@ every string that comes from the provider passes the sanitizer, and a payload th
 required fact is refused rather than sent short.
 
 The environment is the tool's minus every configured ``token_env`` and ``email_env`` variable (of
-every site, not only the selected one) and minus any variable that holds a configured token value,
+every site, not only the selected one) and minus any variable whose value contains a configured
+token value,
 plus ``TICKETCTL_HOOK``, ``TICKETCTL_ID`` and ``TICKETCTL_OBJECT_TYPE``. Allowlist, not mask: the
 child gets nothing else added. Working directory is the caller's.
 """
@@ -101,7 +102,9 @@ def hook_env(rt: Runtime, name: str, object_id: str | None) -> dict[str, str]:
             if len(value) >= MIN_SECRET_LENGTH:
                 secret_values.add(value)
     env = {
-        k: v for k, v in rt.env.items() if k not in secret_vars and v.strip() not in secret_values
+        k: v
+        for k, v in rt.env.items()
+        if k not in secret_vars and not any(token in v for token in secret_values)
     }
     env.update(
         {"TICKETCTL_HOOK": name, "TICKETCTL_ID": object_id or "", "TICKETCTL_OBJECT_TYPE": "ticket"}
@@ -147,6 +150,15 @@ def _account(value: object, what: str) -> str | None:
     return str(value)
 
 
+def _assign(value: object, what: str) -> str | None:
+    """An assign target: ``me``, ``none`` or an account id."""
+    if value is None:
+        return None
+    if value in ("me", "none") or GRAMMARS["account_id"].matches(value):
+        return str(value)
+    raise _incomplete(what)
+
+
 def _ticket(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise _incomplete("ticket")
@@ -172,7 +184,7 @@ def _create(value: object) -> dict[str, Any]:
     return {
         "type": _name(value.get("type"), "create.type"),
         "parent": parent,
-        "assign": _name_or_null(value.get("assign"), "create.assign", cap=128),
+        "assign": _assign(value.get("assign"), "create.assign"),
     }
 
 
@@ -245,7 +257,9 @@ def build_payload(
             plan_part[name] = _fields_changed(facts, plan)
         elif name == "dedupe_key":
             plan_part[name] = plan.get("dedupe_key")
-        else:  # resolution, assign
+        elif name == "assign":
+            plan_part[name] = _assign(facts.get(name), name)
+        else:  # resolution
             plan_part[name] = _name_or_null(facts.get(name), name, cap=128)
     payload: dict[str, Any] = {
         "tool": "ticketctl",
@@ -379,9 +393,10 @@ class HookRunner:
     ) -> HookResult:
         family = hook_family(str(plan["action"]))
         entries = entries_for(self.rt, "pre", family)
+        if entries or entries_for(self.rt, "post", family):  # any hook needs the shell, post too
+            self._require_shell()
         if not entries:
             return HookResult()
-        self._require_shell()
         returned: list[str] = []
         escalated: list[str] = []
         for entry in entries:
@@ -413,7 +428,7 @@ class HookRunner:
                 err_cap=STDOUT_CAP,
                 on_start=self.on_start,
             )
-        except OSError:
+        except (OSError, ValueError):  # ValueError: Popen refuses e.g. an embedded NUL
             return None
 
     @staticmethod
