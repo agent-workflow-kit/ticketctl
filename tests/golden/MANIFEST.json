@@ -4,6 +4,8 @@
   "cli/fields-list.json": "b70e1707937e7f03e12118a48ae3d6ff0c4485528adfb798782c2c072c98f5ad",
   "cli/fields-refresh.json": "12a9a29e5f46afecea2f0e8315bcbc8265ecf1863403706b7ba1c4ed7fec9a0e",
   "cli/get.json": "4d453adf5e856ca8712f3e99f49dadaa7e82c3e6a24f3e8ab88f5d45e9f3b84b",
+  "cli/plan.json": "aad667be6e4380aed1b0b820f780bf40970dae4fb43442f8c7f1696ac6da8dea",
+  "cli/result.json": "d25a31954d8308363d8766c65769b0b109b94cf78e59a347c190caa6bd8b8f51",
   "cli/search.json": "3fa90214eef21c9aac524a182bc8c1f821269aa0587c0440e1f286198dbf02ba",
   "cli/sites-resolve.json": "f693324ea3d434e2fb498fafa6d7f7827d4d9c361412eb736050a96c62d861d2",
   "cli/sites.json": "cde97b0129c887bc5c064cdc50a9e987503dcee877b4d75fea291a553441846f",

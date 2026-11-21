@@ -1,0 +1,24 @@
+{
+  "action": "transition",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": {
+        "category": null,
+        "name": "Done"
+      },
+      "name": "status",
+      "to": {
+        "category": null,
+        "name": "Done"
+      }
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "7a4cb10593bd078ef95ec47762729c4ca2be002c771401bd0a6602ede28412f7",
+  "site": "main",
+  "steps": [],
+  "warnings": []
+}

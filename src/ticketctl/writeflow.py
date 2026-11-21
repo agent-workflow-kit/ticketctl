@@ -61,7 +61,7 @@ from .attribution import Format, Kind, RichText
 from .errors import TicketctlError, from_exception, internal_error, usage_error
 from .flags import Globals, probe_dev_tty
 from .gateway import Gateway, Response, Target
-from .plan import Planned, Step, build_plan
+from .plan import Planned, Step, build_plan, canonical_bytes
 from .runtime import Runtime, for_site, open_gateway
 from .sanitize import GRAMMARS, add_secrets, ensure_no_secret, sanitize_field
 from .state import StateError
@@ -405,8 +405,10 @@ def browse_url(rt: Runtime, site: str, key: str) -> str:
 
 
 def _decision_list(*groups: list[str]) -> list[str]:
-    merged = list(dict.fromkeys(i for group in groups for i in group))
-    return merged[:MAX_DECISION_IDS]
+    """Flag and hook ids, in order, without duplicates; an id outside the grammar is dropped."""
+    grammar = GRAMMARS["decision_id"]
+    merged = dict.fromkeys(i for group in groups for i in group if grammar.matches(i))
+    return list(merged)[:MAX_DECISION_IDS]
 
 
 def result_object(
@@ -475,8 +477,6 @@ def hooks_digest(rt: Runtime, action: str) -> str:
         name, _, cmd = spec.partition("=")
         if name.endswith(f"-{family}"):
             entries.append({"name": name, "cmd": cmd, "source": "flag"})
-    from .plan import canonical_bytes
-
     return hashlib.sha256(canonical_bytes(entries)).hexdigest()
 
 
@@ -669,7 +669,12 @@ class _Run:
             )
         self._confirm(plan, decision_ids)  # step 5
 
-        hook_result = self.seams.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # step 6
+        try:
+            hook_result = self.seams.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
+        except TicketctlError as err:
+            if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
+                err.details = {"plan": plan, "decision_ids": decision_ids, **(err.details or {})}
+            raise
         decision_ids = _decision_list(g.decision_ids, hook_result.decision_ids)
         if hook_result.escalated and not g.override_escalation:
             names = list(dict.fromkeys(hook_result.escalated))
@@ -862,8 +867,8 @@ class _Run:
                 number, step, result, changed=changed, reason=reason,
                 provider_ids=provider_ids, key=key,
             )  # fmt: skip
-        except StateError:
-            # The request was made; only a warning is possible now (exit codes keep the outcome).
+        except Exception:  # noqa: BLE001 - the request was made; the real outcome must survive
+            # Only a warning is possible now (exit codes keep the outcome).
             self.audit_incomplete = True
             self.rt.warn("warning: the audit outcome record could not be written")
 

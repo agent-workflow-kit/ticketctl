@@ -53,8 +53,6 @@ PENDING: dict[str, int] = {
     "cli/transitions.json": 18,
     "cli/sprints-list.json": 18,
     "cli/sprints-show.json": 18,
-    "cli/plan.json": 23,
-    "cli/result.json": 23,
     "cli/transition.json": 28,
     "cli/comment.json": 29,
     "cli/update.json": 30,

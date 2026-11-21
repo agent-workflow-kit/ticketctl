@@ -4,7 +4,7 @@
 (``me.json``, per site, ``cache_ttl``) unless ``refresh`` is set, else a ``GET /rest/api/3/myself``
 that is then cached. ``check_expectation`` compares the account with the configured expectation
 (``sites.<name>.account_id``, else ``me.jira``): a warning for reads, exit 2 ``account_mismatch``
-for writes (the write flow of #23 calls it with ``write=True`` after a fresh ``load_me``).
+for writes (``writeflow`` calls it with ``write=True`` after a fresh ``load_me(refresh=True)``).
 
 Unverified against a real site (the fake provider is the only evidence): that ``/myself`` answers
 ``accountId``, ``displayName`` and ``timeZone`` as strings.
@@ -124,8 +124,6 @@ def expected_account(config: Config, site_name: str) -> str | None:
     return config.sites[site_name].account_id or config.me.jira
 
 
-# todo(#23): the write flow must call check_expectation(write=True) after a fresh /myself
-# (load_me with refresh=True, never the cache) and then validate_adf() on rich text.
 def check_expectation(
     config: Config, site_name: str, account_id: str, *, write: bool
 ) -> str | None:

@@ -25,7 +25,7 @@ from tests.fake_provider import (
 )
 from tests.golden import validator
 from tests.write_stub import StubComment, StubDescription, StubTransition
-from ticketctl import audit, cache, sanitize, writeflow
+from ticketctl import audit, cache, writeflow
 from ticketctl.errors import TicketctlError
 from ticketctl.flags import Globals
 from ticketctl.plan import Planned, Step
@@ -280,7 +280,6 @@ def test_plan_and_result_validate_against_the_schemas(world: World) -> None:
 
 
 def test_non_interactive_without_yes_is_confirmation_required(world: World) -> None:
-    err = world.fail(StubTransition("DEMO-2", "Done"), decision_ids_flags=None) if False else None
     err = world.fail(StubTransition("DEMO-2", "Done"), decision_ids=["flag.1"])
     assert (err.exit, err.code) == (13, "confirmation_required")
     assert err.details is not None
@@ -328,6 +327,8 @@ def test_veto_escalation_and_override(world: World) -> None:
         StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
     )
     assert err.code == "vetoed" and world.records() == [] and world.writes() == []
+    assert err.details is not None and err.details["plan"]["plan_sha256"] == held
+    assert err.details["hook"] == "pre-transition"
 
     hooks = Hooks()
     hooks.escalate = ["pre-transition"]
@@ -561,11 +562,6 @@ def test_comment_outcome_unknown_is_not_retryable_without_a_key_and_dedupes_with
     world: World,
 ) -> None:
     world.fake.inject(Fault("reset", method="POST", path="/comment", after_apply=True))
-    err = world.fail(StubComment("DEMO-1", "no key"), yes=True, expect_plan=ZERO, dry_run=False) \
-        if False else None  # fmt: skip
-    held = world.hash_of(StubComment("DEMO-1", "no key"))
-    err = world.fail(StubComment("DEMO-1", "no key"), decision_ids=[], seams=Seams(), yes=True,
-                     expect_plan=held) if False else None  # fmt: skip
     # Without --yes the run would need a human: use an accepting dialog instead of --yes.
     err = world.fail(
         StubComment("DEMO-1", "no key"),
@@ -876,5 +872,55 @@ def test_sentinel_token_in_provider_text_does_not_reach_the_audit(world: World) 
     assert SITE_TOKEN not in (world.state / "log.jsonl").read_text()
 
 
-def test_stub_registry_entries_exist() -> None:
-    assert sanitize is not None and PostInfo is not None and ME_ACCOUNT
+def test_hook_decision_ids_outside_the_grammar_are_dropped(world: World) -> None:
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    hooks = Hooks()
+    hooks.ids = ["ok.1", "not valid!", "x" * 200]
+    out = world.run(
+        StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
+    )
+    assert out["decision_ids"] == ["ok.1"]
+
+
+def test_an_unexpected_error_in_the_outcome_record_never_hides_the_result(world: World) -> None:
+    real = audit.append_audit
+
+    def flaky(state_dir: Path, record: Any, **kw: Any) -> Any:
+        if record["result"] != "attempted":
+            raise RuntimeError("unexpected")
+        return real(state_dir, record, **kw)
+
+    world.mp.setattr(audit, "append_audit", flaky)
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    out = world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert out["result"] == "ok" and "audit_incomplete" in out["warnings"]
+
+
+def test_raise_for_write_maps_the_status_table() -> None:
+    from ticketctl.gateway import Response
+
+    def resp(status: int, data: Any = None, text: str = "") -> Response:
+        return Response(status, data, text, None, 0)
+
+    writeflow.raise_for_write(resp(204))
+    with pytest.raises(TicketctlError) as info:
+        writeflow.raise_for_write(resp(404))
+    assert info.value.code == "not_found"
+    with pytest.raises(TicketctlError) as info:
+        writeflow.raise_for_write(resp(404), object_path=False)
+    assert info.value.code == "provider_changed"
+    with pytest.raises(TicketctlError) as info:
+        writeflow.raise_for_write(
+            resp(400, {"errorMessages": ["bad \x07 thing", 7], "errors": {"labels": "no"}})
+        )
+    err = info.value
+    assert (err.code, err.exit) == ("rejected", 12) and err.details is not None
+    assert err.details["field_errors"] == {"labels": "no"}
+    assert all("\x07" not in m for m in err.details["errorMessages"])
+    for status in (409, 413, 415, 422):
+        with pytest.raises(TicketctlError) as info:
+            writeflow.raise_for_write(resp(status, text="plain"))
+        assert info.value.code == "rejected"
+    with pytest.raises(TicketctlError) as info:
+        writeflow.raise_for_write(resp(302))
+    assert info.value.code == "provider_changed"

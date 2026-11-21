@@ -34,9 +34,9 @@ template stays literal.
 ``ticketctl.meta`` is written in the create request of the comment itself (the write flow owns
 that); a comment through a transition ``Comment`` field is a ``field`` path and has no property.
 
-TODO(#23): the write flow calls ``prepare_rich_text`` in its prepare step, sends
-``comment_meta(actor, rich)`` (the same ``RichText``) in the create request, and hands the same
-``RichText.sha256`` to the plan, hooks and audit.
+The write flow (``writeflow.PrepareContext.prepare_rich``) calls ``prepare_rich_text`` in its
+prepare step; an action sends ``comment_meta(actor, rich)`` (the same ``RichText``) in the create
+request and hands ``RichText.sha256`` to the plan, hooks and audit (``writeflow.body_info``).
 TODO(#29): ``comment`` calls this with ``kind="comment"`` and the dedupe lookup reads the property.
 TODO(#30): ``create`` calls this with ``kind="description"``; ``update`` and ``transition`` call it
 with ``kind="field"`` for each rich-text value.

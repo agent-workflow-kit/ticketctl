@@ -32,9 +32,10 @@ only a sanitized, capped path.
 
 The attribution paragraph is added by ``attribution.prepare_rich_text`` before the final
 validation; the final document already contains it, so that call passes no reserve.
-TODO(#23): every rich-text write path (body, description, ``--set``/``--field``) calls
-``validate_adf()`` on the final document right before the gateway; the write flow owns the test
-that nothing unvalidated reaches the gateway.
+The write flow (``writeflow.WriteGateway``) calls ``validate_adf()`` on every ADF document in a
+request body right before the gateway, for every rich-text write path (body, description,
+``--set``/``--field``); ``tests/test_writeflow.py`` owns the test that nothing unvalidated reaches
+the gateway.
 """
 
 from __future__ import annotations

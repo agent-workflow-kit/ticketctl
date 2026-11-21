@@ -38,8 +38,8 @@ version ``{"name"}``, user ``{"accountId"}``), the datetime string ``YYYY-MM-DDT
 that a clear is ``null`` for every type, that ADF is accepted by ``description``, ``environment``,
 a ``textarea`` field and a transition ``comment`` field, and that ``textarea`` marks rich text.
 
-TODO(#23): the write flow supplies the metadata, ``me`` and the actor, and compares the payload with
-the current value (``unchanged``).
+The write flow (``writeflow``) supplies ``me`` and the actor; an action fetches the metadata and
+compares each payload with the current value (``writeflow.rich_changed`` for rich text).
 TODO(#30): ``update`` and ``transition`` call ``resolve_assignments`` and ``convert_all``.
 TODO(#31): ``create`` does the same with ``createmeta``.
 """

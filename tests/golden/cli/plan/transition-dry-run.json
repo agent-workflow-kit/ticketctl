@@ -1,0 +1,30 @@
+{
+  "action": "transition",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": {
+        "category": null,
+        "name": "In Progress"
+      },
+      "name": "status",
+      "to": {
+        "category": null,
+        "name": "Done"
+      }
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "fc56b815f5e96a24949b5689fa64d18b5507292403fe2dde2cdf6ba8aca196b2",
+  "site": "main",
+  "steps": [
+    {
+      "kind": "transition",
+      "to": "Done",
+      "transition_id": "41"
+    }
+  ],
+  "warnings": []
+}
