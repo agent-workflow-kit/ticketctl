@@ -18,8 +18,10 @@ Order, with the guarantees the tests pin:
    Then the plan and its hash are built and ``--expect-plan`` is compared.
 4. **Dry-run** returns the plan after step 3's reduce and check: it ignores ``--expect-plan`` and
    ``--yes``, takes no lock, writes no audit and runs no hook.
-5. **Confirm:** interactive runs go through ``Seams.confirm`` (#24 owns the dialog); a
-   non-interactive run without ``--yes`` is exit 13 ``confirmation_required``.
+5. **Confirm:** an interactive run (never an ``auto:`` actor, whatever the seam says) shows the
+   dialog of ``confirm_tty`` on ``/dev/tty``, or ``Seams.confirm`` when a test supplies one; a
+   decline is exit 20 ``declined``. A non-interactive run without ``--yes``, or one whose
+   terminal cannot be opened, is exit 13 ``confirmation_required``.
 6. **Pre hooks** through ``Seams.hooks`` (``ticketctl.hooks.HookRunner`` unless a test substitutes
    it): a veto is exit 11, an escalation is exit 13 unless ``--override-escalation``.
 7. **Lock and fresh check:** with a dedupe key ``Seams.lock`` is taken (#32), the action reads
@@ -37,7 +39,6 @@ dictionary of ``{"type": "doc"}`` shape in it is checked with ``validate_adf`` b
 is made, so no rich-text path (a comment, a description, a ``--set`` value, a hook-less retry) can
 reach the provider unvalidated whatever the action does.
 
-TODO(#24): the confirmation dialog on ``/dev/tty`` (``Seams.confirm``).
 TODO(#26): the remaining partial and ``outcome_unknown`` result shaping and the audit-failure
 paths beyond what this engine needs.
 TODO(#32): the dedupe lock and the create lag guard (``Seams.lock``).
@@ -54,7 +55,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from . import attribution, audit, flags, identity
+from . import attribution, audit, confirm_tty, flags, identity
 from .adf_validate import canonical_json, validate_adf
 from .attribution import Format, Kind, RichText
 from .errors import TicketctlError, from_exception, usage_error
@@ -398,8 +399,10 @@ class Seams:
     """The parts other issues fill in, and the hooks tests use to substitute the world.
 
     ``gateway`` replaces ``open_gateway``; ``interactive`` replaces the TTY probes; ``confirm`` is
-    the confirmation dialog (``plan -> accepted``; None means "cannot ask", which is exit 13
-    ``confirmation_required``, the conservative reading while #24 is open); ``lock`` returns a
+    a replacement for the confirmation dialog (``plan -> accepted``; tests only). With neither
+    ``confirm`` nor ``interactive`` set the real dialog on ``/dev/tty`` runs; with only
+    ``interactive`` set (no dialog to ask) the run is exit 13 ``confirmation_required``;
+    ``lock`` returns a
     context manager held from the fresh check to the outcome record.
     """
 
@@ -701,7 +704,7 @@ class _Run:
                 "the plan differs from --expect-plan; re-plan with --dry-run",
                 details={"plan": plan},
             )
-        self._confirm(plan, decision_ids)  # step 5
+        self._confirm(plan, planned, decision_ids)  # step 5
 
         try:
             hook_result = self.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
@@ -783,17 +786,41 @@ class _Run:
             warnings=[*planned.warnings, *self.extra_warnings],
         )
 
-    def _confirm(self, plan: dict[str, Any], decision_ids: list[str]) -> None:
+    def _confirm(self, plan: dict[str, Any], planned: Planned, decision_ids: list[str]) -> None:
         g = self.g
         interactive = (self.seams.interactive or (lambda: is_interactive(g)))()
-        if interactive and not g.yes:
-            if self.seams.confirm is None:
-                raise self._confirmation_required(plan, decision_ids)  # TODO(#24)
-            if not self.seams.confirm(plan):
+        # An automatic actor is never asked, whatever the seam says: the human is the gate.
+        auto = (g.resolved_actor or "").startswith("auto:")
+        if interactive and not g.yes and not auto:
+            if self.seams.confirm is not None:
+                accepted = self.seams.confirm(plan)
+            elif self.seams.interactive is None:
+                try:
+                    accepted = confirm_tty.confirm(
+                        plan,
+                        planned.shown,
+                        override=bool(g.override_escalation),
+                        hook_names=self._hook_names(),
+                    )
+                except confirm_tty.ConfirmUnavailable:
+                    raise self._confirmation_required(plan, decision_ids) from None
+            else:
+                raise self._confirmation_required(plan, decision_ids)
+            if not accepted:
                 raise TicketctlError("declined", "the plan was declined", details={"plan": plan})
             return
         if not g.yes:
             raise self._confirmation_required(plan, decision_ids)
+
+    def _hook_names(self) -> list[str]:
+        """The hooks an override covers: every configured hook of the action, every ``--hook``."""
+        family = hook_family(self.action.name)
+        names = [
+            f"{phase}-{family}"
+            for phase in ("pre", "post")
+            if self.rt.config.hooks.get(f"{phase}-{family}")
+        ]
+        return list(dict.fromkeys([*names, *cli_hook_names(self.rt)]))
 
     @staticmethod
     def _confirmation_required(plan: dict[str, Any], decision_ids: list[str]) -> TicketctlError:

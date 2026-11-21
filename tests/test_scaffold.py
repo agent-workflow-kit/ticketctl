@@ -43,6 +43,8 @@ MODULES = [
     "attribution",
     "plan",
     "writeflow",
+    "confirm_dialog",
+    "confirm_tty",
     "hooks",
     "dedupe",
     "setspec",

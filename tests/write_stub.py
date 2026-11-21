@@ -15,8 +15,9 @@ from typing import Any
 
 from tests.fake_provider import TRANSITIONS
 from ticketctl import attribution
+from ticketctl.adf_render import render_adf
 from ticketctl.errors import TicketctlError
-from ticketctl.plan import Planned, Step
+from ticketctl.plan import Planned, ShownText, Step
 from ticketctl.sanitize import query, segment
 from ticketctl.writeflow import (
     Context,
@@ -101,6 +102,7 @@ class StubTransition:
             ],
             key=self.key,
             warnings=["assign_added"] if wants_assign else [],
+            shown=[ShownText("status", f"{status} -> {self.to}")],
         )
 
     def check(self, ctx: Context, planned: Planned) -> None:
@@ -186,6 +188,7 @@ class StubComment:
                 "dedupe_key": self.dedupe_key,
             },
             changes=[],
+            shown=[ShownText("comment", render_adf(rich.doc).text, "body", info["sha256"])],
             key=self.key,
             dedupe_key=self.dedupe_key,
             dedupe_match=found,
@@ -265,6 +268,7 @@ class StubDescription:
             intent={"fields": {"description": info["sha256"]}},
             facts={"description": None if current is None else _sha(current)},
             changes=[{"name": "description", "from": None, "to": "rendered markdown"}],
+            shown=[ShownText("description", "rendered markdown", "body", info["sha256"])],
             key=self.key,
             bodies=[info],
         )
