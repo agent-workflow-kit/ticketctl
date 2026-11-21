@@ -75,6 +75,22 @@ class Step:
         return {"kind": self.kind, **self.props}
 
 
+@dataclass(frozen=True)
+class ShownText:
+    """One outbound text the confirmation dialog must show (docs/interface.md, Human actions).
+
+    ``kind`` is ``body`` (rendered Markdown of the final ADF, attribution paragraph included; the
+    dialog caps it at 200 lines and 20000 characters) or ``line`` (a title or a string value;
+    capped at 500 characters). ``sha256`` is the hash of the full final body when it differs from
+    the hash of ``text`` (a rich-text value hashes its canonical ADF).
+    """
+
+    label: str
+    text: str
+    kind: str = "body"
+    sha256: str | None = None
+
+
 @dataclass
 class Planned:
     """What an action reads and decides; ``steps`` empty means the intended state already holds.
@@ -84,7 +100,9 @@ class Planned:
     string, attribution paragraph included); ``bodies`` is ``[{sha256, bytes}]`` for the audit and
     the hooks. ``key`` is null for create, ``hash_key`` is what the hash holds in its ``key``
     place (the project for create, else the key). For a no-op, ``already_posted``, ``reused`` and
-    ``comment_id`` describe the existing object (and ``existing_key`` the reused ticket).
+    ``comment_id`` describe the existing object (and ``existing_key`` the reused ticket). ``shown``
+    holds the outbound texts that have no ``changes`` entry (a comment body, a created ticket's
+    title and description); the dialog also shows every string ``to`` of ``changes``.
     """
 
     steps: list[Step]
@@ -101,6 +119,7 @@ class Planned:
     reused: bool = False
     comment_id: str | None = None
     existing_key: str | None = None
+    shown: list[ShownText] = field(default_factory=list)  # outbound text no change entry carries
 
     def __post_init__(self) -> None:
         if self.hash_key is None:

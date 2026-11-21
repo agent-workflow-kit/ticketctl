@@ -15,8 +15,9 @@ from typing import Any
 
 from tests.fake_provider import TRANSITIONS
 from ticketctl import attribution
+from ticketctl.adf_render import render_adf
 from ticketctl.errors import TicketctlError
-from ticketctl.plan import Planned, Step
+from ticketctl.plan import Planned, ShownText, Step
 from ticketctl.sanitize import query, segment
 from ticketctl.writeflow import (
     Context,
@@ -186,6 +187,7 @@ class StubComment:
                 "dedupe_key": self.dedupe_key,
             },
             changes=[],
+            shown=[ShownText("comment", render_adf(rich.doc).text, "body", info["sha256"])],
             key=self.key,
             dedupe_key=self.dedupe_key,
             dedupe_match=found,

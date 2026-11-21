@@ -148,6 +148,7 @@ Read-command assumptions (issue #18, unverified against a real site; the code ta
 | `sanitize` | the one sanitizer rule (applied at the output layer) and the identifier grammars with the `segment()` path helper |
 | `plan` | plan building, canonical hash, idempotency reduction, stale check |
 | `writeflow` | the write order: resolve, confirm, hooks, audit, send, partial results |
+| `confirm_dialog`, `confirm_tty` | the confirmation dialog text (caps, order, sanitizer) and the `/dev/tty` prompt and answer |
 | `hooks` | hook execution (process groups, timeouts, payloads) |
 | `state` | the state directory: location, `0700` and ownership checks, symlink refusal, safe file opens relative to the directory descriptor, the `flock` helper (bounded wait, reopen after rotation), the tree cleaner every writer runs content through |
 | `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
