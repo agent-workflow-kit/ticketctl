@@ -598,7 +598,7 @@ def test_partial_after_a_definite_failure_of_the_second_step(world: World) -> No
         ("assign", "done", None),
         ("transition", "failed", "rejected"),
     ]
-    assert result["attempt_id"] == ATTEMPT and result["changed"] is False
+    assert result["attempt_id"] == ATTEMPT and result["changed"] is True
     records = world.records()
     assert [(r["step"], r["result"]) for r in records] == [
         (1, "attempted"), (1, "ok"), (2, "attempted"), (2, "partial"),

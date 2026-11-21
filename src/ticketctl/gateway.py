@@ -140,6 +140,15 @@ class Deadline:
     def expired(self) -> bool:
         return self.remaining() <= 0.0
 
+    @contextlib.contextmanager
+    def paused(self) -> Iterator[None]:
+        """The time spent inside the block does not count (a prompt, a hook run)."""
+        started = self._clock()
+        try:
+            yield
+        finally:
+            self._end += max(0.0, self._clock() - started)
+
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _URL_BLANK = re.compile(r"[\s\x00-\x1f\x7f]")

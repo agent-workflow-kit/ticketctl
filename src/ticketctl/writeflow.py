@@ -39,8 +39,10 @@ dictionary of ``{"type": "doc"}`` shape in it is checked with ``validate_adf`` b
 is made, so no rich-text path (a comment, a description, a ``--set`` value, a hook-less retry) can
 reach the provider unvalidated whatever the action does.
 
-TODO(#26): the remaining partial and ``outcome_unknown`` result shaping and the audit-failure
-paths beyond what this engine needs.
+Outcomes (docs/interface.md, Result object and Audit and log): a request that may have been sent
+and got no usable answer is ``unknown`` and is never sent again; ``changed`` of a partial result is
+true because a step landed; the command deadline does not run during the prompt and the ``pre-``
+hooks; an interrupt anywhere in step 8 still reaches the ``post-`` hook with what is known.
 TODO(#32): the dedupe lock and the create lag guard (``Seams.lock``).
 """
 
@@ -60,7 +62,7 @@ from .adf_validate import canonical_json, validate_adf
 from .attribution import Format, Kind, RichText
 from .errors import TicketctlError, from_exception, usage_error
 from .flags import Globals
-from .gateway import Gateway, Response, Target
+from .gateway import Deadline, Gateway, Response, Target
 from .plan import Planned, Step, build_plan, canonical_bytes
 from .runtime import Runtime, for_site, open_gateway
 from .sanitize import GRAMMARS, add_secrets, ensure_no_secret, sanitize_field
@@ -456,7 +458,7 @@ def result_object(
         "site": ctx.site,
         "key": key,
         "url": browse_url(ctx.rt, ctx.site, key) if key is not None else None,
-        "changed": result == "ok",
+        "changed": result in ("ok", "partial"),  # true: something landed
         "result": result,
         "steps": steps,
         "already_posted": planned.already_posted if result == "unchanged" else False,
@@ -631,6 +633,7 @@ class _Run:
         self.audit_incomplete = False
         self.extra_warnings: list[str] = []
         self.config_hashes: list[str] | OSError = []
+        self.gw: Gateway | None = None
 
     # ------------------------------------------------------------------------------------
     def run(self) -> dict[str, Any]:
@@ -659,6 +662,7 @@ class _Run:
         attempt_id = self.seams.attempt_id()
 
         gw = self.seams.gateway or open_gateway(self.rt, self.site)
+        self.gw = gw
         wgw = WriteGateway(gw, body_chars=pc.body_chars)
         # Step 2: a fresh account, never the cache, then the configured expectation.
         me = identity.load_me(self.rt, self.site, gw, refresh=True)
@@ -704,14 +708,20 @@ class _Run:
                 "the plan differs from --expect-plan; re-plan with --dry-run",
                 details={"plan": plan},
             )
-        self._confirm(plan, planned, decision_ids)  # step 5
-
-        try:
-            hook_result = self.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
-        except TicketctlError as err:
-            if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
-                err.details = {"plan": plan, "decision_ids": decision_ids, **(err.details or {})}
-            raise
+        # The prompt and the pre hooks are not provider work: the command deadline does not run
+        # while they do (interface.md, Reliability).
+        with self._deadline_paused():
+            self._confirm(plan, planned, decision_ids)  # step 5
+            try:
+                hook_result = self.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
+            except TicketctlError as err:
+                if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
+                    err.details = {
+                        "plan": plan,
+                        "decision_ids": decision_ids,
+                        **(err.details or {}),
+                    }
+                raise
         decision_ids, cut = _decision_list(g.decision_ids, hook_result.decision_ids)
         self._note_truncated(cut)
         if hook_result.escalated and not g.override_escalation:
@@ -756,6 +766,10 @@ class _Run:
         return outcome.result
 
     # ------------------------------------------------------------------------------------
+    def _deadline_paused(self) -> AbstractContextManager[None]:
+        deadline = getattr(self.gw, "deadline", None)
+        return deadline.paused() if isinstance(deadline, Deadline) else nullcontext()
+
     def _note_truncated(self, cut: bool) -> None:
         if cut and "decision_ids_truncated" not in self.extra_warnings:
             self.extra_warnings.append("decision_ids_truncated")
@@ -866,39 +880,61 @@ class _Run:
                 failure = (err, False, True)
                 done.append({"kind": step.kind, "status": "failed", "code": err.code})
                 break
+            except BaseException as exc:  # an interrupt before this step was sent: nothing is sent
+                info = None
+                if landed:
+                    done.append({"kind": step.kind, "status": "failed", "code": "internal"})
+                    done.extend({"kind": s.kind, "status": "skipped"} for s in steps[number:])
+                    info = PostInfo(
+                        "partial", {"code": "internal", "reason": None}, _kinds(done),
+                        provider_ids, True,
+                    )  # fmt: skip
+                raise _Interrupt(exc, info) from None
             try:
                 res = step.send(ctx.gw)
             except BaseException as exc:  # noqa: BLE001 - an outcome record is written for all
                 err, unknown = self._classify(exc)
                 result_name = "unknown" if unknown else ("partial" if landed else "failed")
-                self._outcome(
-                    log, number, step, result_name,
-                    changed=None if unknown else False,
-                    reason=err.code, provider_ids=[], key=None,
-                )  # fmt: skip
                 done.append({"kind": step.kind, "status": "failed", "code": err.code})
+                interrupt = None
                 if not isinstance(exc, Exception):
-                    info = PostInfo(
+                    interrupt = PostInfo(
                         "partial" if landed else "unknown",
                         {"code": err.code, "reason": err.reason},
                         _kinds(done),
                         provider_ids,
                         None,
                     )
-                    raise _Interrupt(exc, info) from None
+                self._outcome(
+                    log, number, step, result_name,
+                    changed=None if unknown else False,
+                    reason=err.code, provider_ids=[], key=None,
+                    interrupted=interrupt,
+                )  # fmt: skip
+                if interrupt is not None:
+                    raise _Interrupt(exc, interrupt) from None
                 failure = (err, unknown, False)
                 break
             ids = [i for i in res.provider_ids if GRAMMARS["provider_id"].matches(i)]
             key = res.key if res.key and audit.TICKET_KEY.fullmatch(res.key) else None
-            self._outcome(
-                log, number, step, "ok", changed=True, reason=None, provider_ids=ids,
-                key=key or planned.key,
-            )  # fmt: skip
             landed = True
             provider_ids.extend(ids)
             created_key = created_key or key
             comment_id = comment_id or res.comment_id
             done.append({"kind": step.kind, "status": "done"})
+            finished = number == len(steps)
+            self._outcome(
+                log, number, step, "ok", changed=True, reason=None, provider_ids=ids,
+                key=key or planned.key,
+                interrupted=PostInfo(
+                    "ok" if finished else "partial",
+                    None if finished else {"code": "internal", "reason": None},
+                    _kinds(
+                        [*done, *({"kind": s.kind, "status": "skipped"} for s in steps[number:])]
+                    ),
+                    provider_ids, True, created_key,
+                ),
+            )  # fmt: skip
 
         for step in steps[len(done) :]:
             done.append({"kind": step.kind, "status": "skipped"})
@@ -960,7 +996,11 @@ class _Run:
         reason: str | None,
         provider_ids: list[str],
         key: str | None,
+        interrupted: PostInfo | None,
     ) -> None:
+        """Append an outcome record. The request was made, so a failure here never changes the
+        outcome: it warns and marks the result ``audit_incomplete``. An interrupt during the append
+        still ends the command, with what the post hook must be told (``interrupted``)."""
         try:
             log.append(
                 number, step, result, changed=changed, reason=reason,
@@ -970,6 +1010,8 @@ class _Run:
             # Only a warning is possible now (exit codes keep the outcome).
             self.audit_incomplete = True
             self.rt.warn("warning: the audit outcome record could not be written")
+        except BaseException as exc:
+            raise _Interrupt(exc, interrupted) from None
 
     @staticmethod
     def _classify(exc: BaseException) -> tuple[TicketctlError, bool]:
@@ -1019,9 +1061,10 @@ class _Run:
 
 
 class _Interrupt(Exception):
-    """An interrupt midway through a send: carries it and what the post hook is told."""
+    """An interrupt midway through a send: carries it and what the post hook is told (None: no
+    ``attempted`` record exists, so no hook)."""
 
-    def __init__(self, exc: BaseException, info: PostInfo) -> None:
+    def __init__(self, exc: BaseException, info: PostInfo | None) -> None:
         super().__init__("interrupted")
         self.exc = exc
         self.info = info
