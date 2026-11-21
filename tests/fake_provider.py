@@ -1172,8 +1172,11 @@ class FakeProvider:
         out["body"] = self._body_doc(c["body"])
         out["created"] = self.stamp(c["_created"])
         out["updated"] = self.stamp(c["_updated"])
-        if props:
-            out["properties"] = [{"key": k, "value": v} for k, v in c["properties"].items()]
+        if props and "properties" in c and c["properties"] is not None:
+            raw = c["properties"]
+            out["properties"] = (
+                [{"key": k, "value": v} for k, v in raw.items()] if isinstance(raw, dict) else raw
+            )
         return out
 
     def _all_fields(self, t: Ticket) -> dict[str, Any]:

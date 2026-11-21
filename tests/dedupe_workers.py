@@ -29,8 +29,10 @@ def counter_worker(state_dir: str, name: str, counter: str, rounds: int, go: Eve
             Path(counter).write_text(str(value + 1))
 
 
-def cli_worker(argv: list[str], out: str, go: Event) -> None:
-    """Run one ``ticketctl`` command in this process once ``go`` is set; its stdout goes to ``out``.
+def cli_worker(argv: list[str], out: str, ready: Event) -> None:
+    """Run one ``ticketctl`` command in this process; its stdout goes to ``out``.
+
+    ``ready`` is set right before the command starts (everything is imported by then).
 
     The exit code is written first on its own line, then the JSON document.
     """
@@ -39,8 +41,8 @@ def cli_worker(argv: list[str], out: str, go: Event) -> None:
 
     from ticketctl.cli import main
 
-    go.wait(30)
     buf = io.StringIO()
+    ready.set()
     with contextlib.redirect_stdout(buf):
         code = main(argv)
     Path(out).write_text(f"{code}\n{buf.getvalue()}")

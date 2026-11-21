@@ -18,7 +18,7 @@ from tests.fake_provider import ME_ACCOUNT, OTHER_ACCOUNT, FakeProvider, Fault
 from tests.golden import assert_golden, validator
 from tests.test_comment import ATTEMPT, SITE_ENV_VAR, Cli  # noqa: F401  (fixture parts)
 from tests.test_comment import cli as cli  # noqa: F401  (the fixture)
-from ticketctl import attribution, commentscmd, dedupe
+from ticketctl import attribution, dedupe
 
 SPAWN = multiprocessing.get_context("spawn")
 KEY = "DEMO-2"
@@ -261,7 +261,8 @@ def test_exactly_1000_comments_with_no_marker_is_not_truncated_and_posts(cli: Cl
 def test_an_unreadable_comment_list_cannot_prove_absence(cli: Cli) -> None:
     cli.fake.inject(Fault("status", status=500, method="GET", path="/comment"))
     code, env = cli.doc("--dry-run", "comment", KEY, "--body", "x", "--dedupe-key", "n1")
-    assert code == 12 and env["error"]["code"] != "outcome_unknown"
+    assert (code, env["error"]["code"]) == (12, "unavailable")
+    assert env["error"]["retryable"] is True and env["error"]["outcome_unknown"] is False
     assert cli.writes() == []
 
 
@@ -272,19 +273,72 @@ def test_a_dropped_comment_cannot_prove_absence(cli: Cli) -> None:
     assert (code, env["error"]["code"]) == (12, "lookup_incomplete")
 
 
+@pytest.mark.parametrize("garbled", ["omit", "string"])
 def test_an_own_comment_whose_property_cannot_be_read_cannot_prove_absence(
-    cli: Cli, monkeypatch: pytest.MonkeyPatch
+    cli: Cli, garbled: str
 ) -> None:
-    real = commentscmd.scan_comments
-
-    def scan(*a: Any, **kw: Any) -> commentscmd.Scan:
-        out = real(*a, **kw)
-        out.marks.add("comments")  # what comment_object adds for an own comment w/o properties
-        return out
-
-    monkeypatch.setattr(commentscmd, "scan_comments", scan)
+    cid = seed(cli, author=ME_ACCOUNT)
+    comment = next(c for c in comments(cli) if c["id"] == cid)
+    if garbled == "omit":
+        comment["properties"] = None  # the fake leaves the field out of the list answer
+    else:
+        comment["properties"] = "garbage"  # the fake lists a non-dict value as it is
     code, env = cli.doc("--dry-run", "comment", KEY, "--body", "x", "--dedupe-key", "n3")
     assert (code, env["error"]["code"]) == (12, "lookup_incomplete")
+    assert cli.writes() == []
+
+
+def test_a_concurrent_comment_between_pages_is_rescanned_once_and_posts(cli: Cli) -> None:
+    for _ in range(150):
+        seed(cli)
+    fake: FakeProvider = cli.fake
+    index = next(
+        i
+        for i, (m, p, _) in enumerate(fake._routes)
+        if m == "GET" and p.pattern.endswith("/comment")
+    )
+    method, pattern, handler = fake._routes[index]
+    state = {"first": True}
+
+    def listing(call: Any, key: str) -> Any:
+        out = handler(call, key)
+        if state["first"]:  # a comment lands right after the first page was read
+            state["first"] = False
+            seed(cli)
+        return out
+
+    fake._routes[index] = (method, pattern, listing)
+    code, result = cli.post("--body", "hello", "--dedupe-key", "r1")
+    assert code == 0 and result["result"] == "ok" and result["already_posted"] is False
+    assert len(comments(cli)) == 152
+
+
+def test_a_hit_on_a_truncated_scan_is_already_posted(cli: Cli) -> None:
+    for _ in range(600):
+        seed(cli)
+    _, first = cli.post("--body", "hello", "--dedupe-key", "c5")
+    for _ in range(600):
+        seed(cli)  # 1201 comments: the scan is truncated, the marker is among the newest 1000
+    code, result = cli.post("--body", "hello", "--dedupe-key", "c5")
+    assert code == 0 and result["already_posted"] is True
+    assert result["comment_id"] == first["comment_id"]
+
+
+def test_the_newest_other_body_hit_is_reported_as_existing(cli: Cli) -> None:
+    seed(cli, author=ME_ACCOUNT, props={attribution.META_PROPERTY: meta_for("s1", "b" * 64)})
+    other = {attribution.META_PROPERTY: meta_for("s1", "c" * 64)}
+    newest = seed(cli, author=ME_ACCOUNT, props=other)
+    code, env = cli.doc("--dry-run", "comment", KEY, "--body", "hello", "--dedupe-key", "s1")
+    assert (code, env["error"]["code"]) == (20, "already_exists")
+    assert env["error"]["details"]["existing_id"] == newest
+
+
+def test_an_older_same_body_hit_beats_a_newer_other_body_hit(cli: Cli) -> None:
+    _, first = cli.post("--body", "hello", "--dedupe-key", "s2")
+    seed(cli, author=ME_ACCOUNT, props={attribution.META_PROPERTY: meta_for("s2", "d" * 64)})
+    code, result = cli.post("--body", "hello", "--dedupe-key", "s2")
+    assert code == 0 and result["already_posted"] is True
+    assert result["comment_id"] == first["comment_id"]
 
 
 def test_the_lookup_is_repeated_under_the_lock_and_adds_no_plan_facts(cli: Cli) -> None:
@@ -302,11 +356,20 @@ def test_the_lookup_is_repeated_under_the_lock_and_adds_no_plan_facts(cli: Cli) 
     assert later["plan_sha256"] == again["plan_sha256"]
 
 
-def test_the_marker_is_checked_for_the_fresh_account_not_the_cached_one(cli: Cli) -> None:
-    # a comment of another account that carries a valid marker never matches, whatever the cache
+def test_the_marker_is_checked_for_the_fresh_account_not_the_cached_one(
+    cli: Cli, tmp_path: Path
+) -> None:
+    assert cli.doc("whoami")[0] == 0  # fills the account cache
+    path = tmp_path / "state" / "ticketctl" / "cache" / "main" / "me.json"
+    cached = json.loads(path.read_text())
+    assert cached["account_id"] == ME_ACCOUNT
+    cached["account_id"] = OTHER_ACCOUNT  # the cache now names another account
+    path.write_text(json.dumps(cached))
+    mine = seed(cli, author=ME_ACCOUNT, props={attribution.META_PROPERTY: meta_for("a9")})
     seed(cli, author=OTHER_ACCOUNT, props={attribution.META_PROPERTY: meta_for("a9")})
-    code, plan = cli.doc("--dry-run", "comment", KEY, "--body", "x", "--dedupe-key", "a9")
-    assert code == 0 and plan["dedupe_match"] is None
+    code, env = cli.doc("--dry-run", "comment", KEY, "--body", "x", "--dedupe-key", "a9")
+    assert (code, env["error"]["code"]) == (20, "already_exists")
+    assert env["error"]["details"]["existing_id"] == mine
 
 
 def test_two_processes_with_one_key_post_once(
@@ -319,15 +382,18 @@ def test_two_processes_with_one_key_post_once(
     full = [*argv, "--yes", "--expect-plan", plan["plan_sha256"], *cmd]
     state = tmp_path / "state" / "ticketctl"
     name = dedupe.bucket_name("main", KEY, "race1")
-    go = SPAWN.Event()
+    ready = [SPAWN.Event(), SPAWN.Event()]
     outs = [tmp_path / "out0", tmp_path / "out1"]
-    procs = [SPAWN.Process(target=dedupe_workers.cli_worker, args=(full, str(o), go)) for o in outs]
-    # the parent holds the bucket so both workers are inside the engine when it opens
+    procs = [
+        SPAWN.Process(target=dedupe_workers.cli_worker, args=(full, str(o), r))
+        for o, r in zip(outs, ready, strict=True)
+    ]
+    # the parent holds the bucket until both workers signalled they are about to run the command
     with dedupe.BucketLock(state, name, timeout=30.0):
         for p in procs:
             p.start()
-        go.set()
-        time.sleep(3.0)
+        assert all(r.wait(60) for r in ready)
+        time.sleep(1.0)  # a short grace for both to reach the lock
         assert not any(o.exists() for o in outs)
     for p in procs:
         p.join(60)
