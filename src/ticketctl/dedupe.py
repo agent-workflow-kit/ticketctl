@@ -376,11 +376,14 @@ def guarded_lookup[T](
 ) -> T | None:
     """The create lookup under the bucket lock, with the lag guard (``reduce(fresh=True)``).
 
-    ``scope`` is the project; ``lookup`` returns the found object or None. Call it only while
-    the bucket lock is held: the lock file's time is read as the previous holder's release.
-    ``ValueError`` (an internal error) when the bucket derived from ``scope`` and ``dedupe_key``
-    is not one this thread holds for the state directory (a wrong ``scope`` would silently
-    disable the quick re-run).
+    ``scope`` is the project and must equal the create plan's ``Planned.hash_key``; ``lookup``
+    returns the found object or None. Call it only while the bucket lock is held: the lock
+    file's time is read as the previous holder's release. ``ValueError`` (an internal error)
+    when the bucket derived from ``scope`` and ``dedupe_key`` is not one this thread holds for
+    the state directory (a wrong ``scope`` would silently disable the quick re-run). The held
+    check needs the real ``bucket_lock`` seam: an injected fake lock never registers the
+    bucket, so it makes this raise ``ValueError``; tests of the create action (#31) must keep
+    the real lock.
     """
     clock = clock or Clock()
     name = bucket_name(ctx.site, scope, dedupe_key)
