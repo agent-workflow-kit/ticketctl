@@ -86,7 +86,7 @@ def _allowed(raw: object, marks: set[str]) -> list[str]:
     return values
 
 
-def _required_fields(raw: object, marks: set[str]) -> list[dict[str, Any]]:
+def required_fields(raw: object, marks: set[str]) -> list[dict[str, Any]]:
     if not isinstance(raw, dict):
         return []
     out: list[dict[str, Any]] = []
@@ -150,7 +150,7 @@ def transition_object(raw: object, marks: set[str]) -> dict[str, Any] | None:
         "id": tid,
         "name": name,
         "to": target,
-        "required_fields": _required_fields(fields, marks),
+        "required_fields": required_fields(fields, marks),
         "has_screen": screen,
     }
 

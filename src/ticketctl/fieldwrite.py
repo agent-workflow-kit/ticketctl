@@ -40,6 +40,7 @@ from .adf_render import render_adf
 from .config import LOGICAL_FIELDS
 from .errors import TicketctlError
 from .fieldmap import ProviderField, SiteFields, Status
+from .plan import canonical_bytes
 from .setconvert import FieldValue, ValueContext, convert_all, is_rich
 from .setspec import Resolved
 from .timestamps import MAX_LENGTH, normalize_date
@@ -239,6 +240,14 @@ def fact(edit: FieldEdit, raw: object) -> Any:
     return value
 
 
+def value_hash(edit: FieldEdit) -> str:
+    """The intent hash of a value to send: its body hash (rich text) or the hash of its payload."""
+    rich = edit.value.rich
+    if rich is not None and rich.sha256 is not None:
+        return rich.sha256
+    return hashlib.sha256(canonical_bytes(edit.value.payload)).hexdigest()
+
+
 def _shown(edit: FieldEdit, value: Any) -> Any:
     """A canonical value as a plan shows it: a number stays a number."""
     schema = edit.field.schema
@@ -291,4 +300,5 @@ __all__ = [
     "fields_body",
     "read_object",
     "same_value",
+    "value_hash",
 ]

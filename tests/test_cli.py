@@ -284,7 +284,7 @@ USAGE_PRODUCERS = {
 }  # fmt: skip
 # `missing_option` has no parser-level producer: it needs config and provider context (the
 # board of `sprints`, the project of `create`), so it is raised as a TicketctlError by the
-# handlers. TODO(#31): add the command-line test with the handler that owns it (`sprints` has one).
+# handlers (`sprints list` and `create` have command-line tests).
 HANDLER_ONLY_USAGE_REASONS = {"missing_option"}
 
 
@@ -357,8 +357,11 @@ def test_traceback_only_with_debug(
     _check_envelope(out)
 
 
-def test_stub_handler_is_exit_one(capsys: pytest.CaptureFixture[str]) -> None:
-    status, out, _ = run(capsys, "--json", "create")  # a stub, owned by #31
+def test_unimplemented_handler_is_exit_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_handler(monkeypatch, ("whoami",), raiser(NotImplementedError("not built")))
+    status, out, _ = run(capsys, "--json", "whoami")
     assert status == 1
     assert _check_envelope(out)["code"] == "internal"
 
@@ -514,7 +517,9 @@ def test_yes_with_dry_run_skips_the_check(
     assert run(capsys, "transition", "AB-1", "--to", "Done", "--yes", "--dry-run")[0] == 0
 
 
-@pytest.mark.parametrize("cmd", [["comment", "AB-1", "--body", "x"], ["create", "--type", "Task"]])
+@pytest.mark.parametrize(
+    "cmd", [["comment", "AB-1", "--body", "x"], ["create", "--type", "Task", "--title", "t"]]
+)
 def test_yes_on_comment_and_create_needs_dedupe_key(
     cmd: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -728,7 +733,9 @@ BAD_DEDUPE = ["bad key", "k\n", "", "a" * 129, "k\u00e9", "a;b"]
 
 @pytest.mark.parametrize("value", BAD_DEDUPE, ids=repr)
 @pytest.mark.parametrize(
-    "cmd", [["comment", "AB-1", "--body", "x"], ["create", "--type", "Task"]], ids=lambda c: c[0]
+    "cmd",
+    [["comment", "AB-1", "--body", "x"], ["create", "--type", "Task", "--title", "t"]],
+    ids=lambda c: c[0],
 )
 def test_bad_dedupe_key_is_invalid_argument(
     cmd: list[str], value: str, capsys: pytest.CaptureFixture[str]
@@ -905,6 +912,33 @@ def _proc(tmp_path: Path, *argv: str, debug: bool = False) -> subprocess.Complet
     )
 
 
+def _proc_boom(tmp_path: Path, *argv: str, debug: bool = False) -> subprocess.CompletedProcess[str]:
+    """``whoami`` with a handler that raises an unexpected exception, in a real process."""
+    script = tmp_path / "boom.py"
+    script.write_text(
+        "import dataclasses, sys\n"
+        "from ticketctl import commands, cli\n"
+        "def boom(g, a):\n    raise RuntimeError('unexpected')\n"
+        "spec = commands.REGISTRY[('whoami',)]\n"
+        "commands.REGISTRY[('whoami',)] = dataclasses.replace(spec, handler=boom)\n"
+        "sys.exit(cli.main(sys.argv[1:]))\n"
+    )
+    env = {
+        "HOME": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "PATH": "",
+        "PYTHONPATH": os.pathsep.join(sys.path),
+    }
+    if debug:
+        env["TICKETCTL_DEBUG"] = "1"
+    return subprocess.run(
+        [sys.executable, str(script), *argv, "whoami"],
+        env=env, capture_output=True, text=True, timeout=60, check=False,
+    )  # fmt: skip
+
+
 def test_process_version(tmp_path: Path) -> None:
     r = _proc(tmp_path, "--version")
     assert (r.returncode, r.stdout.strip()) == (0, f"ticketctl {__version__}")
@@ -917,9 +951,9 @@ def test_process_usage_error_exit_two_with_envelope(tmp_path: Path) -> None:
 
 
 def test_process_unexpected_exception_exit_one_without_traceback(tmp_path: Path) -> None:
-    r = _proc(tmp_path, "create", "--json", "--dry-run")  # a stub (#31)
+    r = _proc_boom(tmp_path, "--json")
     assert r.returncode == 1
     assert "Traceback" not in r.stderr
     assert _check_envelope(r.stdout)["code"] == "internal"
-    r = _proc(tmp_path, "create", "--dry-run", debug=True)
+    r = _proc_boom(tmp_path, debug=True)
     assert r.returncode == 1 and "Traceback" in r.stderr
