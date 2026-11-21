@@ -58,11 +58,19 @@ def _name(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _obj(value: object) -> dict[str, Any]:
+    """A provider object, or an empty one when the provider sent anything else (no fact then)."""
+    return value if isinstance(value, dict) else {}
+
+
 class CommentAction:
     """``comment KEY`` as a :class:`~ticketctl.writeflow.WriteAction`."""
 
     name = "comment"
     yes_needs_dedupe_key = True
+    # todo(#33): set to True when find_existing looks the key up; until then a keyed re-run posts
+    # again, so the engine reports outcome_unknown as not retryable (writeflow._retry_rules).
+    dedupe_lookup = False
 
     def __init__(
         self,
@@ -84,6 +92,7 @@ class CommentAction:
         self.body_chars = pc.body_chars
         self.rich = pc.prepare_rich(self.body, kind="comment", fmt=self.fmt)
         if self.dedupe_key is not None:
+            GRAMMARS["dedupe_key"].check(self.dedupe_key)
             pc.check_secrets(self.dedupe_key)
 
     # -- step 3 ------------------------------------------------------------------------------
@@ -151,10 +160,10 @@ class CommentAction:
     def _hook_facts(
         self, ctx: Context, fields: dict[str, Any], status: dict[str, Any], category: str | None
     ) -> dict[str, Any]:
-        project = (fields.get("project") or {}).get("key")
-        itype = fields.get("issuetype") or {}
-        assignee = (fields.get("assignee") or {}).get("accountId")
-        priority = (fields.get("priority") or {}).get("name")
+        project = _obj(fields.get("project")).get("key")
+        itype = _obj(fields.get("issuetype"))
+        assignee = _obj(fields.get("assignee")).get("accountId")
+        priority = _obj(fields.get("priority")).get("name")
         facts: dict[str, Any] = {
             "ticket": {
                 "type": _name(itype.get("name")),

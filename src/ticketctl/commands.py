@@ -167,7 +167,12 @@ def _transition(p: argparse.ArgumentParser) -> None:
 
 def _comment(p: argparse.ArgumentParser) -> None:
     _key(p)
-    _add(p, "--body")
+    _add(
+        p,
+        "--body",
+        help="the comment text (Markdown); a body starting with '-' needs --body=TEXT "
+        "or --body-file",
+    )
     _add(p, "--body-file")
     _add(p, "--format", choices=["markdown", "adf"])
     _add(p, "--dedupe-key", type=dedupe_key_arg)

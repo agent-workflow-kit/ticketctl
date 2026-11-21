@@ -57,7 +57,7 @@ PENDING: dict[str, int] = {
     **{
         f"hooks/{when}-{kind}.json": 25
         for when in ("pre", "post")
-        for kind in ("comment", "create", "sprint", "transition", "update")
+        for kind in ("create", "sprint", "transition", "update")
     },
 }
 

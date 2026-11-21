@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from tests.fake_provider import SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault
 from tests.golden import assert_golden, validator
-from ticketctl import attribution, commentcmd
+from ticketctl import attribution, commentcmd, config, hooks
 from ticketctl.cli import main
-from ticketctl.writeflow import Seams
+from ticketctl.errors import TicketctlError
+from ticketctl.flags import Globals
+from ticketctl.gateway import HookRun
+from ticketctl.runtime import load_runtime
+from ticketctl.writeflow import Seams, execute
 
-TOKEN_VAR = "TICKETCTL_TEST_TOKEN"
+SITE_ENV_VAR = "TICKETCTL_TEST_SITE_ENV"
 ATTEMPT = "0123456789abcdef"
+REAL_MAKE_SEAMS = commentcmd.make_seams
+BODY_MARK = "zq7x-body-marker-4f9c2e"  # cannot occur by accident; must never reach a hook
 SITE_URL = "https://tracker.example.test"
 
 
@@ -28,7 +37,7 @@ class Cli:
         self.config = root / "config.yaml"
         self.config.write_text(
             f"sites:\n  main:\n    url: {fake.url}\n    email: {SITE_EMAIL}\n"
-            f"    token_env: {TOKEN_VAR}\n    allow_http: true\n"
+            f"    token_env: {SITE_ENV_VAR}\n    allow_http: true\n"
         )
         self.config.chmod(0o600)
 
@@ -60,7 +69,8 @@ class Cli:
 @pytest.fixture
 def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: FakeProvider) -> Cli:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv(TOKEN_VAR, SITE_TOKEN)
+    monkeypatch.setenv(SITE_ENV_VAR, SITE_TOKEN)
+    monkeypatch.setenv("PATH", "/nonexistent")  # a test can never start a real program by PATH
     monkeypatch.setattr(commentcmd, "make_seams", lambda: Seams(attempt_id=lambda: ATTEMPT))
     return Cli(tmp_path, fake, capsys)
 
@@ -173,7 +183,9 @@ def test_invalid_adf_is_refused_before_any_request(cli: Cli) -> None:
     code, env = cli.doc(
         "--dry-run", "comment", "DEMO-2", "--body-file", str(path), "--format", "adf"
     )
-    assert code == 22
+    assert (code, env["error"]["code"], env["error"]["reason"]) == (
+        22, "invalid_request", "node_not_allowed",
+    )  # fmt: skip
     assert cli.fake.calls == []
 
 
@@ -238,7 +250,12 @@ def test_the_plan_hash_changes_with_the_body_and_the_key(cli: Cli) -> None:
     assert base != h("--body", "one", "--dedupe-key", "k")
 
 
-def test_outcome_unknown_with_a_dedupe_key_is_retryable(cli: Cli) -> None:
+def test_outcome_unknown_with_a_dedupe_key_is_not_retryable_until_the_lookup_exists(
+    cli: Cli,
+) -> None:
+    # todo(#33): find_existing is a stub, so a keyed re-run would post the comment again; once the
+    # lookup exists this becomes retryable True again (the engine default).
+    before = len(cli.fake.tickets["DEMO-2"].comments)
     cli.fake.inject(Fault("reset", method="POST", path="/comment", after_apply=True))
     _, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "x", "--dedupe-key", "u1")
     code, env = cli.doc(
@@ -248,8 +265,11 @@ def test_outcome_unknown_with_a_dedupe_key_is_retryable(cli: Cli) -> None:
     assert (code, env["error"]["code"], env["error"]["outcome_unknown"]) == (
         12, "outcome_unknown", True,
     )  # fmt: skip
-    assert env["error"]["retryable"] is True  # with a dedupe key a re-run is safe (#33)
+    assert env["error"]["retryable"] is False
+    assert "may post the comment again" in env["error"]["message"]
     assert env["error"]["details"]["attempt_id"] == ATTEMPT
+    # the write landed once; an automatic re-run with the same key would make it two
+    assert len(cli.fake.tickets["DEMO-2"].comments) == before + 1
 
 
 def test_a_provider_refusal_is_rejected(cli: Cli) -> None:
@@ -262,6 +282,9 @@ def test_a_provider_refusal_is_rejected(cli: Cli) -> None:
 def test_the_dedupe_seam_makes_the_comment_already_posted(
     cli: Cli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """SEAM ONLY: ``find_existing`` is a stub until #33, so this golden is produced by a patched
+    seam and shows the result shape of a dedupe hit, not a real lookup (todo(#33): replace it with
+    a test against the fake provider's comments once the lookup exists)."""
     monkeypatch.setattr(commentcmd.CommentAction, "find_existing", lambda self, ctx, rich: "777")
     code, result = cli.post("--body", "x", "--dedupe-key", "d1")
     assert code == 0 and result["result"] == "unchanged"
@@ -281,45 +304,247 @@ def test_the_seam_is_not_asked_without_a_dedupe_key(
     assert code == 0
 
 
-def test_the_hook_payload_is_built_by_the_real_runner(cli: Cli) -> None:
-    from ticketctl import hooks, identity
-    from ticketctl.flags import Globals
-    from ticketctl.plan import build_plan
-    from ticketctl.runtime import for_site, load_runtime, open_gateway
-    from ticketctl.writeflow import Context, PrepareContext, WriteGateway
+def test_the_hook_payloads_come_from_the_real_runner_and_match_the_schemas(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli.config.write_text(
+        cli.config.read_text()
+        + "hooks:\n  pre-comment:\n    - cmd: ignored\n  post-comment:\n    - cmd: ignored\n"
+    )
+    seen: dict[str, bytes] = {}
 
-    rt = load_runtime(Globals(config=str(cli.config), resolved_actor="human:t"))
-    action = commentcmd.CommentAction("DEMO-2", "hello", dedupe_key="h1")
-    pc = PrepareContext(rt, "main", "human:t")
-    action.prepare(pc)
-    with for_site("main"):
-        gw = open_gateway(rt, "main")
-        me = identity.load_me(rt, "main", gw, refresh=True)
-        ctx = Context(
-            rt,
-            "main",
-            WriteGateway(gw, body_chars=pc.body_chars),
-            me,
-            "human:t",
-            "flag",
-            ATTEMPT,
-            "comment",
-        )
-        planned = action.reduce(ctx, fresh=False)
-    plan = build_plan("comment", "main", "human:t", planned)
-    for name in ("pre-comment", "post-comment"):
-        info = None
-        if name.startswith("post"):
-            from ticketctl.writeflow import PostInfo
+    def fake_run(argv: list[str], *, stdin: bytes, env: dict[str, str], **kw: Any) -> HookRun:
+        seen[env["TICKETCTL_HOOK"]] = stdin
+        return HookRun(1, 0, b"", b"", False, False, False)
 
-            info = PostInfo("ok", None, [{"kind": "add_comment", "status": "done"}], ["1"], True)
-        payload = hooks.build_payload(name, plan, planned, ATTEMPT, [], info)
+    monkeypatch.setattr(hooks, "run_hook", fake_run)
+    body = f"hello {BODY_MARK} and a secret-looking sk-live-{BODY_MARK}"
+    code, result = cli.post("--body", body, "--dedupe-key", "h1")
+    assert code == 0 and result["result"] == "ok", result
+    assert set(seen) == {"pre-comment", "post-comment"}
+    for name, raw in seen.items():
+        payload = json.loads(raw)
+        validator(f"hooks/{name}.json").validate(payload)
+        assert BODY_MARK not in raw.decode() and "hello" not in raw.decode()
         assert payload["project"] == "DEMO" and payload["plan"]["dedupe_key"] == "h1"
         assert payload["plan"]["current_status"]["category"] in ("new", "indeterminate", "done")
         assert payload["ticket"]["type"]
-        assert "hello" not in json.dumps(payload)
+        assert_golden("hooks", name, "ok", cli.norm(payload))
+    post = json.loads(seen["post-comment"])
+    assert post["result"] == "ok" and post["changed"] is True
 
 
 def test_a_dedupe_key_outside_the_grammar_is_exit_2(cli: Cli) -> None:
     code, env = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "x", "--dedupe-key", "bad key!")
     assert code == 2 and env["error"]["reason"] == "invalid_argument"
+
+
+# ---------------------------------------------------------------------------------------------
+# stdin, provider failures, audit, account, boundaries (review round 1)
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pipe_stdin(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``feed(data)`` makes the next read of ``sys.stdin`` come from a real pipe (not a TTY)."""
+    opened: list[Any] = []
+
+    def feed(data: bytes) -> None:
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, data)
+        os.close(write_fd)
+        stream = os.fdopen(read_fd, "r", encoding="utf-8")
+        opened.append(stream)
+        monkeypatch.setattr(sys, "stdin", stream)
+
+    yield feed
+    for stream in opened:
+        stream.close()
+
+
+def test_the_body_from_stdin_through_a_pipe_is_posted_with_yes(cli: Cli, pipe_stdin: Any) -> None:
+    pipe_stdin(f"from a pipe {BODY_MARK}".encode())
+    code, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body-file", "-", "--dedupe-key", "p1")
+    assert code == 0, plan
+    pipe_stdin(f"from a pipe {BODY_MARK}".encode())
+    code, result = cli.doc(
+        "--yes", "--expect-plan", plan["plan_sha256"], "comment", "DEMO-2",
+        "--body-file", "-", "--dedupe-key", "p1",
+    )  # fmt: skip
+    assert code == 0 and result["result"] == "ok", result
+    assert BODY_MARK in json.dumps(cli.fake.tickets["DEMO-2"].comments[-1]["body"])
+
+
+def test_stdin_body_without_yes_and_no_tty_is_exit_13(cli: Cli, pipe_stdin: Any) -> None:
+    pipe_stdin(b"from a pipe")
+    code, env = cli.doc("comment", "DEMO-2", "--body-file", "-")
+    assert (code, env["error"]["code"]) == (13, "confirmation_required")
+    assert cli.writes() == []
+
+
+@pytest.mark.parametrize(
+    ("fault", "code_name", "exit_code"),
+    [
+        (Fault("status", status=404, method="POST", path="/comment"), "not_found", 10),
+        (
+            Fault(
+                "status", status=429, method="POST", path="/comment", times=None, retry_after=3600
+            ),
+            "rate_limited",
+            12,
+        ),
+        (Fault("status", status=500, method="POST", path="/comment"), "outcome_unknown", 12),
+    ],
+    ids=["404", "429", "500"],
+)
+def test_post_failures_map_to_their_codes(
+    cli: Cli, fault: Fault, code_name: str, exit_code: int
+) -> None:
+    cli.fake.inject(fault)
+    code, env = cli.post("--body", "x", "--dedupe-key", "f1")
+    assert (code, env["error"]["code"]) == (exit_code, code_name)
+    validator("cli/error.json").validate(env)
+
+
+def _audit(cli: Cli) -> list[dict[str, Any]]:
+    path = cli.root / "state" / "ticketctl" / "audit.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_the_audit_has_an_attempted_and_an_ok_record(cli: Cli) -> None:
+    code, result = cli.post("--body", "x", "--dedupe-key", "a1")
+    assert code == 0
+    records = _audit(cli)
+    assert [r["result"] for r in records] == ["attempted", "ok"]
+    assert {r["action"] for r in records} == {"comment"}
+    assert records[0]["step_kind"] == "add_comment"
+    assert {r["attempt_id"] for r in records} == {ATTEMPT}
+    for r in records:
+        validator("audit.json").validate(r)
+    assert BODY_MARK not in json.dumps(records)
+
+
+def test_a_failed_post_leaves_attempted_and_a_failure_record(cli: Cli) -> None:
+    cli.fake.inject(Fault("status", status=400, method="POST", path="/comment"))
+    code, _ = cli.post("--body", "x", "--dedupe-key", "a2")
+    assert code == 12
+    records = _audit(cli)
+    assert records[0]["result"] == "attempted" and len(records) == 2
+    assert records[1]["result"] != "ok"
+
+
+def test_an_account_mismatch_refuses_before_any_write(cli: Cli) -> None:
+    cli.config.write_text(cli.config.read_text() + "me:\n  jira: acct-9999\n")
+    code, env = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "x")
+    assert (code, env["error"]["reason"]) == (2, "account_mismatch")
+    assert cli.writes() == []
+
+
+def test_dry_run_ignores_expect_plan(cli: Cli) -> None:
+    code, plan = cli.doc("--dry-run", "--expect-plan", "0" * 64, "comment", "DEMO-2", "--body", "x")
+    assert code == 0 and plan["steps"][0]["kind"] == "add_comment"
+    assert cli.writes() == []
+
+
+def test_an_unknown_status_category_gives_no_closed_warning(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fields(self: Any, ctx: Any) -> dict[str, Any]:
+        return {"status": {"name": "Odd", "statusCategory": {"key": "other"}}}
+
+    monkeypatch.setattr(commentcmd.CommentAction, "_read_ticket", fields)
+    code, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "x")
+    assert code == 0 and "closed_ticket" not in plan["warnings"]
+
+
+def test_the_real_seams_give_a_random_attempt_id(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(commentcmd, "make_seams", REAL_MAKE_SEAMS)
+    code, result = cli.post("--body", "x", "--dedupe-key", "r2")
+    assert code == 0, result
+    assert re.fullmatch(r"[0-9a-f]{16}", result["attempt_id"]) and result["attempt_id"] != ATTEMPT
+
+
+def _plan_warnings(cli: Cli, chars: int) -> list[str]:
+    code, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "a" * chars)
+    assert code == 0, plan
+    return plan["warnings"]
+
+
+ATTRIBUTION_LEN = len(attribution.attribution_text(config.Attribution().template))
+
+
+def test_body_near_limit_is_absent_at_25000_and_present_at_27500(cli: Cli) -> None:
+    assert "body_near_limit" not in _plan_warnings(cli, 25000)
+    assert "body_near_limit" in _plan_warnings(cli, 27500)
+
+
+def test_body_near_limit_counts_the_attribution_at_exactly_90_percent(cli: Cli) -> None:
+    at_limit = 27000 - ATTRIBUTION_LEN  # text plus attribution is exactly 90% of 30000
+    assert "body_near_limit" not in _plan_warnings(cli, at_limit)
+    assert "body_near_limit" in _plan_warnings(cli, at_limit + 1)
+
+
+def test_the_size_limit_counts_the_attribution(cli: Cli) -> None:
+    fits = 30000 - ATTRIBUTION_LEN
+    code, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "a" * fits)
+    assert code == 0, plan
+    code, env = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "a" * (fits + 1))
+    assert (code, env["error"]["reason"]) == (22, "body_too_large")
+
+
+def test_the_engine_refuses_yes_without_a_key_for_the_comment_action(
+    cli: Cli,
+) -> None:
+    g = Globals(config=str(cli.config), resolved_actor="human:t", yes=True, expect_plan="0" * 64)
+    with pytest.raises(TicketctlError) as info:
+        execute(load_runtime(g), "main", commentcmd.CommentAction("DEMO-2", "x"), Seams())
+    assert (info.value.exit, info.value.reason) == (2, "dedupe_key_required")
+    assert cli.fake.calls == []
+
+
+def test_a_secret_as_the_dedupe_key_is_refused_and_never_printed(cli: Cli) -> None:
+    code, out, err = cli.run("--json", "--dry-run", "comment", "DEMO-2", "--body", "x",
+                             "--dedupe-key", SITE_TOKEN)  # fmt: skip
+    assert code == 22 and json.loads(out)["error"]["reason"] == "secret_in_body"
+    assert SITE_TOKEN not in out + err
+    assert cli.fake.calls == []
+
+
+def test_the_action_checks_the_dedupe_key_grammar_before_any_request(cli: Cli) -> None:
+    g = Globals(config=str(cli.config), resolved_actor="human:t", dry_run=True)
+    with pytest.raises(TicketctlError) as info:
+        execute(
+            load_runtime(g), "main", commentcmd.CommentAction("DEMO-2", "x", dedupe_key="bad key!"),
+            Seams(),
+        )  # fmt: skip
+    assert (info.value.exit, info.value.reason) == (2, "invalid_argument")
+    assert cli.fake.calls == []
+
+
+def test_a_provider_that_sends_odd_shapes_gives_no_facts_and_no_crash(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fields(self: Any, ctx: Any) -> dict[str, Any]:
+        return {"project": "DEMO", "issuetype": 5, "assignee": ["x"], "priority": "High"}
+
+    monkeypatch.setattr(commentcmd.CommentAction, "_read_ticket", fields)
+    code, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "x")
+    assert code == 0 and plan["steps"][0]["kind"] == "add_comment"
+
+
+def test_hook_facts_of_odd_shapes_leave_no_fact(cli: Cli) -> None:
+    action = commentcmd.CommentAction("DEMO-2", "x")
+    odd: dict[str, Any] = {"project": 1, "issuetype": "t", "assignee": [], "priority": 3}
+    ctx: Any = SimpleNamespace(me=SimpleNamespace(account_id="a"))
+    facts = action._hook_facts(ctx, odd, {}, None)
+    assert "project" not in facts
+    assert facts["ticket"]["type"] is None and facts["ticket"]["priority"] is None
+    assert facts["ticket"]["assignee_account_id"] is None
+
+
+def test_a_body_file_over_four_times_the_limit_is_invalid_file(cli: Cli) -> None:
+    path = cli.root / "big.md"
+    path.write_text("a" * (4 * 30000 + 1))
+    code, env = cli.doc("--dry-run", "comment", "DEMO-2", "--body-file", str(path))
+    assert (code, env["error"]["reason"]) == (22, "invalid_file")
+    assert cli.fake.calls == []
