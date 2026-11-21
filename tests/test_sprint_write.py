@@ -12,7 +12,7 @@ import pytest
 
 from tests.fake_provider import SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault, Out
 from tests.golden import assert_golden, validator
-from ticketctl import hooks, sprintcmd
+from ticketctl import confirm_dialog, hooks, sprintcmd
 from ticketctl.cli import main
 from ticketctl.gateway import HookRun
 from ticketctl.writeflow import Seams
@@ -21,6 +21,7 @@ SITE_ENV_VAR = "TICKETCTL_TEST_SITE_ENV"
 ATTEMPT = "0123456789abcdef"
 SITE_URL = "https://tracker.example.test"
 OPEN_PATH = "/rest/agile/1.0/sprint/{id}/issue"
+ABSENT = object()  # the ticket answer has no sprint field at all
 
 
 class Cli:
@@ -640,6 +641,12 @@ def test_an_unmapped_sprint_field_is_unknown_field(cli: Cli) -> None:
         [{"id": 2, "name": "x", "state": "weird"}],
         [None],
         [{"id": True, "name": "x", "state": "active"}],
+        [{"id": 2, "name": "", "state": "active"}],
+        [{"id": 2, "name": "  ", "state": "future"}],
+        [{"id": 2, "name": "a", "state": "active"}, {"id": 2, "name": "a", "state": "future"}],
+        [{"id": 2, "name": "a", "state": "active"}, {"id": 2, "name": "a", "state": "closed"}],
+        [{"name": "x", "state": "closed"}],
+        [{"id": 9, "name": "x"}],
     ],
 )
 def test_an_unreadable_sprint_value_on_the_ticket_never_counts_as_no_sprint(
@@ -658,7 +665,10 @@ def override_issue_sprint(cli: Cli, raw: Any) -> None:
 
     def hostile(call: Any, *groups: str) -> Out:
         out = real(call, *groups)
-        out.body["fields"]["customfield_90003"] = raw
+        if raw is ABSENT:
+            out.body["fields"].pop("customfield_90003", None)
+        else:
+            out.body["fields"]["customfield_90003"] = raw
         return out
 
     hostile.real = real  # type: ignore[attr-defined]  # a second override finds the original again
@@ -828,3 +838,90 @@ def test_the_human_output_is_one_line_per_step(cli: Cli) -> None:
     code, out, _ = cli.run("--yes", "--expect-plan", plan["plan_sha256"], "sprint", "add",
                            "DEMO-1", "--sprint", "2")  # fmt: skip
     assert code == 0 and "sprint_add" in out and "DEMO-1" in out
+
+
+def test_an_absent_sprint_field_is_provider_changed_not_no_sprint(cli: Cli) -> None:
+    override_issue_sprint(cli, ABSENT)
+    for argv in (["sprint", "remove", "DEMO-2"], ["sprint", "add", "DEMO-2", "--sprint", "3"]):
+        code, env = cli.doc("--dry-run", *argv)
+        assert (code, env["error"]["code"]) == (12, "provider_changed"), argv
+    assert cli.writes() == []
+
+
+def test_a_closed_entry_with_a_readable_id_and_state_needs_no_name(cli: Cli) -> None:
+    closed = {"id": 1, "state": "closed"}
+    override_issue_sprint(cli, [closed, {"id": 2, "name": "S", "state": "active"}])
+    code, plan = cli.doc("--dry-run", "sprint", "remove", "DEMO-2")
+    assert code == 0 and plan["changes"][0]["from"] == ["2: S"]
+
+
+def test_the_same_sprint_listed_twice_alike_is_read(cli: Cli) -> None:
+    entry = {"id": 2, "name": "S", "state": "active"}
+    override_issue_sprint(cli, [entry, dict(entry)])
+    code, plan = cli.doc("--dry-run", "sprint", "remove", "DEMO-2")
+    assert code == 0 and plan["changes"][0]["from"] == ["2: S"]
+
+
+@pytest.mark.parametrize("selector", ["open", "next"])
+def test_a_listing_cut_off_by_the_page_loop_is_lookup_incomplete(cli: Cli, selector: str) -> None:
+    def page(call: Any, *groups: str) -> Out:
+        start = int(call.one("startAt", "0"))
+        values = [{"id": start + 1000, "name": "old", "state": "closed", "originBoardId": 1}]
+        return Out(200, {"isLast": False, "values": values})
+
+    override(cli.fake, "GET", r"/board/(\d+)/sprint", page)
+    code, env = cli.doc("--dry-run", "sprint", "add", "DEMO-1", "--sprint", selector)
+    assert (code, env["error"]["code"]) == (12, "lookup_incomplete") and cli.writes() == []
+
+
+def test_add_by_id_needs_only_id_name_and_state_of_the_sprint(cli: Cli) -> None:
+    def bare(call: Any, *groups: str) -> Out:
+        return Out(200, {"id": 3, "name": "Sprint three", "state": "future"})
+
+    override(cli.fake, "GET", r"/sprint/(\d+)", bare)
+    code, result = cli.apply("sprint", "add", "DEMO-1", "--sprint", "3")
+    assert code == 0 and result["result"] == "ok" and cli.sprints_of("DEMO-1") == [3]
+
+
+@pytest.mark.parametrize("value", ["Sprint two", "future", "OPEN"])
+def test_the_selector_error_says_names_are_not_supported(cli: Cli, value: str) -> None:
+    code, env = cli.doc("--dry-run", "sprint", "add", "DEMO-1", "--sprint", value)
+    assert (code, env["error"]["reason"]) == (2, "invalid_argument")
+    want = r"--sprint takes open, next or a numeric id \(sprint names are not supported\)"
+    assert re.search(want, env["error"]["message"])
+
+
+def test_a_remove_plan_goes_stale_when_the_ticket_gains_a_sprint(cli: Cli) -> None:
+    argv = ["sprint", "remove", "DEMO-2"]
+    _, plan = cli.doc("--dry-run", *argv)
+    cli.fake.tickets["DEMO-2"].sprints = [2, 3]
+    code, env = cli.doc("--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, env["error"]["code"]) == (20, "stale_ticket") and cli.writes() == []
+
+
+def test_an_add_plan_goes_stale_when_the_ticket_gains_a_sprint(cli: Cli) -> None:
+    argv = ["sprint", "add", "DEMO-1", "--sprint", "2"]
+    _, plan = cli.doc("--dry-run", *argv)
+    cli.fake.tickets["DEMO-1"].sprints = [3]
+    code, env = cli.doc("--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, env["error"]["code"]) == (20, "stale_ticket") and cli.writes() == []
+
+
+def test_a_404_on_the_backlog_write_is_not_found_for_the_ticket(cli: Cli) -> None:
+    cli.fake.inject(Fault("status", status=404, method="POST", path="/backlog/issue"))
+    code, env = cli.apply("sprint", "remove", "DEMO-2")
+    assert (code, env["error"]["code"]) == (10, "not_found")
+    assert "ticket" in env["error"]["message"] and cli.sprints_of("DEMO-2") == [2]
+
+
+def test_the_dialog_shows_the_sprints_a_remove_leaves(cli: Cli) -> None:
+    _, plan = cli.doc("--dry-run", "sprint", "remove", "DEMO-2")
+    text = confirm_dialog.compose(plan)
+    assert re.search(r"current sprints.*\n.*2: Sprint two", text)
+
+
+def test_the_dialog_shows_the_sprints_a_move_leaves_and_enters(cli: Cli) -> None:
+    _, plan = cli.doc("--dry-run", "sprint", "add", "DEMO-2", "--sprint", "3")
+    text = confirm_dialog.compose(plan)
+    assert re.search(r"current sprints.*\n.*2: Sprint two", text)
+    assert re.search(r"3: Sprint three", text)

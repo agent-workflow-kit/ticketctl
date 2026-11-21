@@ -7,14 +7,15 @@ The action names are ``sprint_add`` and ``sprint_remove`` (the hook family is ``
 
 * **Membership** is the ticket's ``future`` and ``active`` sprints, read from the ticket's sprint
   field (mapped or discovered, ``sprint``). Closed sprints are history and ignored. A sprint value
-  that cannot be read (not a list, an entry without a numeric id, a name or a known state) is
-  ``provider_changed`` and never counts as "no sprint": a write must not act on a guess.
+  that cannot be read (an absent field, not a list, an entry without a numeric id, a name or a known
+  state, one sprint in two states) is ``provider_changed`` and never counts as "no sprint": a write
+  must not act on a guess.
 * **add** sends ``POST /rest/agile/1.0/sprint/{id}/issue`` ``{"issues": [KEY]}``. The target is
   an id, ``open`` (the board's one ``active`` sprint; several exit 21 ``ambiguous_sprint``, none
   exit 10 ``not_found`` with ``details.option: sprint``) or ``next`` (the ``future`` sprint with
-  the earliest non-null ``start``, else the lowest id; a listing the cap cut off, or one that
-  dropped a sprint it could not read, is never guessed from: ``lookup_incomplete`` and
-  ``provider_changed``). The board
+  the earliest non-null ``start``, else the lowest id; a listing that reached the cap or was cut
+  off, or one that dropped a sprint it could not read, is never guessed from:
+  ``lookup_incomplete`` and ``provider_changed``). The board
   (``--board``, ``sites.<site>.board``, else the scrum board of the ticket's project) is resolved by
   ``sprintscmd.resolve_board`` and only for ``open`` and ``next``: an explicit id names the sprint,
   and a ``--board`` given with it is checked for its grammar only. Already a member is
@@ -67,7 +68,9 @@ from .sprintscmd import (
     board_spec,
     read_sprints,
     resolve_board,
-    sprint_object,
+)
+from .sprintscmd import (
+    SPRINTS_CUT as CUT,
 )
 from .writeflow import (
     Context,
@@ -130,7 +133,11 @@ def _unreadable() -> TicketctlError:
 
 
 def _member(raw: object) -> Member:
-    """One entry of the ticket's sprint field (``provider_changed`` when it cannot be read)."""
+    """One entry of the ticket's sprint field (``provider_changed`` when it cannot be read).
+
+    A closed entry is history and needs only a readable id and state; any other entry also
+    needs a name that shows something.
+    """
     if not isinstance(raw, dict):
         raise _unreadable()
     sid = raw.get("id")
@@ -143,10 +150,14 @@ def _member(raw: object) -> Member:
         or not 1 <= sid < 10**18
         or not isinstance(state, str)
         or state.lower() not in STATES
-        or not isinstance(name, str)
     ):
         raise _unreadable()
-    return Member(sid, _display(name), state.lower())
+    state = state.lower()
+    if state == "closed":
+        return Member(sid, _display(name) if isinstance(name, str) else "", state)
+    if not isinstance(name, str) or not _display(name).strip():
+        raise _unreadable()
+    return Member(sid, _display(name), state)
 
 
 def members_of(value: object) -> list[Member]:
@@ -155,7 +166,11 @@ def members_of(value: object) -> list[Member]:
         return []
     if not isinstance(value, list):
         raise _unreadable()
-    found = {m.id: m for m in map(_member, value) if m.state in OPEN_STATES}
+    every: dict[int, Member] = {}
+    for member in map(_member, value):
+        if every.setdefault(member.id, member).state != member.state:
+            raise _unreadable()  # one sprint in two states: which one is true?
+    found = {i: m for i, m in every.items() if m.state in OPEN_STATES}
     return [found[i] for i in sorted(found)]
 
 
@@ -180,17 +195,19 @@ class SprintAction:
     def prepare(self, pc: PrepareContext) -> None:
         if self.board is not None:
             board_spec(self.board)  # the grammar of --board, whether or not a board is needed
-        if not self.remove and self.selector is None:
-            raise TicketctlError("usage", "--sprint is required", reason="missing_option")
+        assert self.remove or self.selector is not None  # cli.check_command needs --sprint
 
     # -- step 3 ------------------------------------------------------------------------------
     def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
         fields = self._read_ticket(ctx)
-        members = members_of(fields.get(self._sprint_field(ctx)))
-        project = _obj(fields.get("project")).get("key")
-        project = project if GRAMMARS["project_key"].matches(project) else None
+        field = self._sprint_field(ctx)
+        if field not in fields:
+            raise _unreadable()  # an absent field is not "no sprint" (only null or [] is)
+        members = members_of(fields[field])
         if self.remove:
             return self._reduce_remove(ctx, fields, members)
+        project = _obj(fields.get("project")).get("key")
+        project = project if GRAMMARS["project_key"].matches(project) else None
         target = self._resolve_target(ctx, project)
         self.target = target
         return self._reduce_add(ctx, fields, members, target)
@@ -312,6 +329,12 @@ class SprintAction:
     @staticmethod
     def _whole(marks: set[str]) -> None:
         """A sprint the listing dropped (or with an unreadable date) could be the right one."""
+        if CUT in marks:
+            raise TicketctlError(
+                "lookup_incomplete",
+                "the board's sprint list was cut off before its end; "
+                "name the sprint with --sprint <id>",
+            )
         if marks - {"sprints.truncated"}:
             raise TicketctlError(
                 "provider_changed",
@@ -327,11 +350,15 @@ class SprintAction:
         )
         if not 200 <= response.status < 300:
             raise object_error(response.status, "sprint", option="sprint")
-        marks: set[str] = set()
-        found = sprint_object(response.data, marks)
-        if found is None or found["id"] != int(selector):
+        try:  # only id, name and state matter to a write (not the board or the dates)
+            found = _member(response.data)
+        except TicketctlError:
+            raise TicketctlError(
+                "provider_changed", "the provider answered no usable sprint"
+            ) from None
+        if found.id != int(selector):
             raise TicketctlError("provider_changed", "the provider answered no usable sprint")
-        return _from_object(found)
+        return found
 
     # -- send --------------------------------------------------------------------------------
     def _sender(self, sprint_id: int | None) -> Callable[[WriteGateway], StepResult]:
