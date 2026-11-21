@@ -50,16 +50,16 @@ import contextlib
 import hashlib
 import secrets
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from . import attribution, audit, identity
+from . import attribution, audit, flags, identity
 from .adf_validate import canonical_json, validate_adf
 from .attribution import Format, Kind, RichText
-from .errors import TicketctlError, from_exception, internal_error, usage_error
-from .flags import Globals, probe_dev_tty
+from .errors import TicketctlError, from_exception, usage_error
+from .flags import Globals
 from .gateway import Gateway, Response, Target
 from .plan import Planned, Step, build_plan, canonical_bytes
 from .runtime import Runtime, for_site, open_gateway
@@ -88,10 +88,12 @@ class StepResult:
 def check_outbound(body: object, *, body_chars: int) -> None:
     """``validate_adf`` for every ADF document anywhere in a request body (iterative, bounded).
 
-    A dictionary whose ``type`` is the string ``doc`` is a document: it is validated whole and not
-    walked further. Anything else is walked through dictionaries and lists. Raises ``InputError``
-    (exit 22) for a refused document and ``TicketctlError`` ``internal`` for a body too large to
-    walk (a caller bug: an action sent more than the limits allow).
+    A mapping is a document, validated whole and not walked further, when its ``type`` is a string
+    that reads ``doc`` ignoring case and surrounding space (a miscased ``Doc`` is refused, never
+    sent), or when it holds both ``version`` and ``content``. Anything else is walked through
+    mappings and sequences (lists, tuples; not strings or bytes). Raises ``InputError`` (exit 22)
+    for a refused document and ``TicketctlError`` ``internal`` for a body too large to walk (a
+    caller bug: an action sent more than the limits allow).
     """
     stack: list[object] = [body]
     seen = 0
@@ -100,13 +102,16 @@ def check_outbound(body: object, *, body_chars: int) -> None:
         seen += 1
         if seen > MAX_OUTBOUND_NODES:
             raise TicketctlError("internal", "the outbound request body is too large to check")
-        if isinstance(node, dict):
+        if isinstance(node, Mapping):
             kind = node.get("type")
-            if type(kind) is str and kind == "doc":
-                validate_adf(node, body_chars=body_chars)
+            looks_like_doc = (isinstance(kind, str) and kind.strip().lower() == "doc") or (
+                "version" in node and "content" in node
+            )
+            if looks_like_doc:
+                validate_adf(node, body_chars=body_chars)  # exactly a dict and exactly "doc"
                 continue
             stack.extend(node.values())
-        elif isinstance(node, list):
+        elif isinstance(node, Sequence) and not isinstance(node, str | bytes | bytearray):
             stack.extend(node)
 
 
@@ -174,7 +179,7 @@ class PrepareContext:
             body_chars=self.body_chars,
         )
         if rich.doc is not None:
-            self.check_secrets(*document_texts(rich.doc))
+            self.check_secrets(*document_texts(rich.doc), *joined_texts(rich.doc))
         return rich
 
 
@@ -231,11 +236,12 @@ def _provider_text(value: object) -> str | None:
     return sanitize_field(value, cap=PROVIDER_TEXT_CAP)[0]
 
 
-def raise_for_write(response: Response, *, object_path: bool = True) -> None:
+def raise_for_write(response: Response, *, object_path: bool) -> None:
     """Map the status of a write's answer (docs/interface.md, HTTP status mapping).
 
     A 2xx returns. A 404 on an endpoint whose path names an object is exit 10 ``not_found``
-    (``object_path`` false: a collection endpoint, exit 12 ``provider_changed``); every other 4xx
+    (``object_path`` false: a collection endpoint, exit 12 ``provider_changed``; the caller
+    says which, there is no default); every other 4xx
     (400 and 409, 413, 415, 422, ...) is exit 12 ``rejected`` with nothing applied, and the
     sanitized provider messages in ``details.errorMessages`` and ``details.field_errors``
     (untrusted). The gateway has already raised for 3xx, 401, 403, 429 and 5xx.
@@ -294,6 +300,34 @@ def document_texts(doc: object) -> list[str]:
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)
+    return out
+
+
+def _ordered_text(node: object) -> str:
+    """The text nodes of a subtree in document order, joined (marks and breaks split text)."""
+    parts: list[str] = []
+    stack: list[object] = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            content = item.get("content")
+            if isinstance(content, list):
+                stack.extend(reversed(content))
+        elif isinstance(item, list):
+            stack.extend(reversed(item))
+    return "".join(parts)
+
+
+def joined_texts(doc: object) -> list[str]:
+    """The whole document's text joined, and each top-level block's: a secret split across text
+    nodes (a mark, a link, a hard break) still shows in one of them."""
+    out = [_ordered_text(doc)]
+    content = doc.get("content") if isinstance(doc, dict) else None
+    if isinstance(content, list):
+        out.extend(_ordered_text(block) for block in content)
     return out
 
 
@@ -370,6 +404,7 @@ class NoHooks:
 
 
 def _no_lock(planned: Planned, ctx: Context) -> AbstractContextManager[None]:
+    # todo(#32): dedupe-keyed writes must hold the lock; the default seam holds none
     return nullcontext()
 
 
@@ -390,7 +425,7 @@ class Seams:
     gateway: Gateway | None = None
     interactive: Callable[[], bool] | None = None
     confirm: Callable[[dict[str, Any]], bool] | None = None
-    hooks: Hooks = field(default_factory=NoHooks)
+    hooks: Hooks = field(default_factory=NoHooks)  # todo(#25): the real runner
     lock: Callable[[Planned, Context], AbstractContextManager[None]] = _no_lock
     attempt_id: Callable[[], str] = _new_attempt_id
 
@@ -404,11 +439,14 @@ def browse_url(rt: Runtime, site: str, key: str) -> str:
     return str(rt.config.sites[site].url).rstrip("/") + "/browse/" + key
 
 
-def _decision_list(*groups: list[str]) -> list[str]:
-    """Flag and hook ids, in order, without duplicates; an id outside the grammar is dropped."""
+def _decision_list(*groups: list[str]) -> tuple[list[str], bool]:
+    """Flag and hook ids, in order, without duplicates; an id outside the grammar is dropped.
+
+    Returns the ids (at most 16, flag ids first) and whether valid ids beyond 16 were dropped.
+    """
     grammar = GRAMMARS["decision_id"]
-    merged = dict.fromkeys(i for group in groups for i in group if grammar.matches(i))
-    return list(merged)[:MAX_DECISION_IDS]
+    merged = list(dict.fromkeys(i for group in groups for i in group if grammar.matches(i)))
+    return merged[:MAX_DECISION_IDS], len(merged) > MAX_DECISION_IDS
 
 
 def result_object(
@@ -423,13 +461,17 @@ def result_object(
     decision_ids: list[str],
     warnings: list[str],
 ) -> dict[str, Any]:
-    if key is None:
-        raise ValueError("a result needs a ticket key")
+    # Never raise after a write landed: a key or comment id outside its grammar is dropped (a
+    # landed create whose key is lost prints a null key and url).
+    if key is not None and not audit.TICKET_KEY.fullmatch(key):
+        key = None
+    if comment_id is not None and not GRAMMARS["provider_id"].matches(comment_id):
+        comment_id = None
     return {
         "action": ctx.action,
         "site": ctx.site,
         "key": key,
-        "url": browse_url(ctx.rt, ctx.site, key),
+        "url": browse_url(ctx.rt, ctx.site, key) if key is not None else None,
         "changed": result == "ok",
         "result": result,
         "steps": steps,
@@ -501,6 +543,7 @@ class _Audit:
         planned: Planned,
         plan_sha256: str,
         decision_ids: list[str],
+        config_hashes: list[str],
     ) -> None:
         rt = ctx.rt
         site = rt.config.sites[ctx.site]
@@ -517,7 +560,7 @@ class _Audit:
             "override_escalation": rt.g.override_escalation,
             "config": {
                 "path": rt.g.config,
-                "files_sha256": _config_file_hashes(rt),
+                "files_sha256": config_hashes,
                 "sha256": rt.config_sha256(),
             },
             "hooks_sha256": hooks_digest(rt, action),
@@ -567,11 +610,7 @@ def is_interactive(g: Globals) -> bool:
     """A human can be asked: no ``--yes``, not an ``auto:`` actor, a TTY and ``/dev/tty``."""
     if g.yes or (g.resolved_actor or "").startswith("auto:"):
         return False
-    try:
-        tty = sys.stderr.isatty()
-    except (AttributeError, ValueError):
-        tty = False
-    return tty and probe_dev_tty()
+    return flags.stderr_is_tty() and flags.probe_dev_tty()
 
 
 def _with_details(err: TicketctlError, **details: Any) -> TicketctlError:
@@ -599,6 +638,8 @@ class _Run:
         self.action = action
         self.seams = seams
         self.audit_incomplete = False
+        self.extra_warnings: list[str] = []
+        self.config_hashes: list[str] | OSError = []
 
     # ------------------------------------------------------------------------------------
     def run(self) -> dict[str, Any]:
@@ -611,6 +652,11 @@ class _Run:
         except ValueError:
             raise usage_error("invalid_argument", "invalid actor") from None
         self._flag_rules()
+        self._refuse_unrunnable_hooks()
+        try:  # once, before the confirmation and the hooks; an error surfaces at the audit
+            self.config_hashes = _config_file_hashes(self.rt)
+        except OSError as exc:
+            self.config_hashes = exc
 
         site_cfg = self.rt.config.sites[self.site]
         token = self.rt.env.get(site_cfg.token_env, "")
@@ -632,6 +678,20 @@ class _Run:
             self.action.name,
         )  # fmt: skip
         return self._flow(ctx)
+
+    def _refuse_unrunnable_hooks(self) -> None:
+        """Fail closed: a hook that is configured or given cannot be run by the default seam."""
+        if not isinstance(self.seams.hooks, NoHooks) or self.g.dry_run:
+            return
+        family = hook_family(self.action.name)
+        configured = any(self.rt.config.hooks.get(f"{phase}-{family}") for phase in ("pre", "post"))
+        if configured or self.g.hooks:  # todo(#25): the runner replaces this refusal
+            raise TicketctlError(
+                "internal",
+                "a hook is configured or given but the hook runner is not available; "
+                "nothing was sent",
+                reason="hooks_unavailable",
+            )
 
     def _flag_rules(self) -> None:
         g = self.g
@@ -655,7 +715,8 @@ class _Run:
     def _flow(self, ctx: Context) -> dict[str, Any]:
         g = self.g
         planned, plan = self._read(ctx, fresh=False)  # step 3
-        decision_ids = _decision_list(g.decision_ids)
+        decision_ids, cut = _decision_list(g.decision_ids)
+        self._note_truncated(cut)
         if g.dry_run:  # step 4
             return plan
         if not planned.steps:  # idempotency first: before expect-plan, prompt, hook, audit
@@ -675,7 +736,8 @@ class _Run:
             if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
                 err.details = {"plan": plan, "decision_ids": decision_ids, **(err.details or {})}
             raise
-        decision_ids = _decision_list(g.decision_ids, hook_result.decision_ids)
+        decision_ids, cut = _decision_list(g.decision_ids, hook_result.decision_ids)
+        self._note_truncated(cut)
         if hook_result.escalated and not g.override_escalation:
             names = list(dict.fromkeys(hook_result.escalated))
             raise TicketctlError(
@@ -689,8 +751,9 @@ class _Run:
                 },
             )
 
-        outcome: _Outcome | None = None
-        with self._lock(ctx, planned):  # steps 7 and 8
+        lock = self._lock(ctx, planned)
+        lock.__enter__()  # a failure to take the lock is before any send: it propagates
+        try:  # steps 7 and 8
             fresh, fresh_plan = self._read(ctx, fresh=True)
             if not fresh.steps:
                 return self._unchanged(ctx, fresh, decision_ids)
@@ -701,6 +764,14 @@ class _Run:
                     details={"plan": fresh_plan},
                 )
             outcome = self._send(ctx, planned, held, decision_ids)
+        except _Interrupt as stop:
+            self._release(lock)
+            self._post(plan, planned, ctx, decision_ids, _Outcome(None, None, stop.info))
+            raise stop.exc from None
+        except BaseException:
+            self._release(lock)
+            raise
+        self._release(lock)
         self._post(plan, planned, ctx, decision_ids, outcome)
         if outcome.error is not None:
             raise outcome.error
@@ -708,6 +779,17 @@ class _Run:
         return outcome.result
 
     # ------------------------------------------------------------------------------------
+    def _note_truncated(self, cut: bool) -> None:
+        if cut and "decision_ids_truncated" not in self.extra_warnings:
+            self.extra_warnings.append("decision_ids_truncated")
+
+    def _release(self, lock: AbstractContextManager[None]) -> None:
+        """A release failure after the outcome is a warning: the result must survive it."""
+        try:
+            lock.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001 - the write landed or was refused; say so, do not hide it
+            self.rt.warn("warning: the lock could not be released")
+
     def _lock(self, ctx: Context, planned: Planned) -> AbstractContextManager[None]:
         if planned.dedupe_key is None:
             return nullcontext()
@@ -724,7 +806,7 @@ class _Run:
             comment_id=planned.comment_id,
             attempt_id=None,
             decision_ids=decision_ids,
-            warnings=planned.warnings,
+            warnings=[*planned.warnings, *self.extra_warnings],
         )
 
     def _confirm(self, plan: dict[str, Any], decision_ids: list[str]) -> None:
@@ -751,7 +833,12 @@ class _Run:
     def _send(
         self, ctx: Context, planned: Planned, plan_sha: str, decision_ids: list[str]
     ) -> _Outcome:
-        log = _Audit(ctx, self.action.name, planned, plan_sha, decision_ids)
+        try:
+            if isinstance(self.config_hashes, OSError):
+                raise self.config_hashes
+            log = _Audit(ctx, self.action.name, planned, plan_sha, decision_ids, self.config_hashes)
+        except Exception as exc:  # noqa: BLE001 - no audit, no send
+            return _Outcome(None, self._audit_failed(exc), None)
         done: list[dict[str, str]] = []
         provider_ids: list[str] = []
         created_key: str | None = None
@@ -772,7 +859,7 @@ class _Run:
                     provider_ids=[],
                     key=planned.key,
                 )
-            except StateError as exc:
+            except Exception as exc:  # noqa: BLE001 - any failure: no attempted record, no send
                 # Nothing may be sent without its attempted record.
                 err = self._audit_failed(exc)
                 failure = (err, False, True)
@@ -790,7 +877,14 @@ class _Run:
                 )  # fmt: skip
                 done.append({"kind": step.kind, "status": "failed", "code": err.code})
                 if not isinstance(exc, Exception):
-                    raise
+                    info = PostInfo(
+                        "partial" if landed else "unknown",
+                        {"code": err.code, "reason": err.reason},
+                        _kinds(done),
+                        provider_ids,
+                        None,
+                    )
+                    raise _Interrupt(exc, info) from None
                 failure = (err, unknown, False)
                 break
             ids = [i for i in res.provider_ids if GRAMMARS["provider_id"].matches(i)]
@@ -807,7 +901,11 @@ class _Run:
 
         for step in steps[len(done) :]:
             done.append({"kind": step.kind, "status": "skipped"})
-        warnings = [*planned.warnings, *(["audit_incomplete"] if self.audit_incomplete else [])]
+        warnings = [
+            *planned.warnings,
+            *self.extra_warnings,
+            *(["audit_incomplete"] if self.audit_incomplete else []),
+        ]
         key = created_key or planned.key or planned.existing_key
 
         if failure is None:
@@ -878,13 +976,16 @@ class _Run:
         err = from_exception(exc)
         if err is not None:
             return err, err.outcome_unknown
-        if isinstance(exc, Exception):
-            return internal_error(exc), True
-        return internal_error(exc), True  # KeyboardInterrupt: nothing is known about the call
+        # Any other exception, an interrupt included: a request may have been sent. The class name
+        # is the only detail (its text can hold anything).
+        name = type(exc).__name__
+        message = f"the outcome is unknown after an unexpected error ({name})"
+        return TicketctlError("outcome_unknown", message), True
 
     @staticmethod
-    def _audit_failed(exc: StateError) -> TicketctlError:
-        message = f"the audit record could not be written ({exc.reason}); nothing was sent"
+    def _audit_failed(exc: Exception) -> TicketctlError:
+        why = exc.reason if isinstance(exc, StateError) else type(exc).__name__
+        message = f"the audit record could not be written ({why}); nothing was sent"
         return TicketctlError("internal", message, reason="audit_failed")
 
     def _retry_rules(self, err: TicketctlError, planned: Planned) -> None:
@@ -914,6 +1015,15 @@ class _Run:
         except Exception:  # noqa: BLE001 - a post hook is never fatal
             with contextlib.suppress(Exception):
                 self.rt.warn("warning: a post hook failed")
+
+
+class _Interrupt(Exception):
+    """An interrupt midway through a send: carries it and what the post hook is told."""
+
+    def __init__(self, exc: BaseException, info: PostInfo) -> None:
+        super().__init__("interrupted")
+        self.exc = exc
+        self.info = info
 
 
 @dataclass

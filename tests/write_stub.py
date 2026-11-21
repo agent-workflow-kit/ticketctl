@@ -122,7 +122,8 @@ class StubTransition:
                     f"{_issue_path(self.key)}/assignee",
                     template="/rest/api/3/issue/{key}/assignee",
                     body={"accountId": account},
-                )
+                ),
+                object_path=True,
             )
             return StepResult([])
 
@@ -136,7 +137,8 @@ class StubTransition:
                     f"{_issue_path(self.key)}/transitions",
                     template="/rest/api/3/issue/{key}/transitions",
                     body={"transition": {"id": self.transition_id}},
-                )
+                ),
+                object_path=True,
             )
             return StepResult([])
 
@@ -226,7 +228,7 @@ class StubComment:
                     "properties": [{"key": attribution.META_PROPERTY, "value": meta}],
                 },
             )
-            raise_for_write(res)
+            raise_for_write(res, object_path=True)
             data: Any = res.data
             return StepResult([str(data["id"])], comment_id=str(data["id"]))
 
@@ -278,7 +280,8 @@ class StubDescription:
                     _issue_path(self.key),
                     template="/rest/api/3/issue/{key}",
                     body={"fields": {"description": rich.doc}},
-                )
+                ),
+                object_path=True,
             )
             return StepResult([])
 

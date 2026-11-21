@@ -238,6 +238,7 @@ HANDLER_ROWS = [
     ("invalid_config", "no_sites", 2),
     ("invalid_config", "account_mismatch", 2),
     ("internal", "audit_failed", 1),
+    ("internal", "hooks_unavailable", 1),
     ("usage", "human_only", 2),
     ("invalid_request", "invalid_query", 22),
     ("invalid_request", "unknown_field", 22),

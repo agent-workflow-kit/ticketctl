@@ -10,7 +10,9 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -646,12 +648,33 @@ def test_a_send_that_raises_midway_records_an_unknown_outcome(world: World) -> N
     err = world.fail(
         Boom(RuntimeError("secret " + SITE_TOKEN), "DEMO-2", "Done"), yes=True, expect_plan=held
     )
-    assert (err.exit, err.code) == (1, "internal")
+    assert (err.exit, err.code, err.outcome_unknown) == (12, "outcome_unknown", True)
     assert err.details is not None and err.details["attempt_id"] == ATTEMPT
+    assert "RuntimeError" in err.message and "secret" not in err.message
     assert SITE_TOKEN not in json.dumps(err.envelope())
     records = world.records()
     assert [r["result"] for r in records] == ["attempted", "unknown"]
-    assert records[1]["reason"] == "internal" and records[1]["changed"] is None
+    assert records[1]["reason"] == "outcome_unknown" and records[1]["changed"] is None
+
+
+def test_an_unexpected_error_in_a_comment_send_is_not_retryable_without_a_key(
+    world: World,
+) -> None:
+    class BoomComment(StubComment):
+        def _add(self, ctx: Context, rich: Any, info: dict[str, Any]) -> Step:
+            def send(gw: WriteGateway) -> StepResult:
+                raise RuntimeError("x")
+
+            return Step(
+                "add_comment", send, {"body_sha256": info["sha256"], "body_bytes": info["bytes"]}
+            )
+
+    err = world.fail(
+        BoomComment("DEMO-1", "no key"),
+        seams=Seams(interactive=lambda: True, confirm=lambda p: True),
+    )
+    assert (err.code, err.retryable, err.outcome_unknown) == ("outcome_unknown", False, True)
+    assert "--dedupe-key" in err.message
 
 
 def test_an_interrupt_midway_records_the_outcome_and_propagates(world: World) -> None:
@@ -659,6 +682,20 @@ def test_an_interrupt_midway_records_the_outcome_and_propagates(world: World) ->
     with pytest.raises(KeyboardInterrupt):
         world.run(Boom(KeyboardInterrupt(), "DEMO-2", "Done"), yes=True, expect_plan=held)
     assert [r["result"] for r in world.records()] == ["attempted", "unknown"]
+
+
+def test_an_interrupt_midway_still_runs_the_post_hook_once_with_unknown(world: World) -> None:
+    hooks = Hooks()
+    held = world.hash_of(Boom(KeyboardInterrupt(), "DEMO-2", "Done"))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            Boom(KeyboardInterrupt(), "DEMO-2", "Done"),
+            yes=True,
+            expect_plan=held,
+            seams=Seams(hooks=hooks),
+        )
+    assert [p.result for p in hooks.post_calls] == ["unknown"]
+    assert hooks.post_calls[0].changed is None
 
 
 def test_a_gateway_failure_with_a_3xx_is_unknown(world: World) -> None:
@@ -902,16 +939,17 @@ def test_raise_for_write_maps_the_status_table() -> None:
     def resp(status: int, data: Any = None, text: str = "") -> Response:
         return Response(status, data, text, None, 0)
 
-    writeflow.raise_for_write(resp(204))
+    writeflow.raise_for_write(resp(204), object_path=True)
     with pytest.raises(TicketctlError) as info:
-        writeflow.raise_for_write(resp(404))
+        writeflow.raise_for_write(resp(404), object_path=True)
     assert info.value.code == "not_found"
     with pytest.raises(TicketctlError) as info:
         writeflow.raise_for_write(resp(404), object_path=False)
     assert info.value.code == "provider_changed"
     with pytest.raises(TicketctlError) as info:
         writeflow.raise_for_write(
-            resp(400, {"errorMessages": ["bad \x07 thing", 7], "errors": {"labels": "no"}})
+            resp(400, {"errorMessages": ["bad \x07 thing", 7], "errors": {"labels": "no"}}),
+            object_path=True,
         )
     err = info.value
     assert (err.code, err.exit) == ("rejected", 12) and err.details is not None
@@ -919,8 +957,453 @@ def test_raise_for_write_maps_the_status_table() -> None:
     assert all("\x07" not in m for m in err.details["errorMessages"])
     for status in (409, 413, 415, 422):
         with pytest.raises(TicketctlError) as info:
-            writeflow.raise_for_write(resp(status, text="plain"))
+            writeflow.raise_for_write(resp(status, text="plain"), object_path=True)
         assert info.value.code == "rejected"
     with pytest.raises(TicketctlError) as info:
-        writeflow.raise_for_write(resp(302))
+        writeflow.raise_for_write(resp(302), object_path=True)
     assert info.value.code == "provider_changed"
+
+
+# ---------------------------------------------------------------------------------------------
+# Round 1 review findings
+# ---------------------------------------------------------------------------------------------
+
+
+def test_configured_or_given_hooks_without_a_runner_refuse_before_any_write(world: World) -> None:
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    assert world.writes() == [] and world.records() == []
+    world.write_config("hooks:\n  post-transition:\n    - cmd: /bin/true\n")
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert err.reason == "hooks_unavailable"
+    world.write_config("")
+    err = world.fail(
+        StubTransition("DEMO-2", "Done"),
+        yes=True,
+        expect_plan=held,
+        hooks=["pre-transition=/bin/true"],
+    )
+    assert err.reason == "hooks_unavailable" and world.writes() == []
+
+
+def test_hooks_of_another_family_or_a_real_runner_or_a_dry_run_do_not_refuse(
+    world: World,
+) -> None:
+    world.write_config("hooks:\n  pre-comment:\n    - cmd: /bin/true\n")
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    out = world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert out["result"] == "ok"
+    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
+    hooks = Hooks()
+    held = world.hash_of(StubTransition("DEMO-3", "Backlog"))
+    out = world.run(
+        StubTransition("DEMO-3", "Backlog"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
+    )
+    assert out["result"] == "ok" and len(hooks.pre_calls) == 1
+    plan = world.run(StubTransition("DEMO-1", "Done"), dry_run=True)
+    assert plan["steps"]
+
+
+def test_a_lock_that_fails_to_release_only_warns(
+    world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+    @contextlib.contextmanager
+    def lock_cm():
+        yield
+        raise OSError("release failed")
+
+    held = world.hash_of(StubComment("DEMO-1", "locked", dedupe_key="k-rel"))
+    out = world.run(
+        StubComment("DEMO-1", "locked", dedupe_key="k-rel"),
+        yes=True,
+        expect_plan=held,
+        seams=Seams(lock=lambda p, c: lock_cm()),
+    )
+    assert out["result"] == "ok" and out["changed"] is True
+    assert "lock could not be released" in capsys.readouterr().err
+    assert len(world.fake.tickets["DEMO-1"].comments) == 1
+
+
+def test_a_lock_that_fails_to_release_keeps_the_error_of_a_failed_write(world: World) -> None:
+    @contextlib.contextmanager
+    def lock_cm():
+        yield
+        raise OSError("release failed")
+
+    world.fake.inject(Fault("reset", method="POST", path="/comment", after_apply=True))
+    held = world.hash_of(StubComment("DEMO-1", "keyed", dedupe_key="k-rel2"))
+    err = world.fail(
+        StubComment("DEMO-1", "keyed", dedupe_key="k-rel2"),
+        yes=True,
+        expect_plan=held,
+        seams=Seams(lock=lambda p, c: lock_cm()),
+    )
+    assert err.code == "outcome_unknown"
+
+
+@pytest.mark.parametrize("exc", [OSError("disk"), RuntimeError("x"), ValueError("y")])
+def test_any_exception_from_the_attempted_append_refuses_the_send(
+    world: World, exc: Exception
+) -> None:
+    def broken(state_dir: Path, record: Any, **kw: Any) -> Any:
+        raise exc
+
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    world.mp.setattr(audit, "append_audit", broken)
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert (err.exit, err.code, err.reason) == (1, "internal", "audit_failed")
+    assert world.writes() == []
+
+
+def test_an_oserror_reading_the_config_files_for_the_audit_refuses_the_send(world: World) -> None:
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+
+    def broken(rt: Runtime) -> list[str]:
+        raise OSError("gone")
+
+    world.mp.setattr(writeflow, "_config_file_hashes", broken)
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert (err.exit, err.code, err.reason) == (1, "internal", "audit_failed")
+    assert world.writes() == [] and world.records() == []
+
+
+def test_the_config_hashes_are_read_once_before_the_confirmation(world: World) -> None:
+    original = hashlib.sha256(world.config.read_bytes()).hexdigest()
+    real = writeflow._config_file_hashes
+    calls: list[int] = []
+    world.mp.setattr(writeflow, "_config_file_hashes", lambda rt: (calls.append(1), real(rt))[1])
+
+    def confirm(plan: dict[str, Any]) -> bool:
+        world.config.write_text(world.config.read_text() + "\n# edited during the prompt\n")
+        return True
+
+    out = world.run(
+        StubTransition("DEMO-2", "Done"), seams=Seams(interactive=lambda: True, confirm=confirm)
+    )
+    assert out["result"] == "ok" and calls == [1]
+    assert world.records()[0]["inputs"]["config"]["files_sha256"] == [original]
+
+
+def test_the_engine_reads_fresh_only_under_the_lock(world: World) -> None:
+    seen: list[bool] = []
+
+    class Reads(StubTransition):
+        def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+            seen.append(fresh)
+            return super().reduce(ctx, fresh=fresh)
+
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    world.run(Reads("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert seen == [False, True]
+
+
+class StubCreate:
+    """A create whose step answers with a chosen (possibly malformed) key."""
+
+    name = "create"
+    yes_needs_dedupe_key = True
+    dedupe_key: str | None = "ck-1"
+
+    def __init__(self, answer: str | None) -> None:
+        self.answer = answer
+
+    def prepare(self, pc: Any) -> None:
+        return None
+
+    def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+        answer = self.answer
+
+        def send(gw: WriteGateway) -> StepResult:
+            return StepResult(["10001"], key=answer)
+
+        return Planned(
+            steps=[Step("create", send, {"project": "DEMO", "type": "Task"})],
+            intent={"project": "DEMO", "title": "t"},
+            hash_key="DEMO",
+            dedupe_key=self.dedupe_key,
+        )
+
+    def check(self, ctx: Context, planned: Planned) -> None:
+        return None
+
+
+@pytest.mark.parametrize("answer", ["not a key\x07", "demo-1", "", None])
+def test_a_landed_create_with_a_malformed_key_still_returns_ok(
+    world: World, answer: str | None
+) -> None:
+    hooks = Hooks()
+    held = world.hash_of(StubCreate(answer))
+    out = world.run(StubCreate(answer), yes=True, expect_plan=held, seams=Seams(hooks=hooks))
+    assert out["result"] == "ok" and out["key"] is None and out["url"] is None
+    assert out["attempt_id"] == ATTEMPT
+    assert [p.result for p in hooks.post_calls] == ["ok"]
+    assert [r["result"] for r in world.records()] == ["attempted", "ok"]
+    validator("cli/result.json").validate(out)
+
+
+def test_a_landed_create_with_a_good_key_has_a_url(world: World) -> None:
+    held = world.hash_of(StubCreate("DEMO-77"))
+    out = world.run(StubCreate("DEMO-77"), yes=True, expect_plan=held)
+    assert out["key"] == "DEMO-77" and re.search(r"/browse/DEMO-77$", out["url"])
+
+
+def test_decision_ids_beyond_16_are_dropped_with_a_warning_flag_ids_first(world: World) -> None:
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    hooks = Hooks()
+    hooks.ids = [f"hook.{i}" for i in range(10)]
+    flag_ids = [f"flag.{i}" for i in range(10)]
+    out = world.run(
+        StubTransition("DEMO-2", "Done"),
+        yes=True,
+        expect_plan=held,
+        decision_ids=flag_ids,
+        seams=Seams(hooks=hooks),
+    )
+    assert out["decision_ids"] == [*flag_ids, *hooks.ids[:6]]
+    assert "decision_ids_truncated" in out["warnings"]
+    validator("cli/result.json").validate(out)
+    assert len(world.records()[0]["decision_id"]) == 16
+
+
+def test_sixteen_decision_ids_or_fewer_carry_no_warning(world: World) -> None:
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    out = world.run(
+        StubTransition("DEMO-2", "Done"),
+        yes=True,
+        expect_plan=held,
+        decision_ids=[f"flag.{i}" for i in range(16)],
+    )
+    assert len(out["decision_ids"]) == 16 and "decision_ids_truncated" not in out["warnings"]
+
+
+def test_the_cli_refuses_more_than_16_decision_id_flags() -> None:
+    from ticketctl import flags
+
+    argv = [tok for i in range(17) for tok in ("--decision-id", f"d{i}")]
+    with pytest.raises(TicketctlError) as info:
+        flags.extract_globals([*argv, "comment", "DEMO-1"])
+    assert (info.value.exit, info.value.reason) == (2, "invalid_argument")
+    g, _rest = flags.extract_globals([*argv[:32], "comment", "DEMO-1"])
+    assert len(g.decision_ids) == 16
+
+
+def test_body_info_bytes_is_the_length_of_the_canonical_json(world: World) -> None:
+    from ticketctl.adf_validate import canonical_json
+
+    plan = world.run(StubComment("DEMO-1", "ünï bödy"), dry_run=True)
+    pc = writeflow.PrepareContext(world.rt(), "main", "human:tester")
+    rich = pc.prepare_rich("ünï bödy", kind="comment")
+    assert rich.doc is not None
+    info = writeflow.body_info(rich)
+    assert info["bytes"] == len(canonical_json(rich.doc).encode("utf-8"))
+    assert info["bytes"] > len(canonical_json(rich.doc))  # multi-byte text: bytes, not characters
+    assert plan["steps"][0]["body_bytes"] == info["bytes"]
+
+
+def test_hooks_digest_covers_pre_and_post_of_the_family_configured_then_flags(
+    world: World,
+) -> None:
+    world.write_config(
+        "hooks:\n"
+        "  pre-transition:\n    - cmd: one\n      timeout: 10s\n"
+        "  post-transition:\n    - cmd: two\n"
+        "  pre-sprint:\n    - cmd: three\n"
+    )
+    rt = world.rt(hooks=["pre-transition=flagcmd", "pre-sprint=sprintflag", "pre-comment=other"])
+
+    def digest(entries: list[dict[str, Any]]) -> str:
+        text = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    configured = [
+        {"name": "pre-transition", "cmd": "one", "timeout": 10, "async": False, "source": "config"},
+        {
+            "name": "post-transition",
+            "cmd": "two",
+            "timeout": 30,
+            "async": False,
+            "source": "config",
+        },
+    ]
+    flagged = [{"name": "pre-transition", "cmd": "flagcmd", "source": "flag"}]
+    assert writeflow.hooks_digest(rt, "transition") == digest([*configured, *flagged])
+    sprint = [
+        {"name": "pre-sprint", "cmd": "three", "timeout": 30, "async": False, "source": "config"},
+        {"name": "pre-sprint", "cmd": "sprintflag", "source": "flag"},
+    ]
+    assert writeflow.hook_family("sprint_add") == writeflow.hook_family("sprint_remove") == "sprint"
+    for action in ("sprint_add", "sprint_remove"):
+        assert writeflow.hooks_digest(rt, action) == digest(sprint)
+    assert writeflow.hooks_digest(rt, "update") == digest([])
+
+
+def test_the_default_interactive_probe_follows_yes_actor_tty_and_dev_tty(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ticketctl import flags
+
+    monkeypatch.setenv("PATH", "")
+    state = {"tty": True, "dev": True}
+    monkeypatch.setattr(flags, "_stderr_is_tty", lambda: state["tty"])
+    monkeypatch.setattr(flags, "probe_dev_tty", lambda: state["dev"])
+    human = Globals(resolved_actor="human:tester")
+    assert writeflow.is_interactive(human) is True
+    assert writeflow.is_interactive(Globals(resolved_actor="human:t", yes=True)) is False
+    assert writeflow.is_interactive(Globals(resolved_actor="auto:bot")) is False
+    state["tty"] = False
+    assert writeflow.is_interactive(human) is False
+    state.update(tty=True, dev=False)
+    assert writeflow.is_interactive(human) is False
+    # Through the engine: the default probe lets the dialog run.
+    state["dev"] = True
+    seams = Seams(confirm=lambda p: True)
+    seams.attempt_id = lambda: ATTEMPT
+    out = execute(world.rt(), "main", StubTransition("DEMO-2", "Done"), seams)
+    assert out["result"] == "ok"
+    state["tty"] = False
+    seams = Seams(confirm=lambda p: True)
+    with pytest.raises(TicketctlError) as info:
+        execute(world.rt(), "main", StubTransition("DEMO-3", "Backlog"), seams)
+    assert info.value.code == "confirmation_required"
+
+
+SPLIT = SITE_TOKEN[:11], SITE_TOKEN[11:]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"{SPLIT[0]}**{SPLIT[1]}**",
+        f"{SPLIT[0]}*{SPLIT[1]}*",
+        f"{SPLIT[0]}\\\n{SPLIT[1]}",
+        f"{SPLIT[0]}`{SPLIT[1]}`",
+        f"[{SPLIT[0]}](https://example.test/x){SPLIT[1]}",
+        f"{SPLIT[0]}[{SPLIT[1]}](https://example.test/x)",
+    ],
+    ids=["strong", "em", "hard_break", "code", "link_head", "link_tail"],
+)
+def test_a_secret_split_across_text_nodes_is_refused_before_any_request(
+    world: World, body: str
+) -> None:
+    err = world.fail(StubComment("DEMO-1", body), dry_run=True)
+    assert (err.exit, err.code, err.reason) == (22, "invalid_request", "secret_in_body")
+    assert world.fake.calls == []
+
+
+def test_a_secret_split_over_two_adf_text_nodes_is_refused(world: World) -> None:
+    doc = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": SPLIT[0]},
+                    {"type": "text", "text": SPLIT[1], "marks": [{"type": "strong"}]},
+                ],
+            }
+        ],
+    }
+    err = world.fail(StubComment("DEMO-1", json.dumps(doc), fmt="adf"), dry_run=True)
+    assert err.reason == "secret_in_body" and world.fake.calls == []
+    doc["content"] = [
+        {"type": "paragraph", "content": [{"type": "text", "text": SPLIT[0]}]},
+        {"type": "paragraph", "content": [{"type": "text", "text": SPLIT[1]}]},
+    ]
+    err = world.fail(StubComment("DEMO-1", json.dumps(doc), fmt="adf"), dry_run=True)
+    assert err.reason == "secret_in_body"
+
+
+def test_comment_id_and_existing_key_pass_the_grammar_filters(world: World) -> None:
+    class Odd(StubComment):
+        def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+            return Planned(
+                steps=[],
+                intent={"x": 1},
+                key="DEMO-1",
+                comment_id="12\x07 34",
+                existing_key="DEMO-9\x1b[31m",
+            )
+
+    out = world.run(Odd("DEMO-1", "x"))
+    assert out["comment_id"] is None and out["key"] is None and out["url"] is None
+    validator("cli/result.json").validate(out)
+
+    class Sent(StubComment):
+        def _add(self, ctx: Context, rich: Any, info: dict[str, Any]) -> Step:
+            def send(gw: WriteGateway) -> StepResult:
+                return StepResult(["77"], comment_id="77\x07 bad")
+
+            return Step(
+                "add_comment", send, {"body_sha256": info["sha256"], "body_bytes": info["bytes"]}
+            )
+
+    held = world.hash_of(Sent("DEMO-1", "y", dedupe_key="k-c"))
+    out = world.run(Sent("DEMO-1", "y", dedupe_key="k-c"), yes=True, expect_plan=held)
+    assert out["comment_id"] is None and out["key"] == "DEMO-1"
+
+
+def test_raise_for_write_needs_object_path() -> None:
+    from ticketctl.gateway import Response
+
+    with pytest.raises(TypeError):
+        writeflow.raise_for_write(Response(404, None, "", None, 0))  # type: ignore[call-arg]
+
+
+# R7: what check_outbound treats as a document.
+
+
+class _Str(str):
+    __slots__ = ()
+
+
+PARA = {"type": "paragraph", "content": [{"type": "text", "text": "ok"}]}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"a": (BAD_DOC,)},
+        (BAD_DOC,),
+        {"a": [(BAD_DOC,)]},
+        MappingProxyType(BAD_DOC),
+        {"a": MappingProxyType({"b": BAD_DOC})},
+        {"type": _Str("doc"), "version": 1, "content": [MENTION]},
+        {"type": "Doc", "version": 1, "content": [PARA]},
+        {"type": " DOC ", "version": 1, "content": [PARA]},
+        {"type": "paragraph", "version": 1, "content": [PARA]},
+        {"a": {"version": 1, "content": [PARA]}},
+    ],
+    ids=[
+        "tuple_in_dict", "tuple_top", "tuple_in_list", "mapping_top", "mapping_nested",
+        "str_subclass", "Doc", "spaced_DOC", "version_content_shape", "nested_shape",
+    ],
+)  # fmt: skip
+def test_odd_document_shapes_are_refused_not_sent(body: object) -> None:
+    with pytest.raises(InputError):
+        check_outbound(body, body_chars=30000)
+
+
+def test_strings_and_bytes_are_not_walked_as_sequences() -> None:
+    check_outbound({"a": "doc", "b": b"doc", "c": ("x", "y"), "d": {"type": "text"}}, body_chars=1)
+
+
+def test_a_miscased_document_never_reaches_the_provider(world: World) -> None:
+    class Sneaky(StubTransition):
+        def _transition(self) -> Step:
+            def send(gw: WriteGateway) -> StepResult:
+                gw.request(
+                    "POST",
+                    "/rest/api/3/issue/DEMO-2/comment",
+                    template="/rest/api/3/issue/{key}/comment",
+                    body={"body": ({"type": "Doc", "version": 1, "content": [PARA]},)},
+                )
+                return StepResult([])
+
+            return Step("transition", send, {"transition_id": "41", "to": "Done"})
+
+    held = world.hash_of(Sneaky("DEMO-2", "Done"))
+    err = world.fail(Sneaky("DEMO-2", "Done"), yes=True, expect_plan=held)
+    assert err.exit == 22 and world.writes() == []

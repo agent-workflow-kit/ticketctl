@@ -36,7 +36,7 @@ STEP_KINDS = (
 )  # fmt: skip
 WARNINGS = (
     "closed_ticket", "assign_added", "other_sprints_dropped", "sprint_moved", "body_near_limit",
-    "duplicate_dedupe_matches", "assign_skipped", "audit_incomplete",
+    "duplicate_dedupe_matches", "assign_skipped", "audit_incomplete", "decision_ids_truncated",
 )  # fmt: skip
 # The properties a step may carry, by kind (the plan's `step` definition is closed).
 STEP_PROPS: dict[str, frozenset[str]] = {
@@ -112,9 +112,40 @@ def canonical_bytes(document: Any) -> bytes:
         text = json.dumps(
             document, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
         )
-        return text.encode("utf-8", "surrogatepass")
+        encoded = text.encode("utf-8", "surrogatepass")
     except (TypeError, ValueError, RecursionError):
         raise ValueError("the plan cannot be written as canonical JSON") from None
+    _refuse_ambiguous(document)  # only after dumps: it has proved there is no cycle
+    return encoded
+
+
+def _refuse_ambiguous(document: Any) -> None:
+    """``{1: "x"}`` and ``{"1": "x"}`` (and a tuple and a list) dump alike: refuse the first."""
+    stack: list[Any] = [document]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if any(not isinstance(k, str) for k in node):
+                raise ValueError("the plan has a non-string dictionary key")
+            stack.extend(node.values())
+        elif isinstance(node, tuple):
+            raise ValueError("the plan holds a tuple (use a list)")
+        elif isinstance(node, list):
+            stack.extend(node)
+
+
+def _strings(node: Any) -> set[str]:
+    out: set[str] = set()
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            out.add(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return out
 
 
 def plan_hash(action: str, site: str, planned: Planned) -> str:
@@ -136,6 +167,13 @@ def build_plan(action: str, site: str, actor: str, planned: Planned) -> dict[str
     bad = [w for w in planned.warnings if w not in WARNINGS]
     if bad:
         raise ValueError(f"unknown warning code {bad[0]!r}")
+    if action == "create" and planned.hash_key is None:
+        raise ValueError("a create plan needs hash_key (the project)")
+    hashed = _strings(planned.intent)
+    for step in planned.steps:
+        digest = step.props.get("body_sha256")
+        if digest is not None and digest not in hashed:
+            raise ValueError("a step body_sha256 is not in the plan intent")
     warnings = list(dict.fromkeys(planned.warnings))
     return {
         "action": action,

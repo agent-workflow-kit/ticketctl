@@ -52,7 +52,7 @@ The confirmation dialog is written to stderr through the output sanitizer, in th
 
 `--yes` always requires `--expect-plan` from every caller (exit 2, `reason: yes_requires_expect_plan`); a caller takes the hash from the exit 13 envelope or a dry-run. With `comment` and `create`, `--yes` also requires `--dedupe-key` (exit 2, `reason: dedupe_key_required`); an interactive human may omit it. `--dry-run` skips these two checks (not `human_only`), so `--dry-run --yes` prints the plan and is the discovery route; every other flag-combination rule still runs first.
 
-`--override-escalation[=ticketctl]` is human-only: it requires `--actor human:<user>` or no `--actor` with the default actor `human:`, and `--yes` may accompany it. With an `auto:` actor it exits 2 (`reason: human_only`). The claim is advisory (a same-user process can say `--actor human:x`); the audit records `actor_source`, `stdin_tty` and `inputs.override_escalation` (the scope, else null), so the claim is checkable. The flag overrides the escalation of every hook ticketctl ran (configured and `--hook`), never a veto. With the flag an interactive run prompts once (the dialog says the override is on and names the hooks it covers) and an escalation is then overridden; without it an interactive escalation exits 13 `escalated` and the message names the flag to re-run with. `--decision-id` values are caller-supplied and advisory like the actor.
+`--override-escalation[=ticketctl]` is human-only: it requires `--actor human:<user>` or no `--actor` with the default actor `human:`, and `--yes` may accompany it. With an `auto:` actor it exits 2 (`reason: human_only`). The claim is advisory (a same-user process can say `--actor human:x`); the audit records `actor_source`, `stdin_tty` and `inputs.override_escalation` (the scope, else null), so the claim is checkable. The flag overrides the escalation of every hook ticketctl ran (configured and `--hook`), never a veto. With the flag an interactive run prompts once (the dialog says the override is on and names the hooks it covers) and an escalation is then overridden; without it an interactive escalation exits 13 `escalated` and the message names the flag to re-run with. `--decision-id` values are caller-supplied and advisory like the actor; more than 16 of them exit 2 `invalid_argument`.
 
 ### Trust boundary
 
@@ -265,6 +265,10 @@ The order is fixed: the `pre-` hook runs after the confirmation, so a hook can v
 - **Post hooks.** A `post-` hook runs once, only when an `attempted` record was written, with `ok`, `failed`, `partial` or `unknown`; never for a refusal, a veto, `confirmation_required`, a no-op or an exit 22.
 - **Gate decisions are not audited.** The audit holds only writes that reached the provider boundary (attempted plus outcome). A veto (11), an escalation (13), a stale or precondition refusal (20), a decline (20 `declined`) and `confirmation_required` write no audit record: the gate's own log is the record of its decision, and the envelope returns `decision_ids` and `hook` so the caller can record them. A `decision_id` is recorded in the audit records of the steps that follow.
 - **`--dry-run` edges.** `--dry-run` takes precedence over `--yes` (see [Human actions](#human-actions)), ignores `--expect-plan`, does the reads (including dedupe lookups, so a hit prints a plan with no steps and a `dedupe_match`), reports a refusal with its exit code and envelope (an exit 20, 21 or 22 is shown, not hidden), runs no hook, takes no lock and writes no audit. "Writes nothing" means no provider write, no audit and no hook; cache refreshes and request log lines still happen.
+- **Hooks unavailable.** While the hook runner is not installed (#25), a write whose action family has a configured `pre-` or `post-` hook, or any `--hook` flag, exits 1 `internal` (`reason: hooks_unavailable`) before any provider write: a hook that cannot run never fails open.
+- **Unexpected errors midway.** An exception that is not a ticketctl error while a step is being sent leaves the outcome unknown: the record is `unknown` and the failure is `outcome_unknown` (the message names the exception class, never its text), with the usual re-run rules; an interrupt (Ctrl-C) midway records `unknown`, runs the `post-` hook once with `unknown`, and then propagates.
+- **Lock release.** A lock that fails to release after the outcome record is a stderr warning: the result or error of the write is still returned.
+- **A landed create without a valid key.** When `create` landed but the provider's answer has no valid ticket key, the result prints `key` and `url` as null (the write happened; `attempt_id` and the post hook are intact).
 - **Failure shape.** A failure prints the error envelope and nothing else (see [Result object](#result-object)); every failure after an `attempted` record carries `details.attempt_id`.
 
 ### Plan object
@@ -285,6 +289,7 @@ The order is fixed: the `pre-` hook runs after the confirmation, so a hook can v
 | `duplicate_dedupe_matches` | several own tickets matched a create dedupe label |
 | `assign_skipped` | `--assign` was not applied because the ticket has an assignee |
 | `audit_incomplete` | a result only: an outcome record could not be written |
+| `decision_ids_truncated` | a result only: hook decision ids beyond 16 in all (flag ids first) were dropped |
 
 The plan is built, hashed and applied by one rule:
 
@@ -446,7 +451,7 @@ One table of exit, `code`, `reason` and the caller's action. `retryable` is true
 | Exit | `code` | `reason` | Caller action |
 |---|---|---|---|
 | 0 | none | none | success, including `unchanged`, `already_posted` and `reused` |
-| 1 | `internal` | `audit_failed` when the `attempted` append failed and nothing was sent, else null | report; do not retry blindly |
+| 1 | `internal` | `audit_failed` when the `attempted` append failed and nothing was sent, `hooks_unavailable` when a hook is configured or given with `--hook` and the hook runner is not available (nothing was sent), else null | report; do not retry blindly |
 | 2 | `usage` | `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument` | fix the invocation |
 | 2 | `invalid_config` | `config_invalid`, `no_sites`, `account_mismatch` | fix the config |
 | 10 | `not_found` | null (a ticket, sprint or board) | the object is missing or hidden |

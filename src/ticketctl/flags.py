@@ -21,6 +21,7 @@ PROG = "ticketctl"
 # The shared flag grammars are the sanitizer's (docs/interface.md, Identifiers).
 ACTOR_RE = GRAMMARS["actor"].pattern
 DECISION_ID_RE = GRAMMARS["decision_id"].pattern
+MAX_DECISION_IDS = 16
 NUMERIC_ID_RE = GRAMMARS["numeric_id"].pattern
 SHA256_RE = GRAMMARS["sha256"].pattern
 HOOK_NAME_RE = re.compile(r"(?:pre|post)-(?:transition|comment|create|update|sprint)")
@@ -234,6 +235,10 @@ def extract_globals(argv: Sequence[str]) -> tuple[Globals, list[str]]:
     except ArgError as e:
         raise usage_error("invalid_argument", clean_message(str(e))) from None
     rest.extend(extra)
+    if len(ns.decision_id) > MAX_DECISION_IDS:
+        raise usage_error(
+            "invalid_argument", f"at most {MAX_DECISION_IDS} --decision-id values are allowed"
+        )
     g = Globals(
         json=ns.json,
         config=ns.config,
@@ -268,6 +273,11 @@ def _stderr_is_tty() -> bool:
         return sys.stderr.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+def stderr_is_tty() -> bool:
+    """True when stderr is a terminal (the one probe, shared with the write flow)."""
+    return _stderr_is_tty()
 
 
 def check_globals(

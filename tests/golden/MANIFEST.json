@@ -1,14 +1,14 @@
 {
-  "cli/error.json": "804bdd92ee653e582aff46caf7794514b0c9b47ad1be48e0b2900d13b8fb68fd",
-  "cli/fields-check.json": "b885b10dd83923fc0329082b6f6e61bc3245d67251a81ddcdfbefb7896a367d8",
-  "cli/fields-list.json": "b70e1707937e7f03e12118a48ae3d6ff0c4485528adfb798782c2c072c98f5ad",
-  "cli/fields-refresh.json": "12a9a29e5f46afecea2f0e8315bcbc8265ecf1863403706b7ba1c4ed7fec9a0e",
-  "cli/get.json": "4d453adf5e856ca8712f3e99f49dadaa7e82c3e6a24f3e8ab88f5d45e9f3b84b",
-  "cli/plan.json": "aad667be6e4380aed1b0b820f780bf40970dae4fb43442f8c7f1696ac6da8dea",
-  "cli/result.json": "d25a31954d8308363d8766c65769b0b109b94cf78e59a347c190caa6bd8b8f51",
-  "cli/search.json": "3fa90214eef21c9aac524a182bc8c1f821269aa0587c0440e1f286198dbf02ba",
-  "cli/sites-resolve.json": "f693324ea3d434e2fb498fafa6d7f7827d4d9c361412eb736050a96c62d861d2",
-  "cli/sites.json": "cde97b0129c887bc5c064cdc50a9e987503dcee877b4d75fea291a553441846f",
-  "cli/validate.json": "43529eb4585a280e42bb51ce0c1f954a9d0f6e31c11d46602e277a25aef47e78",
-  "cli/whoami.json": "70bc551c333ce7901fa1cbebbadf0cddc26bb1b7caadd8139afe4bf917201674"
+  "cli/error.json": "a44a087b71ea9c3bb457bacdf47287645b282f037d37dced053f27dd59ded99a",
+  "cli/fields-check.json": "f9636a31740b1891fd9e8b604287da863116dbe57735d234adb715a583a1d619",
+  "cli/fields-list.json": "3b9669c7ee2d2eb7417cb9db7835dad37dc426ecfa7d11c9081bc5a27f5191a2",
+  "cli/fields-refresh.json": "52274c424d56e97f4b9a42a80fff24e80ba52f118de916b205b2e11aab0f32af",
+  "cli/get.json": "bee89781b113d511a555829158dc2df50b2471c41e3d576a7674089099f25bfe",
+  "cli/plan.json": "88c00d19664d0d915a92a65f7e9ec81c35fc63f662f0f210eabd6427d026d6df",
+  "cli/result.json": "657c8cc9730ad4cb5542434fff2543ff3628e478870509a982359f9e2bbbe208",
+  "cli/search.json": "29b7a3e68b03e36f5aef25cce133732a697e53689a02d40282470cd838be3bf6",
+  "cli/sites-resolve.json": "4db0300d65dc4155b3441a735ff86deb22e027a2f8f22df1600d5c3c3189318b",
+  "cli/sites.json": "785ab514ad0abac4e7c86e8643373bc411b43fa46b6152a737bcad76703f7c91",
+  "cli/validate.json": "4b2270aecd6d839e495f0b275cd3cf9cedc8471bf1d738e368b3be367af02a67",
+  "cli/whoami.json": "8f4b64cd43ca712d0957a7c0168fbef5009b9f29bc9be9d7dc1a54e875250023"
 }

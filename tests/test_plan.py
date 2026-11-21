@@ -150,3 +150,37 @@ def test_a_step_refuses_a_foreign_property_or_kind() -> None:
         Step("assign", _send, {"transition_id": "1"})
     with pytest.raises(ValueError):
         Step("teleport", _send)
+
+
+# Round 1 review findings: hash_key, step body hashes, canonical JSON collisions.
+
+
+def test_a_create_plan_needs_a_hash_key() -> None:
+    step = Step("create", _send, {"project": "DEMO", "type": "Task"})
+    with pytest.raises(ValueError):
+        build_plan("create", "main", "human:x", Planned(steps=[step], intent={"p": 1}))
+    plan = build_plan(
+        "create", "main", "human:x", Planned(steps=[step], intent={"p": 1}, hash_key="DEMO")
+    )
+    assert plan["key"] is None
+
+
+def test_every_step_body_hash_must_be_in_the_intent() -> None:
+    step = Step("add_comment", _send, {"body_sha256": "a" * 64, "body_bytes": 3})
+    with pytest.raises(ValueError):
+        build_plan("comment", "main", "human:x", planned(steps=[step], intent={"b": ["c" * 64]}))
+    ok = planned(steps=[step], intent={"bodies": ["a" * 64]})
+    assert build_plan("comment", "main", "human:x", ok)["steps"][0]["body_sha256"] == "a" * 64
+
+
+def test_canonical_json_refuses_what_would_collide() -> None:
+    assert canonical_bytes({"1": "x"}) == b'{"1":"x"}'
+    with pytest.raises(ValueError):
+        canonical_bytes({1: "x"})
+    with pytest.raises(ValueError):
+        canonical_bytes({"a": {"b": [{2: 1}]}})
+    with pytest.raises(ValueError):
+        canonical_bytes({"a": (1, 2)})
+    with pytest.raises(ValueError):
+        canonical_bytes({"a": [("x",)]})
+    assert canonical_bytes({"a": [1, 2]}) == b'{"a":[1,2]}'
