@@ -1758,6 +1758,7 @@ def test_a_2xx_with_an_unusable_body_stays_an_unknown_outcome_for_a_write(serve)
         with pytest.raises(GatewayError) as exc:
             make_rig(server.url).post()
         assert (exc.value.code, exc.value.outcome_unknown) == ("provider_changed", True)
+        assert exc.value.retryable is False  # the contract changed: check the ticket first
         with pytest.raises(GatewayError) as exc2:
             make_rig(server.url).get()
         assert exc2.value.outcome_unknown is False

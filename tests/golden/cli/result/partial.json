@@ -2,7 +2,7 @@
   "action": "transition",
   "already_posted": false,
   "attempt_id": "0123456789abcdef",
-  "changed": false,
+  "changed": true,
   "comment_id": null,
   "decision_ids": [],
   "key": "DEMO-1",

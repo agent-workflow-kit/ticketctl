@@ -489,11 +489,16 @@ def test_audit_append_failure_refuses_the_send(world: World) -> None:
     def broken(state_dir: Path, record: Any, **kw: Any) -> Any:
         raise StateError("lock_timeout", "stuck")
 
+    hooks = Hooks()
     world.mp.setattr(audit, "append_audit", broken)
     held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    err = world.fail(
+        StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
+    )
     assert (err.exit, err.code, err.reason) == (1, "internal", "audit_failed")
     assert world.writes() == []  # nothing was sent
+    assert err.details is None or "attempt_id" not in err.details
+    assert hooks.post_calls == [] and world.records() == []  # no attempted record: no post hook
 
 
 def test_audit_failure_on_a_later_step_is_partial_with_an_internal_step(world: World) -> None:
@@ -598,7 +603,7 @@ def test_partial_after_a_definite_failure_of_the_second_step(world: World) -> No
         ("assign", "done", None),
         ("transition", "failed", "rejected"),
     ]
-    assert result["attempt_id"] == ATTEMPT and result["changed"] is False
+    assert result["attempt_id"] == ATTEMPT and result["changed"] is True
     records = world.records()
     assert [(r["step"], r["result"]) for r in records] == [
         (1, "attempted"), (1, "ok"), (2, "attempted"), (2, "partial"),
