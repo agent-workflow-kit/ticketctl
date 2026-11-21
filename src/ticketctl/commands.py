@@ -14,7 +14,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from . import fieldscmd, getcmd, handlers, searchcmd
+from . import (
+    commentscmd,
+    fieldscmd,
+    getcmd,
+    handlers,
+    searchcmd,
+    sprintscmd,
+    transitionscmd,
+)
 from .flags import (
     Globals,
     count_arg,
@@ -127,8 +135,7 @@ def _sprints_list(p: argparse.ArgumentParser) -> None:
 
 def _sprints_show(p: argparse.ArgumentParser) -> None:
     _add(p, "id", metavar="ID", type=numeric_id_arg)
-    _add(p, "--board")
-    _add(p, "--project")
+    _add(p, "--project", help="selects the site; a sprint is read by id, no board is needed")
 
 
 def _sites_resolve(p: argparse.ArgumentParser) -> None:
@@ -218,10 +225,38 @@ def _specs() -> list[CommandSpec]:
             _search,
             searchcmd.human_search,
         ),
-        CommandSpec(("comments",), r, "list comments", _stub(18), _comments),
-        CommandSpec(("transitions",), r, "list available transitions", _stub(18), _key),
-        CommandSpec(("sprints", "list"), r, "list sprints", _stub(18), _sprints_list),
-        CommandSpec(("sprints", "show"), r, "show one sprint", _stub(18), _sprints_show),
+        CommandSpec(
+            ("comments",),
+            r,
+            "list comments",
+            commentscmd.comments,
+            _comments,
+            commentscmd.human_comments,
+        ),
+        CommandSpec(
+            ("transitions",),
+            r,
+            "list available transitions",
+            transitionscmd.transitions,
+            _key,
+            transitionscmd.human_transitions,
+        ),
+        CommandSpec(
+            ("sprints", "list"),
+            r,
+            "list sprints",
+            sprintscmd.sprints_list,
+            _sprints_list,
+            sprintscmd.human_sprints_list,
+        ),
+        CommandSpec(
+            ("sprints", "show"),
+            r,
+            "show one sprint",
+            sprintscmd.sprints_show,
+            _sprints_show,
+            sprintscmd.human_sprints_show,
+        ),
         CommandSpec(
             ("fields", "list"),
             r,

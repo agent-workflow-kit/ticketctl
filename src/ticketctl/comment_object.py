@@ -3,14 +3,15 @@
 Pure logic, no I/O: :func:`comment_object` turns one provider comment (read with
 ``expand=properties``) into the object of ``schemas/defs.json#comment`` and :func:`comment_list`
 turns a comment page into the ``{items, total, truncated}`` part of ``get --comments N``. ``get``
-(``getcmd``) owns the provider call; the ``comments`` command, TODO(#18), reuses these two
-functions and adds its own paging, ``--since``, ``--own`` and ordering.
+(``getcmd``) owns the provider call; the ``comments`` command (``commentscmd``) reuses
+``comment_object`` and ``order_key`` and adds its own paging, ``--since``, ``--own`` and ordering.
 
 Rules this module settles where the interface leaves room (all conservative):
 
 * ``own`` is true only when the author's account id equals the resolved ``me`` account id, an
   exact, case-sensitive match. An author with no usable id is never own.
-* The ``ticketctl.meta`` property is read for an own comment only. A forged property on another
+* The ``ticketctl.meta`` property is read for an own comment only, and its key is compared
+  exactly (a case-different key is another property). A forged property on another
   account's comment is ignored: ``authored_by_ticketctl`` false, ``actor_kind`` and both hashes
   null. On an own comment the property being present at all makes ``authored_by_ticketctl`` true
   (a consumer that distrusts ticketctl's own comments then keeps distrusting a damaged property);
@@ -103,9 +104,10 @@ def _meta(properties: object, marks: set[str]) -> tuple[bool, dict[str, Any]]:
     for entry in properties:
         if isinstance(entry, dict) and entry.get("key") == META_PROPERTY:
             value = entry.get("value")
-            if not isinstance(value, dict) or value.get("v") != META_VERSION:
+            if not isinstance(value, dict):
                 return True, {}
-            if isinstance(value.get("v"), bool):
+            version = value.get("v")
+            if type(version) is not int or version != META_VERSION:  # not bool, not 1.0
                 return True, {}
             kind = value.get("actor_kind")
             return True, {
@@ -153,6 +155,11 @@ def comment_object(
     }
 
 
+def order_key(obj: dict[str, Any]) -> tuple[str, int, str]:
+    """Oldest-first sort key of a comment object: ``created``, then the id (numeric ids by size)."""
+    return obj["created"], len(obj["id"]), obj["id"]
+
+
 def comment_list(page: object, limit: int, me_account_id: str | None) -> CommentPage:
     """``{items, total, truncated}`` for a page read newest first with ``maxResults=limit``.
 
@@ -187,10 +194,7 @@ def comment_list(page: object, limit: int, me_account_id: str | None) -> Comment
         else:
             seen.add(obj["id"])
             kept.append((obj, own_marks))
-    kept.sort(
-        key=lambda pair: (pair[0]["created"], len(pair[0]["id"]), pair[0]["id"]),
-        reverse=True,
-    )
+    kept.sort(key=lambda pair: order_key(pair[0]), reverse=True)
     newest = kept[:limit]
     newest.reverse()
     for _, own_marks in newest:
@@ -209,4 +213,4 @@ def comment_list(page: object, limit: int, me_account_id: str | None) -> Comment
     )
 
 
-__all__ = ["MAX_COMMENTS", "CommentPage", "comment_list", "comment_object"]
+__all__ = ["MAX_COMMENTS", "CommentPage", "comment_list", "comment_object", "order_key"]

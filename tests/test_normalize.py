@@ -297,7 +297,7 @@ def test_a_mapped_system_field_uses_the_mapped_id() -> None:
 
 
 def test_comments_are_not_part_of_the_issue_request() -> None:
-    # TODO(#18): the comment page is a separate call
+    # the comment page is a separate call (the comments command reads it)
     assert plan_request(props("comments", comments=2), site_fields()).fields
 
 

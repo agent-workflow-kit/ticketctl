@@ -1,0 +1,48 @@
+{
+  "key": "DEMO-2",
+  "site": "main",
+  "transitions": [
+    {
+      "has_screen": false,
+      "id": "31",
+      "name": "Start progress",
+      "required_fields": [],
+      "to": {
+        "category": "indeterminate",
+        "name": "In Progress"
+      }
+    },
+    {
+      "has_screen": true,
+      "id": "41",
+      "name": "Finish",
+      "required_fields": [
+        {
+          "allowed_values": [
+            "Done",
+            "Won't Do",
+            "Duplicate",
+            "Cannot Reproduce",
+            "Declined"
+          ],
+          "kind": "resolution",
+          "name": "Resolution"
+        }
+      ],
+      "to": {
+        "category": "done",
+        "name": "Done"
+      }
+    },
+    {
+      "has_screen": false,
+      "id": "51",
+      "name": "Back to backlog",
+      "required_fields": [],
+      "to": {
+        "category": "new",
+        "name": "Backlog"
+      }
+    }
+  ]
+}
