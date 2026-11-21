@@ -43,7 +43,9 @@ Outcomes (docs/interface.md, Result object and Audit and log): a request that ma
 and got no usable answer is ``unknown`` and is never sent again; ``changed`` of a partial result is
 true because a step landed; the command deadline does not run during the prompt and the ``pre-``
 hooks; an interrupt anywhere in step 8 still reaches the ``post-`` hook with what is known.
-TODO(#32): the dedupe lock and the create lag guard (``Seams.lock``).
+The dedupe lock (``Seams.lock``, default ``dedupe.bucket_lock``) and the create lag guard
+(``dedupe.guarded_lookup``, called by the create action's ``reduce(fresh=True)``) live in
+``dedupe.py`` (#32).
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ from typing import Any, Protocol
 from . import attribution, audit, confirm_tty, flags, identity
 from .adf_validate import canonical_json, validate_adf
 from .attribution import Format, Kind, RichText
+from .dedupe import bucket_lock
 from .errors import TicketctlError, from_exception, usage_error
 from .flags import Globals
 from .gateway import Deadline, Gateway, Response, Target
@@ -127,6 +130,11 @@ class WriteGateway:
     @property
     def target(self) -> Target:
         return self._gw.target
+
+    @property
+    def deadline(self) -> Deadline:
+        """The whole-command clock (the lock wait and the lag guard are bounded by it)."""
+        return self._gw.deadline
 
     def request(
         self,
@@ -387,11 +395,6 @@ class Hooks(Protocol):
     ) -> None: ...
 
 
-def _no_lock(planned: Planned, ctx: Context) -> AbstractContextManager[None]:
-    # todo(#32): dedupe-keyed writes must hold the lock; the default seam holds none
-    return nullcontext()
-
-
 def _new_attempt_id() -> str:
     return secrets.token_hex(8)
 
@@ -412,7 +415,7 @@ class Seams:
     interactive: Callable[[], bool] | None = None
     confirm: Callable[[dict[str, Any]], bool] | None = None
     hooks: Hooks | None = None  # None: the real runner (ticketctl.hooks.HookRunner)
-    lock: Callable[[Planned, Context], AbstractContextManager[None]] = _no_lock
+    lock: Callable[[Planned, Context], AbstractContextManager[None]] = bucket_lock
     attempt_id: Callable[[], str] = _new_attempt_id
 
 
