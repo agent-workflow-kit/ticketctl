@@ -22,6 +22,7 @@ from . import (
     getcmd,
     handlers,
     searchcmd,
+    sprintcmd,
     sprintscmd,
     transitioncmd,
     transitionscmd,
@@ -323,9 +324,21 @@ def _specs() -> list[CommandSpec]:
         ),
         CommandSpec(("create",), w, "create a ticket", _stub(31), _create),
         CommandSpec(("update",), w, "update a ticket", _stub(30), _update),
-        CommandSpec(("sprint", "add"), w, "add a ticket to a sprint", _stub(34), _sprint_add),
         CommandSpec(
-            ("sprint", "remove"), w, "move a ticket to the backlog", _stub(34), _sprint_remove
+            ("sprint", "add"),
+            w,
+            "add a ticket to a sprint",
+            sprintcmd.sprint_add,
+            _sprint_add,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("sprint", "remove"),
+            w,
+            "move a ticket to the backlog",
+            sprintcmd.sprint_remove,
+            _sprint_remove,
+            writeflow.human,
         ),
     ]
 

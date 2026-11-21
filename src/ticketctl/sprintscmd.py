@@ -61,6 +61,7 @@ BOARD_PAGE = 50
 BOARD_PAGES = 5
 SPRINT_PAGE = 50
 SPRINT_PAGES = 20
+SPRINTS_CUT = "sprints.cut"  # a mark of read_sprints: the page loop ended before the listing
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 STATES = ("future", "active", "closed")
@@ -290,7 +291,7 @@ def sprints_list(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
         gw = open_gateway(rt, site)
         board = resolve_board(gw, rt.config.sites[site], board=a.board, project=a.project)
         sprints = read_sprints(gw, board, a.state, limit, marks)
-    warn_incomplete(rt, "the sprints", marks)
+    warn_incomplete(rt, "the sprints", marks - {SPRINTS_CUT})
     return {"site": site, "sprints": sprints}
 
 
@@ -323,6 +324,7 @@ def read_sprints(
         if page.get("isLast") is True or not values:
             return out
         start += len(values)
+    marks.add(SPRINTS_CUT)
     return out
 
 

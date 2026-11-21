@@ -51,12 +51,10 @@ KINDS = ("cli", "hooks")
 PENDING: dict[str, int] = {
     "cli/update.json": 30,
     "cli/create.json": 31,
-    "cli/sprint-add.json": 34,
-    "cli/sprint-remove.json": 34,
     **{
         f"hooks/{when}-{kind}.json": 25
         for when in ("pre", "post")
-        for kind in ("create", "sprint", "transition", "update")
+        for kind in ("create", "transition", "update")
     },
 }
 

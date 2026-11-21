@@ -1,0 +1,24 @@
+{
+  "action": "sprint_remove",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": [
+        "2: Sprint two"
+      ],
+      "name": "sprints",
+      "to": []
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "42bea0977084258c3f4e74dd15ace5861d2b16c99aac29641cf3a5b433400159",
+  "site": "main",
+  "steps": [
+    {
+      "kind": "sprint_remove"
+    }
+  ],
+  "warnings": []
+}

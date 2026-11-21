@@ -226,9 +226,9 @@ def compose(
             out.extend(block)
 
     froms = [
-        (str(c.get("name")), c["from"])
+        (str(c.get("name")), c["from"] if isinstance(c["from"], str) else "\n".join(c["from"]))
         for c in plan.get("changes") or []
-        if isinstance(c.get("from"), str)
+        if isinstance(c.get("from"), str) or _is_str_list(c.get("from"))
     ]
     if froms:
         out.append("")
