@@ -117,10 +117,11 @@ def _record(line: bytes) -> dict[str, Any] | None:
     if not audit.valid_seq(seq):
         return None
     try:
-        cleaned = state.clean_tree(doc)
+        cleaned = state.clean_tree(doc, redact_numbers=True)
     except StateError:
         return None
     assert isinstance(cleaned, dict)
+    cleaned["v"], cleaned["seq"] = 1, seq  # never redacted: the filters compare them as integers
     try:
         # a NaN or an infinity does not parse as strict JSON; clean_tree refused those already
         json.dumps(cleaned, ensure_ascii=True, allow_nan=False)

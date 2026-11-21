@@ -244,6 +244,42 @@ def test_output_is_sanitized_and_scrubbed_again(
     assert "k<U+202E>" in rec
 
 
+def _numeric_token_config(sd: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    cfg = sd.parent / "config.yaml"
+    cfg.write_text(
+        "sites:\n  main:\n    url: https://example.test\n    email: a@example.test\n"
+        "    token_env: EXPORT_TEST_TOKEN\n"
+    )
+    monkeypatch.setenv("EXPORT_TEST_TOKEN", "12345678")
+    return cfg
+
+
+def test_numeric_token_inside_a_seq_does_not_crash_after_seq(
+    sd: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _numeric_token_config(sd, monkeypatch)
+    raw(sd, b'{"v":1,"seq":912345678,"ts":"2026-01-01T00:00:00Z"}\n')
+    code, out, _ = run(capsys, "--config", str(cfg), "export", "--after-seq", "5")
+    assert code == 0
+    assert re.fullmatch(r'\{"v":1,"seq":912345678,"ts":"[^"]*"\}\n', out)
+    assert out_records(out)[0]["seq"] == 912345678
+
+
+def test_exact_numeric_token_is_redacted_the_same_on_stdout_and_to(
+    sd: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _numeric_token_config(sd, monkeypatch)
+    raw(sd, b'{"v":1,"seq":1,"ts":"2026-01-01T00:00:00Z","n":12345678,"m":912345678}\n')
+    code, out, _ = run(capsys, "--config", str(cfg), "export")
+    assert code == 0
+    rec = json.loads(out)
+    assert rec["n"] == "<redacted>" and rec["m"] == 912345678 and rec["seq"] == 1
+    target = tmp_path / "numeric-export.jsonl"
+    code, out2, _ = run(capsys, "--config", str(cfg), "export", "--to", str(target))
+    assert code == 0 and out2 == ""
+    assert target.read_text() == out
+
+
 def test_broken_config_does_not_stop_an_export(
     sd: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -529,7 +565,7 @@ def test_numeric_token_is_redacted_identically_on_stdout_and_to(
     dest = tmp_path / "out.jsonl"
     run(capsys, "--config", str(cfg), "export", "--to", str(dest))
     rec = json.loads(out)
-    assert rec["n"] == "<redacted>" and rec["m"] == ["<redacted>"] and rec["f"] == "<redacted>"
+    assert rec["n"] == "<redacted>" and rec["m"] == ["<redacted>"] and rec["f"] == 123456789012.5
     assert dest.read_text() == out
 
 
