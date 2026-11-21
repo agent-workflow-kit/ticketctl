@@ -174,9 +174,9 @@ def test_cli_two_stdin_sources_still_conflict(capsys: pytest.CaptureFixture[str]
 def test_cli_a_valid_set_reaches_the_handler(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    # the update command is owned by #30: the stub is reached after the checks pass
-    code, _ = run(capsys, "update", "AB-1", "--set", "effort=3")
-    assert code == 1
+    # the checks pass and the real handler runs: with no configured site it stops at `no_sites`
+    code, err = run(capsys, "update", "AB-1", "--set", "effort=3")
+    assert code == 2 and err["reason"] == "no_sites"
 
 
 def test_cli_usage_errors_come_before_the_configuration_is_read(

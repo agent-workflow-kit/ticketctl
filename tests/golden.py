@@ -51,7 +51,6 @@ KINDS = ("cli", "hooks")
 PENDING: dict[str, int] = {
     "cli/transition.json": 28,
     "cli/comment.json": 29,
-    "cli/update.json": 30,
     "cli/create.json": 31,
     "cli/sprint-add.json": 34,
     "cli/sprint-remove.json": 34,

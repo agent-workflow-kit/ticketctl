@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any
 
-from . import searchcmd, setspec
+from . import searchcmd, setspec, updatecmd
 from .commands import REGISTRY, CommandSpec
 from .errors import TicketctlError, clean_message, from_exception, internal_error, usage_error
 from .flags import (
@@ -110,6 +110,8 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
             raise usage_error("invalid_combination", "--format adf needs --body-file")
     elif spec.path == ("search",):
         searchcmd.check_offline(ns)
+    elif spec.path == ("update",):
+        updatecmd.check_offline(ns)
     elif spec.path == ("sprint", "remove") and ns.sprint is not None:
         raise usage_error("invalid_combination", "sprint remove takes no --sprint")
     if spec.path in (("create",), ("update",), ("transition",)):

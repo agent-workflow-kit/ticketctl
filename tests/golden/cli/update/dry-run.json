@@ -1,0 +1,50 @@
+{
+  "action": "update",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": "Seeded backlog task",
+      "name": "title",
+      "to": "Renamed task"
+    },
+    {
+      "from": null,
+      "name": "estimate",
+      "to": 5
+    },
+    {
+      "from": [
+        "alpha"
+      ],
+      "name": "labels",
+      "to": [
+        "beta"
+      ]
+    },
+    {
+      "from": null,
+      "name": "assignee",
+      "to": "acct-0001"
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-1",
+  "plan_sha256": "38c0c5517697965c644483e977ad2a9a16df0dde72c48541ccb8672d8160849b",
+  "site": "main",
+  "steps": [
+    {
+      "fields": [
+        "title",
+        "estimate",
+        "labels"
+      ],
+      "kind": "set_fields"
+    },
+    {
+      "account": "me",
+      "kind": "assign"
+    }
+  ],
+  "warnings": []
+}

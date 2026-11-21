@@ -1,0 +1,24 @@
+{
+  "action": "update",
+  "already_posted": false,
+  "attempt_id": "0000000000000000",
+  "changed": true,
+  "comment_id": null,
+  "decision_ids": [],
+  "key": "DEMO-1",
+  "result": "ok",
+  "reused": false,
+  "site": "main",
+  "steps": [
+    {
+      "kind": "set_fields",
+      "status": "done"
+    },
+    {
+      "kind": "assign",
+      "status": "done"
+    }
+  ],
+  "url": "https://tracker.example.test/browse/DEMO-1",
+  "warnings": []
+}
