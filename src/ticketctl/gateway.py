@@ -20,7 +20,8 @@ The HTTP half implements docs/interface.md, "Invoking the provider" and "Reliabi
   chained exception so a traceback cannot reach request internals.
 
 Public API: ``Target``, ``Deadline``, ``Gateway.request``, ``Response``, ``GatewayError``,
-``parse_json``, ``select_proxy``/``describe_proxy``, ``backoff_delay`` and ``run`` (subprocess).
+``parse_json``, ``select_proxy``/``describe_proxy``, ``backoff_delay``, ``run`` (subprocess) and
+``run_hook``/``spawn_detached`` (hook processes: own session, capped output, group signals).
 """
 
 from __future__ import annotations
@@ -32,9 +33,12 @@ import json
 import os
 import random
 import re
+import selectors
+import signal
 import socket
 import ssl
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -1099,3 +1103,241 @@ def run(
         timeout=timeout,
         check=False,
     )
+
+
+# --------------------------------------------------------------------------------------------
+# Hook processes
+# --------------------------------------------------------------------------------------------
+
+HOOK_OUTPUT_CAP = 65536  # bytes kept of each of a hook's stdout and stderr
+HOOK_KILL_GRACE = 2.0  # seconds between SIGTERM and SIGKILL after a timeout
+HOOK_DRAIN = 0.25  # seconds a hook's pipes may stay open after its leader exited
+_POLL = 0.02  # wake-up interval where no pidfd can signal the leader's exit
+
+# ``waitid`` with ``WNOWAIT`` observes an exit without reaping, so the group id cannot be reused
+# before the group is signaled. It does not exist on macOS; ``Popen.poll`` is the fallback there.
+_HAS_WAITID = hasattr(os, "waitid") and hasattr(os, "WNOWAIT")
+
+
+@dataclass
+class HookRun:
+    """What a finished hook process left: its exit and capped output.
+
+    ``returncode`` is negative for a death by signal. ``pid`` is the process group id too (the
+    hook starts its own session).
+    """
+
+    pid: int
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+    stdout_truncated: bool
+    stderr_truncated: bool
+    timed_out: bool
+
+
+def _pidfd_open(pid: int) -> int | None:
+    opener = getattr(os, "pidfd_open", None)
+    if opener is None:
+        return None
+    try:
+        return int(opener(pid))
+    except OSError:  # old kernel, seccomp, or a process that is already gone
+        return None
+
+
+def _leader_exited(proc: subprocess.Popen[bytes]) -> bool:
+    """True once the leader has exited. With ``waitid`` it stays unreaped (a zombie keeps the
+    process group id from being reused until the group has been signaled)."""
+    if _HAS_WAITID:
+        try:
+            return os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        except ChildProcessError:
+            return True
+    return proc.poll() is not None
+
+
+def _signal_group(pgid: int, sig: int) -> None:
+    """Signal the group this module created (``pgid`` is the pid recorded at launch)."""
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _close(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def run_hook(
+    argv: list[str],
+    *,
+    stdin: bytes,
+    env: Mapping[str, str],
+    timeout: float,
+    out_cap: int = HOOK_OUTPUT_CAP,
+    err_cap: int = HOOK_OUTPUT_CAP,
+    kill_grace: float = HOOK_KILL_GRACE,
+    drain: float = HOOK_DRAIN,
+    on_start: Callable[[int], None] | None = None,
+) -> HookRun:
+    """Run ``argv`` (never through a shell of this module's making) as a hook.
+
+    The child starts its own session, so its pid is its process group id. It gets exactly ``env``,
+    ``stdin`` on a pipe (written without blocking this loop, a child that never reads cannot hang
+    it) and capped stdout and stderr (output past the cap is read and dropped so the child never
+    blocks on a full pipe). ``on_start`` receives the pid right after the launch.
+
+    A timeout sends SIGTERM to the group, then SIGKILL after ``kill_grace``. Whatever the exit,
+    the group is SIGKILLed before the leader is reaped: no descendant of a finished hook is left
+    running, and no process this call did not start is signaled (the group id belongs to the
+    unreaped leader until then). Every exit path, an interrupt included, reaps the leader.
+    """
+    proc = subprocess.Popen(  # noqa: S603 - argv list, no shell=True
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env),
+        close_fds=True,
+        start_new_session=True,
+        shell=False,
+    )
+    pgid = proc.pid
+    pidfd: int | None = None
+    sel = selectors.DefaultSelector()
+    out = bytearray()
+    err = bytearray()
+    truncated = {"out": False, "err": False}
+    timed_out = False
+    try:
+        if on_start is not None:
+            on_start(pgid)
+        pidfd = _pidfd_open(pgid)
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            os.set_blocking(stream.fileno(), False)
+        sel.register(proc.stdout, selectors.EVENT_READ, "out")
+        sel.register(proc.stderr, selectors.EVENT_READ, "err")
+        pending = memoryview(stdin)
+        if pending:
+            sel.register(proc.stdin, selectors.EVENT_WRITE, "in")
+        else:
+            proc.stdin.close()
+        if pidfd is not None:
+            sel.register(pidfd, selectors.EVENT_READ, "pid")
+
+        deadline = time.monotonic() + timeout
+        exited_at: float | None = None
+        while True:
+            now = time.monotonic()
+            if exited_at is None and _leader_exited(proc):
+                exited_at = now
+            pipes_open = any(k.data != "pid" for k in sel.get_map().values())
+            if exited_at is not None and (not pipes_open or now - exited_at >= drain):
+                break
+            if now >= deadline:
+                timed_out = exited_at is None
+                break
+            wait = deadline - now
+            if exited_at is not None:
+                wait = min(wait, exited_at + drain - now)
+            if pidfd is None or exited_at is not None:
+                wait = min(wait, _POLL)
+            for key, _mask in sel.select(max(wait, 0)):
+                if key.data == "pid":
+                    sel.unregister(pidfd)  # type: ignore[arg-type]
+                    continue
+                if key.data == "in":
+                    try:
+                        sent = os.write(proc.stdin.fileno(), pending[:65536])  # type: ignore[union-attr]
+                        pending = pending[sent:]
+                    except BlockingIOError:
+                        continue
+                    except OSError:  # EPIPE: the child stopped reading
+                        pending = pending[len(pending) :]
+                    if not pending:
+                        sel.unregister(proc.stdin)  # type: ignore[arg-type]
+                        proc.stdin.close()  # type: ignore[union-attr]
+                    continue
+                stream = proc.stdout if key.data == "out" else proc.stderr
+                try:
+                    chunk = os.read(stream.fileno(), 65536)  # type: ignore[union-attr]
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    sel.unregister(stream)  # type: ignore[arg-type]
+                    continue
+                buf, cap = (out, out_cap) if key.data == "out" else (err, err_cap)
+                room = cap - len(buf)
+                if len(chunk) > room:
+                    truncated[key.data] = True
+                buf.extend(chunk[: max(room, 0)])
+        if timed_out:
+            _signal_group(pgid, signal.SIGTERM)
+            stop = time.monotonic() + kill_grace
+            while not _leader_exited(proc) and time.monotonic() < stop:
+                time.sleep(_POLL)
+    finally:
+        # The one exit: kill what is left of the group while the leader is still unreaped, then
+        # reap it. Runs for an interrupt too.
+        try:
+            _signal_group(pgid, signal.SIGKILL)
+            proc.wait()
+        finally:
+            sel.close()
+            if pidfd is not None:
+                _close(pidfd)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+    return HookRun(
+        pid=pgid,
+        returncode=proc.returncode,
+        stdout=bytes(out),
+        stderr=bytes(err),
+        stdout_truncated=truncated["out"],
+        stderr_truncated=truncated["err"],
+        timed_out=timed_out,
+    )
+
+
+def spawn_detached(
+    argv: list[str],
+    *,
+    stdin: bytes,
+    env: Mapping[str, str],
+    on_start: Callable[[int], None] | None = None,
+) -> int:
+    """Start ``argv`` in its own session with no output and no wait (an ``async`` post hook).
+
+    The payload is handed over on an anonymous file, so a hook that never reads cannot block the
+    caller. A daemon thread reaps the child, so it never becomes a zombie of a long-lived caller.
+    There is no timeout: the caller does not outlive its reach over the process.
+    """
+    with tempfile.TemporaryFile() as source:
+        source.write(stdin)
+        source.flush()
+        source.seek(0)
+        proc = subprocess.Popen(  # noqa: S603 - argv list, no shell=True
+            argv,
+            stdin=source,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=dict(env),
+            close_fds=True,
+            start_new_session=True,
+            shell=False,
+        )
+    if on_start is not None:
+        on_start(proc.pid)
+    threading.Thread(target=proc.wait, daemon=True).start()
+    return proc.pid

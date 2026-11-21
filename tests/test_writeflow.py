@@ -970,26 +970,7 @@ def test_raise_for_write_maps_the_status_table() -> None:
 # ---------------------------------------------------------------------------------------------
 
 
-def test_configured_or_given_hooks_without_a_runner_refuse_before_any_write(world: World) -> None:
-    held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
-    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
-    assert world.writes() == [] and world.records() == []
-    world.write_config("hooks:\n  post-transition:\n    - cmd: /bin/true\n")
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
-    assert err.reason == "hooks_unavailable"
-    world.write_config("")
-    err = world.fail(
-        StubTransition("DEMO-2", "Done"),
-        yes=True,
-        expect_plan=held,
-        hooks=["pre-transition=/bin/true"],
-    )
-    assert err.reason == "hooks_unavailable" and world.writes() == []
-
-
-def test_hooks_of_another_family_or_a_real_runner_or_a_dry_run_do_not_refuse(
+def test_hooks_of_another_family_or_a_substituted_runner_or_a_dry_run_do_not_run(
     world: World,
 ) -> None:
     world.write_config("hooks:\n  pre-comment:\n    - cmd: /bin/true\n")
