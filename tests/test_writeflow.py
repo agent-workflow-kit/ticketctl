@@ -970,26 +970,7 @@ def test_raise_for_write_maps_the_status_table() -> None:
 # ---------------------------------------------------------------------------------------------
 
 
-def test_configured_or_given_hooks_without_a_runner_refuse_before_any_write(world: World) -> None:
-    held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
-    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
-    assert world.writes() == [] and world.records() == []
-    world.write_config("hooks:\n  post-transition:\n    - cmd: /bin/true\n")
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
-    assert err.reason == "hooks_unavailable"
-    world.write_config("")
-    err = world.fail(
-        StubTransition("DEMO-2", "Done"),
-        yes=True,
-        expect_plan=held,
-        hooks=["pre-transition=/bin/true"],
-    )
-    assert err.reason == "hooks_unavailable" and world.writes() == []
-
-
-def test_hooks_of_another_family_or_a_real_runner_or_a_dry_run_do_not_refuse(
+def test_hooks_of_another_family_or_a_substituted_runner_or_a_dry_run_do_not_run(
     world: World,
 ) -> None:
     world.write_config("hooks:\n  pre-comment:\n    - cmd: /bin/true\n")
@@ -1512,9 +1493,10 @@ def test_a_mapping_with_version_and_content_is_a_document_even_when_not_adf() ->
         check_outbound({"payload": {"version": 3, "content": "plain text"}}, body_chars=30000)
 
 
-def test_a_configured_hook_refuses_even_a_run_that_would_be_a_noop(world: World) -> None:
-    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
+def test_a_configured_hook_does_not_run_for_a_noop(world: World) -> None:
+    # a hook that would veto if it ran: the no-op returns before any hook
+    world.write_config("hooks:\n  pre-transition:\n    - cmd: exit 1\n")
     world.fake.tickets["DEMO-2"].status = "Done"
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
-    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    out = world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
+    assert out["result"] == "unchanged"
     assert world.writes() == [] and world.records() == []

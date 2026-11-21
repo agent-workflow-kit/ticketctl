@@ -110,6 +110,10 @@ class Planned:
     ``bodies`` hash); a list of strings is shown by the dialog from the change itself. An action
     must supply, through ``shown``, the rendered text of every non-string change value (the dialog
     is the human's only view of what is sent).
+    ``hook`` holds the facts of the resolve read that the hook payloads need and that the hash does
+    not (``project``, ``ticket``, ``current_status`` and ``target_status`` as ``{name, category}``,
+    ``resolution``, ``assign``, ``sprints``, ``create``, optionally ``fields_changed``); see
+    ``ticketctl.hooks.build_payload``. Never ticket text.
     """
 
     steps: list[Step]
@@ -127,6 +131,7 @@ class Planned:
     comment_id: str | None = None
     existing_key: str | None = None
     shown: list[ShownText] = field(default_factory=list)  # outbound text no change entry carries
+    hook: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.hash_key is None:

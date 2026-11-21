@@ -151,7 +151,8 @@ Read-command assumptions (issue #18, unverified against a real site; the code ta
 | `confirm_dialog`, `confirm_tty` | the confirmation dialog text (caps, order, sanitizer) and the `/dev/tty` prompt and answer |
 | `hooks` | hook execution (process groups, timeouts, payloads) |
 | `state` | the state directory: location, `0700` and ownership checks, symlink refusal, safe file opens relative to the directory descriptor, the `flock` helper (bounded wait, reopen after rotation), the tree cleaner every writer runs content through |
-| `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
+| `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation |
+| `exportcmd` | the `export` command: the unlocked bounded reader of `audit.jsonl`, `--since` and `--after-seq` filters, `--to` created with `O_EXCL`, output cleaned and scrubbed once |
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
 | `dedupe` | the dedupe lock and the lookups for comment and create |
 

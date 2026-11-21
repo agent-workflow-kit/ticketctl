@@ -22,6 +22,7 @@ MODULES = [
     "search_cursor",
     "searchcmd",
     "audit",
+    "exportcmd",
     "state",
     "cache",
     "provider",
