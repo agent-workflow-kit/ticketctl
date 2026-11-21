@@ -22,7 +22,9 @@ from . import (
     handlers,
     searchcmd,
     sprintscmd,
+    transitioncmd,
     transitionscmd,
+    writeflow,
 )
 from .flags import (
     Globals,
@@ -155,12 +157,12 @@ def _export(p: argparse.ArgumentParser) -> None:
 
 def _transition(p: argparse.ArgumentParser) -> None:
     _key(p)
-    _add(p, "--to")
+    _add(p, "--to", type=transitioncmd.name_arg)
     _add(p, "--transition-id", type=numeric_id_arg)
     _add(p, "--resolution")
-    _add(p, "--assign")
+    _add(p, "--assign", type=transitioncmd.assign_arg, metavar="me|ACCOUNT")
     _add(p, "--field", action="append")
-    _add(p, "--if-status")
+    _add(p, "--if-status", type=transitioncmd.name_arg)
 
 
 def _comment(p: argparse.ArgumentParser) -> None:
@@ -302,7 +304,14 @@ def _specs() -> list[CommandSpec]:
             handlers.human_validate,
         ),
         CommandSpec(("export",), r, "print audit records", exportcmd.export, _export),
-        CommandSpec(("transition",), w, "transition a ticket", _stub(28), _transition),
+        CommandSpec(
+            ("transition",),
+            w,
+            "transition a ticket",
+            transitioncmd.transition,
+            _transition,
+            writeflow.human,
+        ),
         CommandSpec(("comment",), w, "post a comment", _stub(29), _comment),
         CommandSpec(("create",), w, "create a ticket", _stub(31), _create),
         CommandSpec(("update",), w, "update a ticket", _stub(30), _update),
