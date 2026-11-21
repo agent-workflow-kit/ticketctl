@@ -38,7 +38,7 @@ from .fieldmap import (
     Status,
     parse_field_list,
 )
-from .gateway import Gateway
+from .gateway import Requester
 from .runtime import Runtime
 from .sanitize import CAPS, sanitize_field
 from .state import StateError
@@ -75,7 +75,7 @@ class NameList:
         return self.names.index(name)
 
 
-def _fetch(gw: Gateway, path: str, what: str) -> Any:
+def _fetch(gw: Requester, path: str, what: str) -> Any:
     response = gw.request("GET", path, template=path)
     if not 200 <= response.status < 300:
         raise TicketctlError("provider_changed", f"unexpected answer from {path} ({what})")
@@ -83,7 +83,7 @@ def _fetch(gw: Gateway, path: str, what: str) -> Any:
 
 
 def _read(
-    rt: Runtime, site_name: str, gw: Gateway, name: str, label: str
+    rt: Runtime, site_name: str, gw: Requester, name: str, label: str
 ) -> cache.CacheEntry | None:
     site = rt.config.sites[site_name]
     try:
@@ -103,7 +103,7 @@ def _read(
 
 
 def _write(
-    rt: Runtime, site_name: str, gw: Gateway, name: str, label: str, data: dict[str, Any]
+    rt: Runtime, site_name: str, gw: Requester, name: str, label: str, data: dict[str, Any]
 ) -> None:
     site = rt.config.sites[site_name]
     try:
@@ -131,7 +131,7 @@ def _discard(rt: Runtime, site_name: str, name: str, entry: cache.CacheEntry) ->
 # --- the field list ---------------------------------------------------------------------------
 
 
-def load_fields(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> LoadedFields:
+def load_fields(rt: Runtime, site_name: str, gw: Requester, *, refresh: bool) -> LoadedFields:
     if not refresh:
         stored = _read(rt, site_name, gw, "fields", "field list")
         if stored is not None:
@@ -167,7 +167,7 @@ def load_fields(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool) -> L
 def load_site_fields(
     rt: Runtime,
     site_name: str,
-    gw: Gateway,
+    gw: Requester,
     *,
     refresh: bool = False,
     needs: Iterable[str] = (),
@@ -216,7 +216,7 @@ def _names_from_cache(data: object) -> tuple[str, ...]:
 
 
 def _load_names(
-    rt: Runtime, site_name: str, gw: Gateway, *, name: str, path: str, label: str, refresh: bool
+    rt: Runtime, site_name: str, gw: Requester, *, name: str, path: str, label: str, refresh: bool
 ) -> NameList:
     if not refresh:
         stored = _read(rt, site_name, gw, name, label)
@@ -234,14 +234,16 @@ def _load_names(
     return NameList(names, "provider")
 
 
-def load_priorities(rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool = False) -> NameList:
+def load_priorities(
+    rt: Runtime, site_name: str, gw: Requester, *, refresh: bool = False
+) -> NameList:
     return _load_names(
         rt, site_name, gw, name="priorities", path=PRIORITY, label="priority list", refresh=refresh
     )
 
 
 def load_resolutions(
-    rt: Runtime, site_name: str, gw: Gateway, *, refresh: bool = False
+    rt: Runtime, site_name: str, gw: Requester, *, refresh: bool = False
 ) -> NameList:
     return _load_names(
         rt,

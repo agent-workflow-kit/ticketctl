@@ -1,0 +1,35 @@
+{
+  "action": "transition",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": {
+        "category": "indeterminate",
+        "name": "In Progress"
+      },
+      "name": "status",
+      "to": {
+        "category": "done",
+        "name": "Done"
+      }
+    },
+    {
+      "from": null,
+      "name": "resolution",
+      "to": "Done"
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "a92c973b9fc705bbad8b5f5533505634ec32f08de30c7856d20b2bb16ed869ef",
+  "site": "main",
+  "steps": [
+    {
+      "kind": "transition",
+      "to": "Done",
+      "transition_id": "41"
+    }
+  ],
+  "warnings": []
+}
