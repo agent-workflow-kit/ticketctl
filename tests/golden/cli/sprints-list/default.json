@@ -1,0 +1,29 @@
+{
+  "site": "main",
+  "sprints": [
+    {
+      "board": 1,
+      "end": "2026-02-16T15:00:00Z",
+      "id": 1,
+      "name": "Sprint one",
+      "start": "2026-02-02T15:00:00Z",
+      "state": "closed"
+    },
+    {
+      "board": 1,
+      "end": "2026-03-02T15:00:00Z",
+      "id": 2,
+      "name": "Sprint two",
+      "start": "2026-02-16T15:00:00Z",
+      "state": "active"
+    },
+    {
+      "board": 1,
+      "end": null,
+      "id": 3,
+      "name": "Sprint three",
+      "start": null,
+      "state": "future"
+    }
+  ]
+}

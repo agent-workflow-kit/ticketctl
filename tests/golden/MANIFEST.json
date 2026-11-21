@@ -1,4 +1,5 @@
 {
+  "cli/comments.json": "91d4dce390c7587f972677c8a3ed4538392cd023fdb3ae56bb54c6b53d011e23",
   "cli/error.json": "a44a087b71ea9c3bb457bacdf47287645b282f037d37dced053f27dd59ded99a",
   "cli/fields-check.json": "f9636a31740b1891fd9e8b604287da863116dbe57735d234adb715a583a1d619",
   "cli/fields-list.json": "3b9669c7ee2d2eb7417cb9db7835dad37dc426ecfa7d11c9081bc5a27f5191a2",
@@ -9,6 +10,9 @@
   "cli/search.json": "29b7a3e68b03e36f5aef25cce133732a697e53689a02d40282470cd838be3bf6",
   "cli/sites-resolve.json": "4db0300d65dc4155b3441a735ff86deb22e027a2f8f22df1600d5c3c3189318b",
   "cli/sites.json": "785ab514ad0abac4e7c86e8643373bc411b43fa46b6152a737bcad76703f7c91",
+  "cli/sprints-list.json": "e30ade6095cdf3096b16a10a9cceebb360825518333942cba8f067a9008ff360",
+  "cli/sprints-show.json": "70f2be65ea72c5b14bad0a9c65d86c8aa57ee45d02df9d2676634abe02e888a1",
+  "cli/transitions.json": "8f39aaddf8dd90d99836d23a6a1e795be2a274b5ddcf903f5d49ac88fb5f09ea",
   "cli/validate.json": "4b2270aecd6d839e495f0b275cd3cf9cedc8471bf1d738e368b3be367af02a67",
   "cli/whoami.json": "8f4b64cd43ca712d0957a7c0168fbef5009b9f29bc9be9d7dc1a54e875250023"
 }

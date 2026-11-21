@@ -284,7 +284,7 @@ USAGE_PRODUCERS = {
 }  # fmt: skip
 # `missing_option` has no parser-level producer: it needs config and provider context (the
 # board of `sprints`, the project of `create`), so it is raised as a TicketctlError by the
-# handlers. TODO(#18,#31): add the command-line test with the handlers that own it.
+# handlers. TODO(#31): add the command-line test with the handler that owns it (`sprints` has one).
 HANDLER_ONLY_USAGE_REASONS = {"missing_option"}
 
 
