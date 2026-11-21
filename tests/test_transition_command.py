@@ -68,8 +68,13 @@ class RichFake(FakeProvider):
 
 @pytest.fixture
 def rich_fake() -> Iterator[RichFake]:
-    with RichFake() as provider:
+    provider = RichFake()
+    provider.start()
+    try:
         yield provider
+    finally:
+        provider.close()
+    assert not [e for e in provider.errors if not e.client_malformed]
 
 
 @pytest.fixture
