@@ -3,7 +3,8 @@
 ``compose`` turns a plan and the outbound texts into the lines the human reads before the prompt:
 
 1. every outbound text value (``Planned.shown`` first, then every string ``to`` of a change that
-   no ``shown`` entry covers, so no text can be sent without being shown), capped;
+   no ``shown`` entry covers, so no text can be sent without being shown), capped; a list of
+   strings shows every item under one total cap of 20000 characters;
 2. every ``from`` value of a change (provider-owned text), cut to 20 lines and 2000 characters;
 3. the steps, the one-line-per-change summary and the warnings;
 4. when ``--override-escalation`` is on, the override line and the hook names it covers.
@@ -32,7 +33,6 @@ LINE_MAX_CHARS = 500
 FOLD_AT = 200
 FROM_MAX_LINES = 20
 FROM_MAX_CHARS = 2_000
-LIST_MAX_ITEMS = 50
 BRIEF_CHARS = 80
 STEP_CHARS = 200
 
@@ -78,10 +78,11 @@ def _lines(text: str) -> list[str]:
             blank = True
             continue
         blank = False
-        if len(line) <= FOLD_AT:
-            out.append(line)
-        else:
-            out.extend(line[i : i + FOLD_AT] for i in range(0, len(line), FOLD_AT))
+        while len(line) > FOLD_AT:
+            at = _cut_point(line, FOLD_AT) or FOLD_AT  # never inside a <U+XXXX> or <redacted>
+            out.append(line[:at])
+            line = line[at:]
+        out.append(line)
     while out and out[-1] == "":
         out.pop()
     return out
@@ -109,7 +110,7 @@ def _capped_lines(text: str, *, max_lines: int, max_chars: int) -> tuple[list[st
 
 
 def _block(label: str, text: str, *, kind: str, sha: str) -> list[str]:
-    header = f"{_single(label, 80)} (sha256 {sha}):"
+    header = f"value of {_single(label, 80)} (sha256 {sha}):"  # a fixed lead: no hostile label
     if kind == "line":
         safe = render(text, body=False)
         if len(safe) <= LINE_MAX_CHARS:
@@ -158,25 +159,44 @@ def _is_str_list(value: Any) -> bool:
     return isinstance(value, list) and bool(value) and all(isinstance(v, str) for v in value)
 
 
-def _outbound(plan: dict[str, Any], shown: Sequence[ShownText]) -> list[ShownText]:
-    out = list(shown)
-    covered = {s.label for s in out}
+def _list_blocks(name: str, items: list[str]) -> list[str]:
+    """Every item of a list under one total cap; the cut marker hashes the whole joined list."""
+    rendered = [render(v, body=False) for v in items]
+    out: list[str] = []
+    used = 0
+    for i, (item, text) in enumerate(zip(items, rendered, strict=True)):
+        room = BODY_MAX_CHARS - used
+        if len(text) <= room:
+            out.extend(_block(f"{name}[{i}]", item, kind="line", sha=digest(item)))
+            used += min(len(text), LINE_MAX_CHARS)
+            continue
+        at = _cut_point(text, room) if room > 0 else 0
+        left = sum(len(t) for t in rendered[i:]) - at
+        full = digest("\n".join(items))
+        if at > 0:
+            out.extend(
+                [f"value of {_single(name, 80)}[{i}] (sha256 {digest(item)}):", PREFIX + text[:at]]
+            )
+        else:
+            out.append(f"value of {_single(name, 80)} (sha256 {full}):")
+        out.append(f"{PREFIX}[... {left} more characters; sha256 {full}]")
+        break
+    return out
+
+
+def _outbound(plan: dict[str, Any], shown: Sequence[ShownText]) -> list[list[str]]:
+    """Blocks of lines: every ``shown`` text, then each change value that no ``shown`` covers."""
+    out = [_block(s.label, s.text, kind=s.kind, sha=s.sha256 or digest(s.text)) for s in shown]
+    covered = {s.label for s in shown}
     for change in plan.get("changes") or []:
         name = str(change.get("name"))
         to = change.get("to")
-        if name in covered:
-            continue
-        if isinstance(to, str):
-            out.append(ShownText(name, to, "line" if "\n" not in to else "body"))
-        elif _is_str_list(to):
-            items = to[:LIST_MAX_ITEMS]
-            out.extend(ShownText(f"{name}[{i}]", v, "line") for i, v in enumerate(items))
-            if len(to) > LIST_MAX_ITEMS:
-                out.append(
-                    ShownText(
-                        f"{name}", f"({len(to) - LIST_MAX_ITEMS} more items, see --json)", "line"
-                    )
-                )
+        if isinstance(to, str) and name not in covered:
+            # a change string is a line (newlines to spaces, 500 characters); only a ``shown``
+            # text supplied as a body gets the body caps
+            out.append(_block(name, to, kind="line", sha=digest(to)))
+        elif isinstance(to, list) and _is_str_list(to):
+            out.append(_list_blocks(name, [str(v) for v in to]))
     return out
 
 
@@ -202,9 +222,8 @@ def compose(
     if outbound:
         out.append("")
         out.append("text that will be sent:")
-        for item in outbound:
-            sha = item.sha256 or digest(item.text)
-            out.extend(_block(item.label, item.text, kind=item.kind, sha=sha))
+        for block in outbound:
+            out.extend(block)
 
     froms = [
         (str(c.get("name")), c["from"])

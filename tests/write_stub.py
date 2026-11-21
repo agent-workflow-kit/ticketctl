@@ -267,6 +267,7 @@ class StubDescription:
             intent={"fields": {"description": info["sha256"]}},
             facts={"description": None if current is None else _sha(current)},
             changes=[{"name": "description", "from": None, "to": "rendered markdown"}],
+            shown=[ShownText("description", "rendered markdown", "body", info["sha256"])],
             key=self.key,
             bodies=[info],
         )

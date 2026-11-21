@@ -15,6 +15,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ class Session:
         self.result: dict[str, Any] | None = None
         self.returncode: int | None = None
         self.pid: int | None = None
+        self.elapsed = 0.0
 
     def _drain(self, master: int, seconds: float, until: bytes | None = None) -> None:
         end = time.monotonic() + seconds
@@ -66,8 +68,13 @@ class Session:
         stderr_is_pty: bool = True,
         signal_after_prompt: int | None = None,
         wait_prompt: bool = True,
+        other_stderr: bool = False,
+        flood: bool = False,
     ) -> Session:
         master, slave = os.openpty()
+        master2, slave2 = os.openpty() if other_stderr else (-1, -1)
+        stop = threading.Event()
+        writer: threading.Thread | None = None
         result_file = self.tmp / "result.json"
         cfg = dict(self.cfg)
         cfg["ctty_fd"] = 1 if ctty else None
@@ -86,7 +93,7 @@ class Session:
                 [sys.executable, "-I", str(CHILD), json.dumps(cfg), str(result_file)],
                 stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 stdout=slave,
-                stderr=slave if err_pipe is None else err_pipe,
+                stderr=slave2 if other_stderr else (slave if err_pipe is None else err_pipe),
                 env=env,
                 start_new_session=True,
                 close_fds=True,
@@ -97,23 +104,44 @@ class Session:
                 proc.stdin.close()
             if wait_prompt:
                 self._drain(master, 10.0, until=PROMPT)
+            started = time.monotonic()
+            if flood:
+                writer = threading.Thread(target=_flood, args=(master, stop), daemon=True)
+                writer.start()
             if signal_after_prompt is not None:
                 os.kill(self.pid, signal_after_prompt)  # the recorded child only
             elif answer is not None:
                 os.write(master, answer)
             try:
                 self.returncode = proc.wait(timeout=15)
+                self.elapsed = time.monotonic() - started
             finally:
                 self._drain(master, 0.3)
         finally:
+            stop.set()
+            if writer is not None:
+                writer.join(timeout=5)
             if proc is not None and proc.poll() is None:
                 proc.kill()  # exactly our child
                 proc.wait(timeout=5)
-            os.close(slave)
-            os.close(master)
+            for fd in (slave, master, slave2, master2):
+                if fd >= 0:
+                    os.close(fd)
         if result_file.exists():
             self.result = json.loads(result_file.read_text())
         return self
+
+
+def _flood(master: int, stop: threading.Event) -> None:
+    """Type 'x' with no newline for as long as the child reads (a stand-in for an endless line)."""
+    chunk = b"x" * 4096
+    while not stop.is_set():
+        try:
+            _, writable, _ = select.select([], [master], [], 0.05)
+            if writable:
+                os.write(master, chunk)
+        except (OSError, ValueError):
+            return
 
 
 def decided(tmp_path: Path, answer: bytes, **kw: Any) -> str:
@@ -189,9 +217,53 @@ def test_type_ahead_before_the_prompt_does_not_answer_it(tmp_path: Path) -> None
     assert s.result is not None and s.result["result"] == "declined"
 
 
-def test_type_ahead_that_is_not_flushed_would_have_answered(tmp_path: Path) -> None:
-    # Control: the same bytes typed after the prompt do accept, so the case above proves the flush.
-    assert decided(tmp_path, b"y\n") == "accepted"
+def test_the_same_type_ahead_answers_when_the_flush_is_disabled(tmp_path: Path) -> None:
+    # Control: the child with its flush replaced by a no-op accepts the type-ahead, so the case
+    # above (declined) is the flush and nothing else.
+    s = Session(tmp_path, timeout=3.0, no_flush=True).run(None, before=b"y\n", wait_prompt=False)
+    assert s.result is not None and s.result["result"] == "accepted"
+
+
+def test_text_typed_after_the_answer_is_flushed(tmp_path: Path) -> None:
+    s = Session(tmp_path).run(b"y\nrm x\n")
+    assert s.result is not None and s.result["result"] == "accepted"
+    assert s.result["leftover"] == ""
+
+
+def test_the_post_answer_flush_control_leaves_the_text_in_the_queue(tmp_path: Path) -> None:
+    s = Session(tmp_path, no_flush=True).run(b"y\nrm x\n")
+    assert s.result is not None and s.result["result"] == "accepted"
+    assert s.result["leftover"] == "rm x\n"
+
+
+def test_text_around_a_ctrl_d_on_one_line_reads_as_that_one_line(tmp_path: Path) -> None:
+    # Ctrl-D with text pending only ends the read: "y", Ctrl-D, Enter is the line "y" (the human
+    # sees the same text they typed). A partial line ended by Ctrl-D is not an answer by itself.
+    assert decided(tmp_path, b"y" + CTRL_D + b"\n") == "accepted"
+    assert decided(tmp_path, b"y" + CTRL_D + CTRL_D) == "declined"
+
+
+def test_a_long_line_with_its_newline_in_one_raw_read_is_declined(tmp_path: Path) -> None:
+    s = Session(tmp_path, raw=True).run(b"y" + b" " * 5000 + b"\n")
+    assert s.result is not None and s.result["result"] == "declined"
+    s = Session(tmp_path, raw=True).run(b"y\n")  # control: a short line in raw mode accepts
+    assert s.result is not None and s.result["result"] == "accepted"
+
+
+def test_only_the_cap_stops_an_endless_line(tmp_path: Path) -> None:
+    # An endless 'x' with no newline on a raw terminal: without the cap the read would run to the
+    # 8 s timeout (and the child's 256 MiB address-space limit is the backstop for memory).
+    s = Session(tmp_path, raw=True, timeout=8.0).run(None, flood=True)
+    assert s.result is not None and s.result["result"] == "declined"
+    assert s.elapsed < 4.0
+
+
+def test_a_descriptor_select_cannot_wait_on_is_unavailable_before_the_dialog(
+    tmp_path: Path,
+) -> None:
+    s = Session(tmp_path, many_fds=1100).run(None, wait_prompt=False)
+    assert s.result is not None and s.result["result"] == "unavailable"
+    assert PROMPT not in s.out and b"hello body" not in s.out
 
 
 def test_a_piped_stdin_does_not_answer_and_is_never_read(tmp_path: Path) -> None:
@@ -239,6 +311,13 @@ def test_stderr_that_is_not_a_terminal_is_unavailable(tmp_path: Path) -> None:
     assert PROMPT not in s.out
 
 
+def test_stderr_on_another_terminal_than_dev_tty_is_unavailable(tmp_path: Path) -> None:
+    s = Session(tmp_path).run(b"y\n", other_stderr=True, wait_prompt=False)
+    assert s.result is not None and s.result["result"] == "unavailable"
+    assert re.search(r"stderr is not the controlling terminal", s.result["why"])
+    assert PROMPT not in s.out and b"hello body" not in s.out
+
+
 def test_an_automatic_actor_is_never_asked(tmp_path: Path) -> None:
     s = Session(tmp_path, actor="auto:unknown").run(b"y\n", wait_prompt=False)
     assert s.result is not None and s.result["result"] == "unavailable"
@@ -257,6 +336,7 @@ def test_open_tty_accepts_a_real_pty_and_refuses_everything_else(
     try:
         name = os.ttyname(slave)
         monkeypatch.setattr(confirm_tty, "TTY_PATH", name)
+        monkeypatch.setattr(confirm_tty.os, "tcgetpgrp", lambda fd: 4242)  # one terminal
         fd = confirm_tty.open_tty()
         assert os.isatty(fd)
         os.close(fd)
@@ -306,7 +386,9 @@ def test_read_line_gives_up_on_a_closed_peer_and_on_overlong_input() -> None:
     r, w = os.pipe()
     try:
         os.write(w, b"a" * (confirm_tty.MAX_ANSWER_BYTES + 10))
-        assert confirm_tty.read_line(r, 1.0) is None
+        started = time.monotonic()
+        assert confirm_tty.read_line(r, 5.0) is None
+        assert time.monotonic() - started < 2.0  # the cap answers; the deadline does not
     finally:
         os.close(r)
         os.close(w)

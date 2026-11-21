@@ -8,7 +8,9 @@ not end in a line within 4096 bytes, a read error and the timeout all decline. N
 to yes.
 
 ``ConfirmUnavailable`` means the human cannot be asked (an ``auto:`` actor, stderr not a TTY, no
-controlling terminal, ``/dev/tty`` not a character terminal): the engine turns it into exit 13
+controlling terminal, ``/dev/tty`` not a character terminal, stderr not that controlling terminal
+(the dialog would be shown on one terminal and asked on another), a descriptor ``select`` cannot
+wait on): the engine turns it into exit 13
 ``confirmation_required``, never into an acceptance. ``/dev/tty`` is opened ``O_NOCTTY`` (a
 session without a terminal does not acquire one), ``O_NOFOLLOW`` and close-on-exec, and checked
 with ``fstat`` and ``isatty`` after the open, so a probe that passed a moment ago does not make
@@ -58,6 +60,13 @@ def open_tty() -> int:
     except ConfirmUnavailable:
         os.close(fd)
         raise
+    try:  # the dialog goes to stderr and the question to /dev/tty: they must be one terminal
+        same = os.tcgetpgrp(2) == os.tcgetpgrp(fd)  # ENOTTY when stderr is another terminal
+    except OSError:
+        same = False
+    if not same:
+        os.close(fd)
+        raise ConfirmUnavailable("stderr is not the controlling terminal")
     return fd
 
 
@@ -89,7 +98,8 @@ def read_line(fd: int, timeout_s: float) -> bytes | None:
             return None  # EOF; a partial line without its newline is never an answer
         buf += chunk
         if b"\n" in buf:
-            return buf.split(b"\n", 1)[0]
+            line = buf.split(b"\n", 1)[0]
+            return line if len(line) <= MAX_ANSWER_BYTES else None  # one read can hold it all
         if len(buf) > MAX_ANSWER_BYTES:
             return None
 
@@ -125,6 +135,10 @@ def confirm(
         raise ConfirmUnavailable("stderr is not a terminal")
     fd = (opener or open_tty)()
     try:
+        try:
+            select.select([fd], [], [], 0)  # select cannot wait on a descriptor of 1024 or more
+        except ValueError:
+            raise ConfirmUnavailable("the terminal descriptor is out of range") from None
         text = compose(plan, shown, override=override, hook_names=hook_names)
         output.write(stderr if stderr is not None else sys.stderr, text)
         _flush_input(fd)  # type-ahead typed before the prompt never answers it

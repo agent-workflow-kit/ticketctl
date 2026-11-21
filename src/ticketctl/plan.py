@@ -101,8 +101,13 @@ class Planned:
     the hooks. ``key`` is null for create, ``hash_key`` is what the hash holds in its ``key``
     place (the project for create, else the key). For a no-op, ``already_posted``, ``reused`` and
     ``comment_id`` describe the existing object (and ``existing_key`` the reused ticket). ``shown``
-    holds the outbound texts that have no ``changes`` entry (a comment body, a created ticket's
-    title and description); the dialog also shows every string ``to`` of ``changes``.
+    holds the outbound texts (a comment body, a created ticket's title and description, the
+    rendered text of a rich-text change). ``build_plan`` refuses the plan, before any dialog, unless
+    everything sent is shown: every step ``body_sha256`` and every ``bodies[*].sha256`` is the hash
+    of a ``shown`` text; every change whose ``to`` is a string or a number or a boolean has a
+    ``shown`` text of the same label (and, for a string, the text is equal or its hash is a step or
+    ``bodies`` hash); a list of strings is shown by the dialog from the change itself. An action
+    fills ``shown`` for every such value (the dialog is the human's only view of what is sent).
     """
 
     steps: list[Step]
@@ -167,6 +172,30 @@ def _strings(node: Any) -> set[str]:
     return out
 
 
+def _shown_digest(item: ShownText) -> str:
+    return item.sha256 or hashlib.sha256(item.text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _require_shown(planned: Planned) -> None:
+    """Fail closed: nothing may be sent that the confirmation dialog would not show."""
+    shown = {_shown_digest(s) for s in planned.shown}
+    sent = [s.props["body_sha256"] for s in planned.steps if s.props.get("body_sha256") is not None]
+    sent += [b.get("sha256") for b in planned.bodies]
+    for digest in sent:
+        if digest not in shown:
+            raise ValueError("a body hash in the plan has no shown text with that hash")
+    for change in planned.changes:
+        to = change.get("to")
+        if not isinstance(to, (str, bool, int, float)):
+            continue  # None, a summarized value, or a list the dialog shows from the change
+        label = str(change.get("name"))
+        same = [s for s in planned.shown if s.label == label]
+        if not same:
+            raise ValueError(f"change {label!r} has no shown text of that label")
+        if isinstance(to, str) and not any(s.text == to or _shown_digest(s) in sent for s in same):
+            raise ValueError(f"the shown text of change {label!r} differs from the text sent")
+
+
 def plan_hash(action: str, site: str, planned: Planned) -> str:
     document = {
         "v": HASH_VERSION,
@@ -193,6 +222,7 @@ def build_plan(action: str, site: str, actor: str, planned: Planned) -> dict[str
         digest = step.props.get("body_sha256")
         if digest is not None and digest not in hashed:
             raise ValueError("a step body_sha256 is not in the plan intent")
+    _require_shown(planned)
     warnings = list(dict.fromkeys(planned.warnings))
     return {
         "action": action,

@@ -7,6 +7,7 @@ dialog. The pty here is made in the test; ``open_tty`` and the two TTY probes ar
 from __future__ import annotations
 
 import os
+import re
 import select
 import threading
 import time
@@ -39,24 +40,28 @@ class Human:
         self.master = master
         self.answer = answer
         self.seen = b""
+        self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def _run(self) -> None:
         end = time.monotonic() + 20
-        while time.monotonic() < end:
-            ready, _, _ = select.select([self.master], [], [], 0.05)
-            if not ready:
-                continue
+        while time.monotonic() < end and not self.stop.is_set():
             try:
+                ready, _, _ = select.select([self.master], [], [], 0.05)
+                if not ready:
+                    continue
                 chunk = os.read(self.master, 65536)
-            except OSError:
+            except (OSError, ValueError):
                 return
             if not chunk:
                 return
             self.seen += chunk
             if MARK in self.seen and self.answer is not None:
-                os.write(self.master, self.answer)
+                try:
+                    os.write(self.master, self.answer)
+                except OSError:
+                    return
                 self.answer = None
                 return
 
@@ -70,7 +75,6 @@ def terminal(
     monkeypatch.setattr(flags, "stderr_is_tty", lambda: True)
     monkeypatch.setattr(flags, "probe_dev_tty", lambda: True)
     if timeout is not None:
-        monkeypatch.setattr(confirm_tty, "PROMPT_TIMEOUT_S", timeout)
         original = confirm_tty.confirm
         monkeypatch.setattr(
             "ticketctl.writeflow.confirm_tty.confirm",
@@ -80,7 +84,9 @@ def terminal(
     try:
         yield human
     finally:
+        human.stop.set()  # the reader ends before its descriptors are closed under it
         human.thread.join(timeout=5)
+        assert not human.thread.is_alive()
         os.close(slave)
         os.close(master)
 
@@ -176,10 +182,41 @@ def test_yes_skips_the_dialog_as_before(world: World, monkeypatch: pytest.Monkey
     def boom() -> int:
         raise AssertionError("the dialog ran under --yes")
 
-    monkeypatch.setattr(confirm_tty, "open_tty", boom)
     held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    out = world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    monkeypatch.setattr(confirm_tty, "open_tty", boom)
+    monkeypatch.setattr(flags, "stderr_is_tty", lambda: True)
+    monkeypatch.setattr(flags, "probe_dev_tty", lambda: True)
+    out = _run_real(world, StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
     assert out["result"] == "ok"
+
+
+def test_a_dry_run_and_an_unchanged_plan_never_open_the_terminal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom() -> int:
+        raise AssertionError("the terminal was opened")
+
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    monkeypatch.setattr(confirm_tty, "open_tty", boom)
+    monkeypatch.setattr(flags, "stderr_is_tty", lambda: True)
+    monkeypatch.setattr(flags, "probe_dev_tty", lambda: True)
+    assert _run_real(world, StubTransition("DEMO-2", "Done"), dry_run=True)["plan_sha256"]
+    world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    out = _run_real(world, StubTransition("DEMO-2", "Done"))
+    assert out["result"] == "unchanged"
+
+
+def test_ctrl_c_at_the_prompt_is_a_decline_through_the_engine(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(fd: int, timeout_s: float) -> bytes | None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(confirm_tty, "read_line", interrupted)
+    with terminal(monkeypatch, None):
+        err = _fail_real(world, StubTransition("DEMO-2", "Done"))
+    assert (err.exit, err.code) == (20, "declined")
+    assert world.writes() == [] and world.records() == []
 
 
 def test_override_names_the_hooks_it_covers(
@@ -214,3 +251,59 @@ def test_no_hook_runs_before_the_answer(world: World, monkeypatch: pytest.Monkey
         execute(world.rt(), "main", StubTransition("DEMO-2", "Done"), seams)
     assert info.value.code == "declined"
     assert hooks.pre_calls == [] and hooks.post_calls == []
+
+
+class StubSprint(StubTransition):
+    name = "sprint_add"
+
+
+def _covered(err: str) -> str:
+    m = re.search(r"^hooks covered: (.*)$", err, re.MULTILINE)
+    assert m is not None
+    return m.group(1)
+
+
+def test_override_covers_configured_hooks_of_the_family_and_the_cli_hooks(
+    world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world.write_config(
+        "hooks:\n  pre-transition:\n    - cmd: /bin/true\n"
+        "  post-transition:\n    - cmd: /bin/true\n  pre-comment:\n    - cmd: /bin/true\n"
+    )
+    seams = Seams(hooks=Hooks())
+    seams.attempt_id = lambda: ATTEMPT
+    from ticketctl.writeflow import execute
+
+    rt = world.rt(override_escalation="ticketctl", hooks=["pre-transition=true"])
+    with terminal(monkeypatch, b"y\n"):
+        execute(rt, "main", StubTransition("DEMO-2", "Done"), seams)
+    assert _covered(capsys.readouterr().err) == "pre-transition, post-transition"
+
+
+def test_a_sprint_action_is_covered_by_the_sprint_family_hooks(
+    world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world.write_config(
+        "hooks:\n  pre-sprint:\n    - cmd: /bin/true\n  pre-transition:\n    - cmd: /bin/true\n"
+    )
+    seams = Seams(hooks=Hooks())
+    seams.attempt_id = lambda: ATTEMPT
+    from ticketctl.writeflow import execute
+
+    with terminal(monkeypatch, b"y\n"):
+        execute(
+            world.rt(override_escalation="ticketctl"), "main", StubSprint("DEMO-2", "Done"), seams
+        )
+    assert _covered(capsys.readouterr().err) == "pre-sprint"
+
+
+def test_a_link_shows_as_text_and_its_target(
+    world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = "[x](<https://example.test/a)b>) and [https://example.test/p](https://example.test/p)"
+    with terminal(monkeypatch, b"n\n"):
+        _fail_real(world, StubComment("DEMO-2", body))
+    err = capsys.readouterr().err
+    assert re.search(r"\| .*\bx \(https://example\.test/a%29b\)", err)
+    plain = re.search(r"https://example\.test/p(?!\w)(.*)", err)
+    assert plain is not None and not plain.group(1).lstrip().startswith("(")
