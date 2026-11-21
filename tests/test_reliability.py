@@ -8,13 +8,16 @@ Faults are the fake provider's (``Fault``); the retry sleeps are recorded, never
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.fake_provider import OTHER_ACCOUNT, SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault, Out
+from tests.scripted_server import closed_port
 from ticketctl import runtime
 from ticketctl.cli import main
 
@@ -133,7 +136,7 @@ def test_404_on_an_object_path_is_not_found(cli: Cli, argv: tuple[str, ...], pat
     fail(cli.fake, "GET", path, 404)
     code, err = cli.error(*argv)
     assert (code, err["code"]) == (10, "not_found")
-    assert "missing or you have no permission" in err["message"]
+    assert re.search(r"missing or .*no permission", err["message"])
 
 
 @pytest.mark.parametrize("argv, path", COLLECTION_READS)
@@ -143,6 +146,19 @@ def test_404_on_a_collection_endpoint_is_provider_changed(
     fail(cli.fake, "GET", path, 404)
     code, err = cli.error(*argv)
     assert (code, err["code"]) == (12, "provider_changed")
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_the_board_listing_answer_is_provider_changed_and_never_not_found(
+    cli: Cli, status: int
+) -> None:
+    # The unnamed collection (no board is named) is a provider change; only a named board's 404
+    # is not_found (below). The message and the missing option tell the two mappings apart.
+    fail(cli.fake, "GET", r"/rest/agile/1.0/board$", status)
+    code, err = cli.error("sprints", "list")
+    assert (code, err["code"], err["reason"]) == (12, "provider_changed", None)
+    assert re.search(rf"unexpected answer from the provider \({status}\)", err["message"])
+    assert "option" not in (err["details"] or {})
 
 
 def test_search_rows(cli: Cli) -> None:
@@ -235,13 +251,34 @@ def test_a_missing_key_and_a_provider_hidden_key_answer_alike(
 @pytest.mark.parametrize("key", ["DEMO-0x", "DEMO--1", "../DEMO-1", "DEMO-1/comment", ""])
 @pytest.mark.parametrize("command", ["get", "comments", "transitions"])
 def test_a_malformed_key_is_refused_before_any_request(cli: Cli, command: str, key: str) -> None:
+    # A key that fails the grammar exits 22 invalid_key locally (interface.md, Identifiers): it
+    # never reaches the provider, so it cannot be told from a hidden or missing ticket by a request.
+    # The answers differ on purpose; only the provider's 404s are one answer.
     code, err = cli.error(command, key)
-    assert code in (2, 22)
+    assert (code, err["code"], err["reason"]) == (22, "invalid_request", "invalid_key")
     assert cli.fake.calls == []
+
+
+@pytest.mark.parametrize("argv", [("get",), ("comments",), ("transitions",)])
+def test_a_well_formed_nonexistent_key_answers_like_a_hidden_one(
+    cli: Cli, argv: tuple[str, ...]
+) -> None:
+    code_far, far = cli.error(*argv, "DEMO-999999999")
+    fail(cli.fake, "GET", r"/issue/DEMO-2", 404, body=ERROR_BODIES["error-messages"])
+    code_hidden, hidden = cli.error(*argv, "DEMO-2")
+    assert code_far == code_hidden == 10
+    assert (far["code"], far["reason"], far["message"]) == (
+        hidden["code"],
+        hidden["reason"],
+        hidden["message"],
+    )
 
 
 # --- writes: every command, every row ------------------------------------------------------------
 
+# todo(#31): add the create rows (WRITES, LOST, the cut-JSON 2xx write, the keyless/keyed
+# outcome_unknown retryable flags, the 404 on a collection write path, createmeta 404/410) once
+# create lands
 WRITES = [
     pytest.param(
         ("comment", "DEMO-2", "--body", "hello", "--dedupe-key", "k1"),
@@ -268,8 +305,6 @@ WRITES = [
 
 
 def sent(cli: Cli, method: str, path: str) -> int:
-    import re
-
     return len([c for c in cli.fake.calls if c.method == method and re.search(path, c.path)])
 
 
@@ -290,6 +325,30 @@ def test_a_4xx_on_a_write_is_rejected_after_one_request(
     )
     assert sent(cli, method, path) == 1
     assert cli.sleeps == []
+
+
+# shape -> the sanitized details the envelope carries (interface.md, Error envelope)
+REJECTED_DETAILS = {
+    "error-messages": {"errorMessages": ["Issue does not exist"]},
+    "errors-map": {"field_errors": {"key": "bad key"}},
+    "single-error": {"errorMessages": ["hidden"]},
+    "plain-text": {"errorMessages": ["Not Found"]},
+    "empty": {},
+}
+
+
+@pytest.mark.parametrize("shape", sorted(ERROR_BODIES))
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_400_on_a_write_carries_the_providers_sanitized_messages_in_every_body_shape(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str, shape: str
+) -> None:
+    code, plan = cli.error("--dry-run", *argv)
+    fail(cli.fake, method, path, 400, body=ERROR_BODIES[shape])
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "rejected", False)
+    details = {k: v for k, v in err["details"].items() if k != "attempt_id"}
+    assert details == REJECTED_DETAILS[shape]
+    assert sent(cli, method, path) == 1
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -324,6 +383,7 @@ def test_a_5xx_on_a_write_is_outcome_unknown_and_never_resent(
     fail(cli.fake, method, path, status)
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
     assert (code, err["code"], err["outcome_unknown"]) == (12, "outcome_unknown", True)
+    assert err["retryable"] is True  # every WRITES row is keyed or idempotent: the re-run is safe
     assert sent(cli, method, path) == 1
     assert cli.sleeps == []
     records = cli.audit()
@@ -374,7 +434,7 @@ def test_a_retry_after_within_the_cap_replaces_the_backoff_and_the_write_then_la
     assert sent(cli, method, path) == 2  # the 429 and the landed one
 
 
-def test_a_read_5xx_is_retried_three_times_and_a_write_5xx_never(cli: Cli) -> None:
+def test_a_read_5xx_is_retried_three_times_then_unavailable(cli: Cli) -> None:
     fail(cli.fake, "GET", r"/issue/DEMO-1/comment$", 503)
     cli.error("comments", "DEMO-1")
     assert sent(cli, "GET", r"/issue/DEMO-1/comment$") == 4
@@ -419,6 +479,7 @@ def test_a_lost_answer_is_unknown_sent_once_and_the_rerun_is_idempotent(
     arm_once(cli, fault, method, path)
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
     assert (code, err["code"], err["outcome_unknown"]) == (12, "outcome_unknown", True)
+    assert err["retryable"] is True  # keyed or idempotent rows: the re-run recipe applies
     assert sent(cli, method, path) == 1  # never resent by the command
     assert cli.sleeps == []
     first = cli.audit()
@@ -531,6 +592,7 @@ def test_a_framed_but_cut_json_body_on_a_write_is_unknown_and_sent_once(cli: Cli
     override(cli.fake, "POST", "/comment", Out(201, CUT_JSON))
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
     assert (code, err["code"], err["outcome_unknown"]) == (12, "provider_changed", True)
+    assert err["retryable"] is False  # the contract changed: check the ticket before any re-run
     assert sent(cli, "POST", r"/comment$") == 1
     assert [r["result"] for r in cli.audit()] == ["attempted", "unknown"]
 
@@ -557,3 +619,261 @@ def test_a_slow_read_ends_as_timeout_within_the_command_deadline(cli: Cli) -> No
     code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
     assert time.monotonic() - started < 10  # generous: the budget is 1 s, CI machines are slow
+
+
+# --- a write whose connection never opened ------------------------------------------------------
+
+
+@pytest.fixture
+def closed_writes(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reads reach the fake; every write is sent to a loopback port that nothing listens on."""
+    inner = runtime.Gateway
+    dead = f"http://127.0.0.1:{closed_port()}"
+
+    def gateway(*args: Any, **kw: Any) -> Any:
+        gw = inner(*args, **kw)
+        send = gw.request
+
+        def request(method: str, path: str, **opts: Any) -> Any:
+            write = opts.get("write")
+            if not (method != "GET" if write is None else write):
+                return send(method, path, **opts)
+            live = gw.target
+            gw.target = dataclasses.replace(live, url=dead)
+            try:
+                return send(method, path, **opts)
+            finally:
+                gw.target = live
+
+        monkeypatch.setattr(gw, "request", request)
+        return gw
+
+    monkeypatch.setattr(runtime, "Gateway", gateway)
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_write_whose_connection_never_opens_is_retried_then_unavailable(
+    cli: Cli, closed_writes: None, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    # No request byte can have left, so the write is retried twice like a read and nothing is
+    # unknown (interface.md, Retries).
+    code, plan = cli.error("--dry-run", *argv)
+    assert code == 0, plan
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
+        12,
+        "unavailable",
+        True,
+        False,
+    )
+    assert cli.sleeps == [0.5, 1.0]
+    assert sent(cli, method, path) == 0
+
+
+# --- the retry delay counts against --timeout ---------------------------------------------------
+
+COMMENTS = r"/issue/DEMO-1/comment$"
+
+
+@pytest.mark.parametrize("status", [503, 429])
+def test_a_status_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
+    cli: Cli, status: int
+) -> None:
+    # The second delay is 1.0 s and a budget of 1 s has been spent a little by then.
+    fail(cli.fake, "GET", COMMENTS, status)
+    code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
+    assert cli.sleeps == [0.5]  # never a sleep the budget cannot cover
+    assert sent(cli, "GET", COMMENTS) == 2
+
+
+def test_a_failure_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
+    cli: Cli,
+) -> None:
+    cli.fake.inject(Fault("reset", method="GET", path=COMMENTS, times=None))
+    code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
+    assert cli.sleeps == [0.5]
+    assert sent(cli, "GET", COMMENTS) == 2
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_429_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout_nothing_unknown(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    code, plan = cli.error("--dry-run", *argv)
+    fail(cli.fake, method, path, 429)
+    code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
+    assert cli.sleeps == [0.5]
+    assert sent(cli, method, path) == 2
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_connect_failure_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout(
+    cli: Cli, closed_writes: None, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    code, plan = cli.error("--dry-run", *argv)
+    code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
+    assert cli.sleeps == [0.5]
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_write_that_may_have_been_sent_is_outcome_unknown_never_timeout(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    code, plan = cli.error("--dry-run", *argv)
+    cli.fake.inject(Fault("reset", method=method, path=path, times=None))
+    code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "outcome_unknown", True)
+    assert cli.sleeps == []
+    assert sent(cli, method, path) == 1
+
+
+def test_a_pacing_sleep_is_not_taken_when_it_would_outlast_the_budget(cli: Cli) -> None:
+    cli.fake.quirks.rate_limit_limit = 100
+    cli.fake.quirks.rate_limit_remaining = 5
+    code, _ = cli.error("--timeout", "1s", "sprints", "list")
+    assert code == 0
+    assert len(cli.fake.calls) >= 2
+    assert cli.sleeps == []
+
+
+# --- the Retry-After cap, isolated from the remaining time --------------------------------------
+
+
+def test_a_retry_after_above_the_cap_but_within_the_time_ends_a_read_at_once(cli: Cli) -> None:
+    # The cap is limits.retry_after_max (60 s by default); 120 s remain, so only the cap decides.
+    cli.fake.quirks.retry_after_format = "seconds"
+    fail(cli.fake, "GET", COMMENTS, 429, retry_after=90)
+    code, err = cli.error("--timeout", "120s", "comments", "DEMO-1")
+    assert (code, err["code"], err["retryable"], err["retry_after_s"]) == (
+        12,
+        "rate_limited",
+        True,
+        90,
+    )
+    assert cli.sleeps == []
+    assert sent(cli, "GET", COMMENTS) == 1
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_retry_after_above_the_cap_but_within_the_time_ends_a_write_at_once(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    cli.fake.quirks.retry_after_format = "seconds"
+    code, plan = cli.error("--dry-run", *argv)
+    fail(cli.fake, method, path, 429, retry_after=90)
+    code, err = cli.error("--timeout", "120s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["outcome_unknown"], err["retry_after_s"]) == (
+        12,
+        "rate_limited",
+        False,
+        90,
+    )
+    assert cli.sleeps == []
+    assert sent(cli, method, path) == 1
+
+
+# --- a status that decides beats an unreadable body ---------------------------------------------
+
+LONG_BODY = "x" * 64
+SAMPLES = {
+    "comment": "/rest/api/3/issue/DEMO-2/comment",
+    "transition": "/rest/api/3/issue/DEMO-2/transitions",
+    "update": "/rest/api/3/issue/DEMO-2/assignee",
+    "sprint-add": "/rest/agile/1.0/sprint/2/issue",
+    "read": "/rest/api/3/issue/DEMO-1/comment",
+}
+
+
+def answer_cut(fake: FakeProvider, method: str, sample: str, status: int, path: str) -> None:
+    """Answer ``method sample`` with ``status`` and a body cut short of its Content-Length."""
+    out = Out(status, LONG_BODY)
+    fake._routes[:] = [
+        (m, p, (lambda call, *g: out) if m == method and p.fullmatch(sample) else h)
+        for m, p, h in fake._routes
+    ]
+    fake.inject(Fault("truncated", method=method, path=path, times=None))
+
+
+# status -> (code, retryable, requests sent) when the body is cut
+CUT_READ_ROWS = {
+    401: ("bad_credentials", False, 1),
+    403: ("forbidden", False, 1),
+    429: ("rate_limited", True, 4),
+    503: ("unavailable", True, 4),
+}
+
+
+@pytest.mark.parametrize("status", sorted(CUT_READ_ROWS))
+def test_a_read_status_beats_a_body_cut_short(cli: Cli, status: int) -> None:
+    answer_cut(cli.fake, "GET", SAMPLES["read"], status, COMMENTS)
+    code, err = cli.error("comments", "DEMO-1")
+    expected, retryable, requests = CUT_READ_ROWS[status]
+    assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
+        12,
+        expected,
+        retryable,
+        False,
+    )
+    assert sent(cli, "GET", COMMENTS) == requests
+    assert not re.search(r"could not reach", err["message"])  # not the transport-failure mapping
+
+
+@pytest.mark.parametrize("status", [401, 403, 429])
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_write_status_beats_a_body_cut_short(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str, status: int
+) -> None:
+    code, plan = cli.error("--dry-run", *argv)
+    sample = SAMPLES[next(k for k, v in SAMPLES.items() if re.search(path, v))]
+    answer_cut(cli.fake, method, sample, status, path)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    expected = {401: "bad_credentials", 403: "forbidden", 429: "rate_limited"}[status]
+    assert (code, err["code"], err["outcome_unknown"]) == (12, expected, False)
+    assert sent(cli, method, path) == (3 if status == 429 else 1)
+
+
+# --- pacing and the rate-limit detail -----------------------------------------------------------
+
+
+def test_a_low_remaining_count_paces_the_next_request_of_the_same_command(cli: Cli) -> None:
+    cli.fake.quirks.rate_limit_limit = 100
+    cli.fake.quirks.rate_limit_remaining = 5  # below 10% of the limit
+    code, _ = cli.error("sprints", "list")
+    assert code == 0
+    assert len(cli.fake.calls) >= 2
+    assert cli.sleeps == [1.0] * (len(cli.fake.calls) - 1)
+
+
+def test_a_healthy_remaining_count_does_not_pace(cli: Cli) -> None:
+    cli.fake.quirks.rate_limit_limit = 100
+    cli.fake.quirks.rate_limit_remaining = 50
+    code, _ = cli.error("sprints", "list")
+    assert code == 0
+    assert len(cli.fake.calls) >= 2
+    assert cli.sleeps == []
+
+
+def test_a_429_end_carries_the_rate_limit_values_on_a_read(cli: Cli) -> None:
+    cli.fake.quirks.rate_limit_limit = 100
+    cli.fake.quirks.rate_limit_remaining = 3
+    fail(cli.fake, "GET", COMMENTS, 429)
+    code, err = cli.error("comments", "DEMO-1")
+    assert (code, err["code"]) == (12, "rate_limited")
+    assert err["details"]["rate_limit"] == {"limit": 100, "remaining": 3}
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_429_end_carries_the_rate_limit_values_on_a_write(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    code, plan = cli.error("--dry-run", *argv)
+    cli.fake.quirks.rate_limit_limit = 100
+    cli.fake.quirks.rate_limit_remaining = 3
+    fail(cli.fake, method, path, 429)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"]) == (12, "rate_limited")
+    assert err["details"]["rate_limit"] == {"limit": 100, "remaining": 3}
