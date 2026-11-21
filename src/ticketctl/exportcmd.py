@@ -15,18 +15,22 @@ skipped, and counted for one warning, when it
 - is longer than the bound, is not UTF-8, not JSON (``NaN`` included) or nested too deeply;
 - is not a JSON object whose ``v`` is the integer 1;
 - has no ``seq`` that is an integer from 1 to 2**53 (the writer's seq-scan bound);
-- cannot be cleaned (more than ``state.MAX_NODES`` nodes or deeper than ``state.MAX_DEPTH``).
+- cannot be cleaned (more than ``state.MAX_NODES`` nodes or deeper than ``state.MAX_DEPTH``) or
+  holds a non-finite number (it does not survive as strict JSON);
+- with ``--since`` (and not excluded by ``--after-seq``), has a missing or unparseable ``ts``.
 
 A last line with no newline (a torn tail, or a record whose write is still in flight when the size
-was read) is neither printed nor counted: the writer repairs it with a newline before its next
-record, after which it is an ordinary garbage line. Other fields are not validated, so a record
-written by a later minor version passes. An absent
-``audit.jsonl`` (or state directory) is an empty export and nothing is created, ``--to`` apart.
+was read), of any length, is neither printed nor counted: the writer repairs it with a newline
+before its next record, after which it is an ordinary garbage line. Other fields are not
+validated, so a record written by a later minor version passes. An absent ``audit.jsonl`` (or state
+directory) is an empty export and nothing is created, ``--to`` apart.
 
-Output. Every string of a record (keys too) is sanitized and scrubbed again (``state.clean_tree``)
-and the JSON is written with ``ensure_ascii``. The scrub knows the token values of the configured
-sites when the configuration loads; a broken configuration does not stop an export (the records were
-scrubbed when they were written).
+Output. Every string of a record (keys too) is sanitized and scrubbed again (``state.clean_tree``;
+a number equal to a token value becomes the string ``<redacted>``), and the JSON is written with
+``ensure_ascii``. Stdout and ``--to`` get the same bytes. A failed stdout write (EPIPE or any other
+OSError) stops the export: EPIPE exits 141 quietly, another error exits 1 ``internal``. The scrub
+knows the token values of the configured sites when the configuration loads; a broken configuration
+does not stop an export (the records were scrubbed when they were written).
 
 ``--to``. The parent directory is opened (a symlinked ancestor is fine) and must be a directory
 owned by the caller; the file is created relative to that descriptor with
@@ -43,9 +47,8 @@ import json
 import os
 import stat
 import sys
-from collections.abc import Iterator
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,15 +59,16 @@ from .flags import Globals
 from .runtime import load_runtime
 from .sanitize import add_secrets, basic_auth_value
 from .state import StateError
+from .timestamps import normalize_ts
 
 LINE_LIMIT = audit.MAX_RECORD_BYTES
 CHUNK_BYTES = 64 * 1024
+EXIT_PIPE = 141  # 128 + SIGPIPE: the reader of stdout went away
 
 
 @dataclass
 class Skips:
     count: int = 0
-    first_seq: list[int] = field(default_factory=list)
 
 
 def _euid() -> int:
@@ -89,14 +93,16 @@ def _lines(fd: int, limit: int) -> Iterator[bytes | None]:
                 yield piece
                 continue
             terminated = piece.endswith(b"\n")
-            while not terminated and len(piece) > LINE_LIMIT and remaining > 0:
+            if not terminated and len(piece) <= LINE_LIMIT:
+                return  # a torn tail or a write in flight: not read, not a warning
+            while not terminated and remaining > 0:
                 rest = fh.readline(min(LINE_LIMIT, remaining))  # drop the rest of a long line
                 if not rest:
                     break
                 remaining -= len(rest)
                 terminated = rest.endswith(b"\n")
-            if not terminated and len(piece) <= LINE_LIMIT:
-                return  # a torn tail or a write in flight: not read, not a warning
+            if not terminated:
+                return  # an over-long torn tail: silent too
             yield None  # over-long
 
 
@@ -108,7 +114,7 @@ def _record(line: bytes) -> dict[str, Any] | None:
     if not isinstance(doc, dict) or type(doc.get("v")) is not int or doc["v"] != 1:
         return None
     seq = doc.get("seq")
-    if not audit._is_int(seq, 1, audit.MAX_SEQ):
+    if not audit.valid_seq(seq):
         return None
     try:
         cleaned = state.clean_tree(doc)
@@ -151,8 +157,11 @@ def read_records(
             if after_seq is not None and rec["seq"] <= after_seq:
                 continue
             if since is not None:
-                ts = rec.get("ts")
-                if not isinstance(ts, str) or not audit.TS.fullmatch(ts) or ts < since:
+                moment = normalize_ts(rec.get("ts"))
+                if moment is None:
+                    skips.count += 1
+                    continue
+                if moment < since:
                     continue
             yield rec
     finally:
@@ -206,14 +215,16 @@ def _create_target(path: str) -> tuple[int, int, str]:
             raise TicketctlError(
                 "already_exists", "--to names a file that already exists"
             ) from None
-        except OSError as exc:
-            if exc.errno == errno.ELOOP:  # not reachable with O_EXCL, kept for other kernels
-                raise TicketctlError(
-                    "already_exists", "--to names a file that already exists"
-                ) from None
+        except OSError:  # a symlink gives EEXIST with O_EXCL, so it is the branch above
             raise TicketctlError(
                 "invalid_request", "--to cannot be created", reason="invalid_file"
             ) from None
+        try:
+            os.fchmod(fd, 0o600)  # the umask may have taken bits away
+        except BaseException:
+            _remove_if_ours(pfd, name, fd)
+            os.close(fd)
+            raise
     except BaseException:
         os.close(pfd)
         raise
@@ -230,9 +241,9 @@ def _remove_if_ours(pfd: int, name: str, fd: int) -> None:
         pass
 
 
-def _write_file(fd: int, pfd: int, name: str, chunks: Iterator[str]) -> None:
+def _write_file(fd: int, pfd: int, name: str, make_chunks: Callable[[], Iterator[str]]) -> None:
     try:
-        for chunk in chunks:
+        for chunk in make_chunks():
             state.write_all(fd, chunk.encode("ascii"))
     except BaseException:
         _remove_if_ours(pfd, name, fd)
@@ -246,32 +257,57 @@ def _arm_scrub(g: Globals) -> None:
     """Register the configured token values with the output scrub, when the config loads."""
     try:
         rt = load_runtime(g, show_warnings=False)
-        for site in rt.config.sites.values():
-            token = rt.env.get(site.token_env, "")
-            email = site.email if site.email is not None else rt.env.get(site.email_env or "", "")
-            basic = [basic_auth_value(email, token)] if token.strip() and email.strip() else []
-            add_secrets([token], basic_values=basic)
+        sites, env = list(rt.config.sites.values()), rt.env
     except Exception:  # noqa: BLE001 - the records were scrubbed when written; export is offline
         return
+    for site in sites:
+        try:
+            token = env.get(site.token_env, "")
+            add_secrets([token])  # first, so a bad email cannot leave the token unknown
+            email = site.email if site.email is not None else env.get(site.email_env or "", "")
+            if token.strip() and email.strip():
+                add_secrets([], basic_values=[basic_auth_value(email, token)])
+        except Exception:  # noqa: BLE001 - one bad site skips only itself
+            continue
 
 
-def _since(value: str | None, now: datetime | None = None) -> str | None:
-    return None if value is None else since_cutoff(value, now)
+def _stdout_gone() -> None:
+    """Point fd 1 at /dev/null so the interpreter's flush at exit cannot fail again."""
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(fd, sys.stdout.fileno())
+        os.close(fd)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def _write_stdout(chunks: Iterator[str]) -> None:
+    for chunk in chunks:
+        try:
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        except OSError as exc:
+            _stdout_gone()
+            if exc.errno == errno.EPIPE:
+                raise SystemExit(EXIT_PIPE) from None
+            raise TicketctlError("internal", "stdout cannot be written") from None
 
 
 def export(g: Globals, a: argparse.Namespace) -> None:
     """Handler of ``export``; prints records itself and returns None."""
-    since = _since(a.since)
+    since = None if a.since is None else since_cutoff(a.since)
     state_dir = state.state_dir_path(os.environ)
-    target = _create_target(a.to) if a.to is not None else None
     _arm_scrub(g)
+    target = _create_target(a.to) if a.to is not None else None
     skips = Skips()
-    chunks = _chunks(read_records(state_dir, since=since, after_seq=a.after_seq, skips=skips))
+
+    def chunks() -> Iterator[str]:
+        return _chunks(read_records(state_dir, since=since, after_seq=a.after_seq, skips=skips))
+
     if target is not None:
         _write_file(*target, chunks)
     else:
-        for chunk in chunks:
-            output.write(sys.stdout, chunk.rstrip("\n"))
+        _write_stdout(chunks())
     if skips.count and not g.quiet:
         output.write(
             sys.stderr,
