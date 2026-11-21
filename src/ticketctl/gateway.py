@@ -47,7 +47,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import accumulate
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlsplit
 
 from . import __version__
@@ -668,6 +668,25 @@ class Response:
     text: str
     rate_limit: dict[str, int] | None
     retries: int
+
+
+class Requester(Protocol):
+    """What a loader needs of a gateway: the target and ``request`` (``Gateway`` and the write
+    flow's guarded ``WriteGateway`` both fit)."""
+
+    @property
+    def target(self) -> Target: ...
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        template: str,
+        query: str = "",
+        body: object | None = None,
+        write: bool | None = None,
+    ) -> Response: ...
 
 
 class Gateway:

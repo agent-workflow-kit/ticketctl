@@ -1,0 +1,17 @@
+{
+  "action": "transition",
+  "already_posted": false,
+  "attempt_id": null,
+  "changed": false,
+  "comment_id": null,
+  "decision_ids": [],
+  "key": "DEMO-2",
+  "result": "unchanged",
+  "reused": false,
+  "site": "main",
+  "steps": [],
+  "url": "https://tracker.example.test/browse/DEMO-2",
+  "warnings": [
+    "closed_ticket"
+  ]
+}

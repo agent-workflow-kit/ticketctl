@@ -112,6 +112,8 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         searchcmd.check_offline(ns)
     elif spec.path == ("update",):
         updatecmd.check_offline(ns)
+    elif spec.path == ("sprint", "add") and ns.sprint is None:
+        raise usage_error("missing_option", "sprint add needs --sprint open|next|<id>")
     elif spec.path == ("sprint", "remove") and ns.sprint is not None:
         raise usage_error("invalid_combination", "sprint remove takes no --sprint")
     if spec.path in (("create",), ("update",), ("transition",)):
@@ -119,7 +121,7 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         setspec.check_offline(spec.path[0], getattr(ns, flag[2:]), flag)
     if spec.kind == "write":
         resolve_write_actor(g, me_name=lambda: _me_name(g))
-    # TODO(#28,#29,#30,#31,#34): the remaining "exactly one of" and per-command rules.
+    # TODO(#31): the remaining "exactly one of" and per-command rules.
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 
 

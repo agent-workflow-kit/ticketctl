@@ -194,8 +194,14 @@ def _open_at(name: str, flags: int, dir_fd: int) -> int:
     return os.open(name, flags, 0o600, dir_fd=dir_fd)
 
 
-def open_file(dir_fd: int, name: str, *, create: bool, read_only: bool = False) -> int | None:
-    """Open a state file safely; None when missing and not created. The caller closes it."""
+def open_file(
+    dir_fd: int, name: str, *, create: bool, read_only: bool = False, single_link: bool = False
+) -> int | None:
+    """Open a state file safely; None when missing and not created. The caller closes it.
+
+    ``single_link`` refuses a file with more than one link (``state_type``) before its mode is
+    touched, so a hard link to some other file is never chmod-ed.
+    """
     _check_name(name)
     flags = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     flags |= os.O_RDONLY if read_only else (os.O_RDWR | os.O_APPEND)
@@ -215,6 +221,8 @@ def open_file(dir_fd: int, name: str, *, create: bool, read_only: bool = False) 
             raise StateError("state_type", "state file is not a regular file")
         if info.st_uid != _euid():
             raise StateError("state_owner", "state file is not owned by the current user")
+        if single_link and info.st_nlink != 1:
+            raise StateError("state_type", "state file has more than one link")
         if stat.S_IMODE(info.st_mode) != 0o600:
             os.fchmod(fd, 0o600)
     except OSError as exc:
@@ -251,7 +259,9 @@ def _is_current(fd: int, dir_fd: int, name: str) -> bool:
 
 
 @contextmanager
-def locked_append_file(dir_fd: int, name: str, *, timeout: float = LOCK_TIMEOUT) -> Iterator[int]:
+def locked_append_file(
+    dir_fd: int, name: str, *, timeout: float = LOCK_TIMEOUT, single_link: bool = False
+) -> Iterator[int]:
     """Open ``name`` (created ``0600``) and hold its exclusive flock for the ``with`` body.
 
     The fd is ``O_RDWR|O_APPEND``: writes always land at the end. The file is re-opened when the
@@ -259,7 +269,7 @@ def locked_append_file(dir_fd: int, name: str, *, timeout: float = LOCK_TIMEOUT)
     """
     deadline = time.monotonic() + timeout
     for _ in range(_REOPEN_LIMIT):
-        fd = open_file(dir_fd, name, create=True)
+        fd = open_file(dir_fd, name, create=True, single_link=single_link)
         if fd is None:
             raise StateError("state_io", "cannot open the state file")
         try:
