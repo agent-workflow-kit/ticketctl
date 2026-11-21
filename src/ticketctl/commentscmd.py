@@ -15,7 +15,9 @@ Bounds: at most 1000 raw comments are looked at (the dedupe cap), at most 20 pag
 loop stops at the first empty page, so a provider that repeats a page, sends short pages or
 ignores ``startAt`` cannot make it run on. The scan never stops early on the strength of the
 provider's order: the whole bounded window is read and sorted here, so a provider that ignores
-``orderBy`` still yields the true oldest (or newest) ``limit`` comments of the window.
+``orderBy`` still yields the true oldest (or newest) ``limit`` comments of the window. Only the
+window itself depends on the provider: on a thread above 1000 comments it follows ``orderBy``
+(unverified, see design.md), so the sort is exact within the window, not over the whole thread.
 
 ``total`` is the provider's comment count before the filters (never less than the comments seen).
 ``truncated`` is true when the limit or a bound stopped the scan with more comments unread or

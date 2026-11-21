@@ -104,9 +104,10 @@ def _meta(properties: object, marks: set[str]) -> tuple[bool, dict[str, Any]]:
     for entry in properties:
         if isinstance(entry, dict) and entry.get("key") == META_PROPERTY:
             value = entry.get("value")
-            if not isinstance(value, dict) or value.get("v") != META_VERSION:
+            if not isinstance(value, dict):
                 return True, {}
-            if isinstance(value.get("v"), bool):
+            version = value.get("v")
+            if type(version) is not int or version != META_VERSION:  # not bool, not 1.0
                 return True, {}
             kind = value.get("actor_kind")
             return True, {

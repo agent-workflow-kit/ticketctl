@@ -538,7 +538,7 @@ VALID_META = {"v": 1, "actor_kind": "human", "body_sha256": HASH_A}
 
 
 @pytest.mark.parametrize(
-    "value", ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": "1"}, {}], ids=repr
+    "value", ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": 1.0}, {"v": "1"}, {}], ids=repr
 )
 def test_a_damaged_property_on_an_own_comment_is_still_authored_by_the_tool(
     env: Env, site: FakeProvider, value: Any

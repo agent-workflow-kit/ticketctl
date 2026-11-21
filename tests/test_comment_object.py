@@ -95,7 +95,9 @@ def test_a_bad_hash_is_null(hexed: object) -> None:
 
 
 @pytest.mark.parametrize(
-    "value", ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": "1"}, {}, 5], ids=repr
+    "value",
+    ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": 1.0}, {"v": "1"}, {}, 5],
+    ids=repr,
 )
 def test_a_damaged_property_value_on_an_own_comment_is_authored_by_the_tool(value: object) -> None:
     obj, marks = one(raw(properties=[{"key": "ticketctl.meta", "value": value}]))
@@ -105,7 +107,9 @@ def test_a_damaged_property_value_on_an_own_comment_is_authored_by_the_tool(valu
 
 
 @pytest.mark.parametrize(
-    "value", ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": 1, "actor_kind": "human"}], ids=repr
+    "value",
+    ["text", ["x"], None, {"v": 2}, {"v": True}, {"v": 1, "actor_kind": "human"}],
+    ids=repr,
 )
 def test_a_damaged_property_value_on_another_account_is_ignored(value: object) -> None:
     other = raw(
@@ -115,6 +119,14 @@ def test_a_damaged_property_value_on_another_account_is_ignored(value: object) -
     obj, marks = one(other)
     assert obj is not None and obj["authored_by_ticketctl"] is False and not marks
     assert obj["actor_kind"] is None
+
+
+def test_a_float_version_is_damaged_even_with_valid_parts() -> None:
+    value = {"v": 1.0, "actor_kind": "human", "body_sha256": "a" * 64, "key_sha256": "b" * 64}
+    obj, _ = one(raw(properties=[{"key": "ticketctl.meta", "value": value}]))
+    assert obj is not None and obj["authored_by_ticketctl"] is True
+    assert obj["actor_kind"] is None and obj["body_sha256"] is None
+    assert obj["dedupe_key_sha256"] is None
 
 
 @pytest.mark.parametrize("key", ["Ticketctl.Meta", "TICKETCTL.META", "ticketctl.meta "])
