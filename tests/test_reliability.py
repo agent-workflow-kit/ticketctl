@@ -680,6 +680,8 @@ def test_a_status_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
     cli: Cli, status: int
 ) -> None:
     # The second delay is 1.0 s and a budget of 1 s has been spent a little by then.
+    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
+    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
     fail(cli.fake, "GET", COMMENTS, status)
     code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
@@ -690,6 +692,8 @@ def test_a_status_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
 def test_a_failure_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
     cli: Cli,
 ) -> None:
+    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
+    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
     cli.fake.inject(Fault("reset", method="GET", path=COMMENTS, times=None))
     code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
@@ -701,6 +705,8 @@ def test_a_failure_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout
 def test_a_429_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout_nothing_unknown(
     cli: Cli, argv: tuple[str, ...], method: str, path: str
 ) -> None:
+    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
+    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
     code, plan = cli.error("--dry-run", *argv)
     fail(cli.fake, method, path, 429)
     code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
@@ -713,6 +719,8 @@ def test_a_429_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout_no
 def test_a_connect_failure_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout(
     cli: Cli, closed_writes: None, argv: tuple[str, ...], method: str, path: str
 ) -> None:
+    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
+    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
     code, plan = cli.error("--dry-run", *argv)
     code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
@@ -720,7 +728,7 @@ def test_a_connect_failure_backoff_longer_than_the_remaining_time_ends_a_write_a
 
 
 @pytest.mark.parametrize("argv, method, path", WRITES)
-def test_a_write_that_may_have_been_sent_is_outcome_unknown_never_timeout(
+def test_a_write_reset_after_send_is_outcome_unknown_at_once_without_a_retry(
     cli: Cli, argv: tuple[str, ...], method: str, path: str
 ) -> None:
     code, plan = cli.error("--dry-run", *argv)
@@ -729,6 +737,21 @@ def test_a_write_that_may_have_been_sent_is_outcome_unknown_never_timeout(
     assert (code, err["code"], err["outcome_unknown"]) == (12, "outcome_unknown", True)
     assert cli.sleeps == []
     assert sent(cli, method, path) == 1
+
+
+@pytest.mark.parametrize("argv, method, path", WRITES)
+def test_a_write_still_unanswered_at_the_deadline_is_outcome_unknown_never_timeout(
+    cli: Cli, argv: tuple[str, ...], method: str, path: str
+) -> None:
+    import time
+
+    code, plan = cli.error("--dry-run", *argv)
+    cli.fake.inject(Fault("slow", method=method, path=path, times=None, delay_s=30.0))
+    started = time.monotonic()
+    code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "outcome_unknown", True)
+    assert sent(cli, method, path) == 1
+    assert time.monotonic() - started < 10  # generous: the budget is 1 s, CI machines are slow
 
 
 def test_a_pacing_sleep_is_not_taken_when_it_would_outlast_the_budget(cli: Cli) -> None:
@@ -744,7 +767,8 @@ def test_a_pacing_sleep_is_not_taken_when_it_would_outlast_the_budget(cli: Cli) 
 
 
 def test_a_retry_after_above_the_cap_but_within_the_time_ends_a_read_at_once(cli: Cli) -> None:
-    # The cap is limits.retry_after_max (60 s by default); 120 s remain, so only the cap decides.
+    # The cap is limits.retry_after_max (conftest sets 10 s); 120 s remain, and 90 s is above both,
+    # so only the cap decides.
     cli.fake.quirks.retry_after_format = "seconds"
     fail(cli.fake, "GET", COMMENTS, 429, retry_after=90)
     code, err = cli.error("--timeout", "120s", "comments", "DEMO-1")
