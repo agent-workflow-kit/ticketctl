@@ -1,0 +1,25 @@
+{
+  "action": "sprint_add",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": [],
+      "name": "sprints",
+      "to": [
+        "2: Sprint two"
+      ]
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-1",
+  "plan_sha256": "aa450ce08b05a00469badf7c665773842a58251bbd2f3f96904d21562dd39e39",
+  "site": "main",
+  "steps": [
+    {
+      "kind": "sprint_add",
+      "sprint": "2"
+    }
+  ],
+  "warnings": []
+}
