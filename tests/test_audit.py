@@ -248,6 +248,23 @@ def test_free_text_fields_cannot_carry_a_title_shaped_value(sd: Path) -> None:
         audit.append_audit(sd, rec)
 
 
+def test_append_audit_keeps_numbers_when_a_numeric_token_is_registered(sd: Path) -> None:
+    sanitize.configure_scrubber(["12345678"])
+    rec = w.audit_record("a", 1)
+    rec["step"] = 912345678
+    got = audit.append_audit(sd, rec)
+    assert got["step"] == 912345678
+    assert json.loads((sd / "audit.jsonl").read_bytes())["step"] == 912345678
+
+
+def test_append_log_keeps_numbers_when_a_numeric_token_is_registered(sd: Path) -> None:
+    sanitize.configure_scrubber(["12345678"])
+    rec = w.log_record("a", 1) | {"duration_ms": 912345678}
+    assert audit.append_log(sd, rec, warn=pytest.fail) is None
+    (got,) = records(sd / "log.jsonl")
+    assert got["duration_ms"] == 912345678
+
+
 def test_sentinel_secret_and_ansi_never_reach_the_file(sd: Path) -> None:
     sanitize.configure_scrubber([SENTINEL])
     rec = w.audit_record("a", 1)

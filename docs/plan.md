@@ -8,7 +8,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 - **Fake quirk switches.** The fake provider has a switch for each verified quirk (design.md, Live verification): silent-empty semantic JQL, the page cap with all fields, a done transition accepted without a resolution, the assignee validator on transitions out of the backlog, the 410 on the old search, offsets without a colon, ADF node variety, the three error body shapes, rate-limit headers, a label visible after a delay, a slow or dropped response.
 - **Pinned sibling schemas.** ticketctl calls no sibling tool, so nothing is pinned; consumers pin ticketctl's schemas, not the reverse.
 - **Process and live test split.** Unit and integration tests run offline in CI. Tests that start `ticketctl` as a process (exit codes, `/dev/tty` confirmation through a pty, hooks, locks, `flock`) are ordinary tests. Real-site tests are marked `live`, deselected by default, never run in CI, and need `TICKETCTL_LIVE=1`.
-- **Golden files.** Every `--json` output and hook payload has a golden file validated against `schemas/`.
+- **Golden files.** Every `--json` output has a golden file validated against `schemas/`; hook payloads are validated against `schemas/hooks/` in tests (there are no hook goldens).
 - **Spike regressions.** Every live-verified fact in design.md becomes a test or a `live` check (see each stage).
 - **`make verify`** (ruff, pyright, pytest, markdown lint) passes before every commit.
 - **Schemas are authoritative for shapes.** The private generator is not in the repo; after the first implementation stage the schemas are maintained in the repo by hand and checked by tests against the interface's enums.
@@ -28,7 +28,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `comment_object` | 1 | the comment object and the `get --comments N` comment page (pure logic) |
 | `sanitize` | 0 | the one sanitizer and the identifier grammars |
 | `state` | 0 | the state directory, safe opens, the `flock` helper |
-| `audit` | 0 | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
+| `audit` | 0 | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation |
 | `cache` | 1 | field list and identity cache with atomic replace |
 | `provider`, `jira` | 1 | the provider interface and the Jira implementation (endpoints, field discovery, JQL compile and parse check, transitions, sprints) |
 | `setspec`, `setconvert` | 1 | the `--set` and `--field` grammar, name resolution, refusals and value conversion |
@@ -65,7 +65,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 **Goal**: `transition`, `comment` and `update` follow the one flow with plan, `--dry-run`, confirmation, hooks, stale check, audit and partial results.
 **Success Criteria**: the eight-step order holds; idempotency is evaluated before validation errors and before the plan hash comparison; a re-run after a lost response is `unchanged`; `partial` and `outcome_unknown` exit 12 with the result in the envelope; confirmation reads `/dev/tty`, a decline is exit 20 `declined`; `--yes` needs `--expect-plan` and, for `comment`, a dedupe key; hooks run after the confirmation; the audit has an `attempted` and an outcome record per provider call.
 **Tests**: each step of the flow against the fake provider with each quirk switch; the assign step rule (deterministic, the provider's 400 is `rejected` with the hint); done transitions always carry a resolution; hash scope (a plan under `auto:` confirmed under `human:` matches; a takeover by another assignee is `stale_ticket`); veto, escalation and `--override-escalation`; hooks with a timeout and a process group; payloads carry no ticket text; audit append failure sends nothing; pty tests for the prompt; spike regressions V-7 to V-11.
-**Status**: In Progress (the engine, plan, hash and audit pair landed with #23; the dialog, hooks and commands follow)
+**Status**: In Progress (the engine, plan, hash and audit pair landed with #23, the outcome and audit failure handling with #26; the commands follow)
 
 ## Stage 4: create, dedupe and sprints
 

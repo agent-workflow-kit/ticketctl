@@ -16,6 +16,7 @@ from typing import Any
 
 from . import (
     commentscmd,
+    exportcmd,
     fieldscmd,
     getcmd,
     handlers,
@@ -300,7 +301,7 @@ def _specs() -> list[CommandSpec]:
             _validate,
             handlers.human_validate,
         ),
-        CommandSpec(("export",), r, "print audit records", _stub(36), _export),
+        CommandSpec(("export",), r, "print audit records", exportcmd.export, _export),
         CommandSpec(("transition",), w, "transition a ticket", _stub(28), _transition),
         CommandSpec(("comment",), w, "post a comment", _stub(29), _comment),
         CommandSpec(("create",), w, "create a ticket", _stub(31), _create),

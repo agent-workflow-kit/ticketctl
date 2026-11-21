@@ -6,6 +6,7 @@ import argparse
 import os
 import re
 import sys
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -115,12 +116,21 @@ def parse_duration(value: str) -> float:
         raise argparse.ArgumentTypeError(f"invalid duration: {exc}") from None
 
 
+HOOK_COMMAND_MAX = 4096  # the config's `cmd` limit
+# Command text is one line of printable characters: a tab is allowed, every other control
+# character (newline, CR, NUL, ESC, DEL, C1), format, surrogate, private-use and unassigned
+# character and the line and paragraph separators are not.
+_HOOK_COMMAND_FORBIDDEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
 def _hook(value: str) -> str:
-    # TODO(#25): the command text restriction (it accepts a newline today) belongs to the
-    # sanitizer grammar.
     name, sep, command = value.partition("=")
     if not sep or not command or not HOOK_NAME_RE.fullmatch(name):
         raise argparse.ArgumentTypeError("invalid hook (use <name>=<command>)")
+    if len(command) > HOOK_COMMAND_MAX:
+        raise argparse.ArgumentTypeError("invalid hook (the command is too long)")
+    if any(ch != "\t" and unicodedata.category(ch) in _HOOK_COMMAND_FORBIDDEN for ch in command):
+        raise argparse.ArgumentTypeError("invalid hook (the command holds a control character)")
     return value
 
 

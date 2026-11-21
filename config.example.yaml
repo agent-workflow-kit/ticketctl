@@ -92,6 +92,7 @@ limits:
 
 # Hooks per kind of write: pre-/post- for transition, comment, create, update and sprint.
 # Each is an ordered list of {cmd, timeout, async}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only.
+# A hook runs as `/bin/sh -c <cmd>` with the payload on stdin; exit 13 escalates, any other non-zero exit or a timeout vetoes a pre- hook, and a post- hook failure is only a warning. An async hook is detached and has no timeout enforced.
 # Default: {}.
 hooks: {}
 # hooks:

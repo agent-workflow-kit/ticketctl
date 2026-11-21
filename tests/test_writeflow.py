@@ -489,11 +489,16 @@ def test_audit_append_failure_refuses_the_send(world: World) -> None:
     def broken(state_dir: Path, record: Any, **kw: Any) -> Any:
         raise StateError("lock_timeout", "stuck")
 
+    hooks = Hooks()
     world.mp.setattr(audit, "append_audit", broken)
     held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
+    err = world.fail(
+        StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
+    )
     assert (err.exit, err.code, err.reason) == (1, "internal", "audit_failed")
     assert world.writes() == []  # nothing was sent
+    assert err.details is None or "attempt_id" not in err.details
+    assert hooks.post_calls == [] and world.records() == []  # no attempted record: no post hook
 
 
 def test_audit_failure_on_a_later_step_is_partial_with_an_internal_step(world: World) -> None:
@@ -598,7 +603,7 @@ def test_partial_after_a_definite_failure_of_the_second_step(world: World) -> No
         ("assign", "done", None),
         ("transition", "failed", "rejected"),
     ]
-    assert result["attempt_id"] == ATTEMPT and result["changed"] is False
+    assert result["attempt_id"] == ATTEMPT and result["changed"] is True
     records = world.records()
     assert [(r["step"], r["result"]) for r in records] == [
         (1, "attempted"), (1, "ok"), (2, "attempted"), (2, "partial"),
@@ -970,26 +975,7 @@ def test_raise_for_write_maps_the_status_table() -> None:
 # ---------------------------------------------------------------------------------------------
 
 
-def test_configured_or_given_hooks_without_a_runner_refuse_before_any_write(world: World) -> None:
-    held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
-    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
-    assert world.writes() == [] and world.records() == []
-    world.write_config("hooks:\n  post-transition:\n    - cmd: /bin/true\n")
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held)
-    assert err.reason == "hooks_unavailable"
-    world.write_config("")
-    err = world.fail(
-        StubTransition("DEMO-2", "Done"),
-        yes=True,
-        expect_plan=held,
-        hooks=["pre-transition=/bin/true"],
-    )
-    assert err.reason == "hooks_unavailable" and world.writes() == []
-
-
-def test_hooks_of_another_family_or_a_real_runner_or_a_dry_run_do_not_refuse(
+def test_hooks_of_another_family_or_a_substituted_runner_or_a_dry_run_do_not_run(
     world: World,
 ) -> None:
     world.write_config("hooks:\n  pre-comment:\n    - cmd: /bin/true\n")
@@ -1512,9 +1498,10 @@ def test_a_mapping_with_version_and_content_is_a_document_even_when_not_adf() ->
         check_outbound({"payload": {"version": 3, "content": "plain text"}}, body_chars=30000)
 
 
-def test_a_configured_hook_refuses_even_a_run_that_would_be_a_noop(world: World) -> None:
-    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
+def test_a_configured_hook_does_not_run_for_a_noop(world: World) -> None:
+    # a hook that would veto if it ran: the no-op returns before any hook
+    world.write_config("hooks:\n  pre-transition:\n    - cmd: exit 1\n")
     world.fake.tickets["DEMO-2"].status = "Done"
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
-    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    out = world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
+    assert out["result"] == "unchanged"
     assert world.writes() == [] and world.records() == []

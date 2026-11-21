@@ -15,6 +15,7 @@ from ticketctl.plan import (
     STEP_PROPS,
     WARNINGS,
     Planned,
+    ShownText,
     Step,
     build_plan,
     canonical_bytes,
@@ -169,7 +170,11 @@ def test_every_step_body_hash_must_be_in_the_intent() -> None:
     step = Step("add_comment", _send, {"body_sha256": "a" * 64, "body_bytes": 3})
     with pytest.raises(ValueError):
         build_plan("comment", "main", "human:x", planned(steps=[step], intent={"b": ["c" * 64]}))
-    ok = planned(steps=[step], intent={"bodies": ["a" * 64]})
+    ok = planned(
+        steps=[step],
+        intent={"bodies": ["a" * 64]},
+        shown=[ShownText("comment", "x", "body", "a" * 64)],
+    )
     assert build_plan("comment", "main", "human:x", ok)["steps"][0]["body_sha256"] == "a" * 64
 
 
@@ -184,3 +189,124 @@ def test_canonical_json_refuses_what_would_collide() -> None:
     with pytest.raises(ValueError):
         canonical_bytes({"a": [("x",)]})
     assert canonical_bytes({"a": [1, 2]}) == b'{"a":[1,2]}'
+
+
+# Round 1 review (#24): everything sent is shown, or the plan is refused before the dialog.
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _body_plan(**kw: Any) -> Planned:
+    digest = "a" * 64
+    step = Step("add_comment", _send, {"body_sha256": digest, "body_bytes": 3})
+    base: dict[str, Any] = {
+        "steps": [step],
+        "intent": {"bodies": [digest]},
+        "bodies": [{"sha256": digest, "bytes": 3}],
+        "shown": [ShownText("comment", "hi", "body", digest)],
+    }
+    base.update(kw)
+    return planned(**base)
+
+
+def test_a_comment_like_plan_with_its_body_shown_passes() -> None:
+    build_plan("comment", "main", "human:x", _body_plan())
+
+
+def test_a_step_body_hash_with_no_shown_text_is_refused() -> None:
+    with pytest.raises(ValueError, match="shown"):
+        build_plan("comment", "main", "human:x", _body_plan(shown=[]))
+
+
+def test_a_bodies_hash_with_no_shown_text_is_refused() -> None:
+    other = "b" * 64
+    plan = _body_plan(
+        intent={"bodies": ["a" * 64, other]},
+        bodies=[{"sha256": "a" * 64, "bytes": 3}, {"sha256": other, "bytes": 3}],
+    )
+    with pytest.raises(ValueError, match="shown"):
+        build_plan("comment", "main", "human:x", plan)
+
+
+def test_a_shown_text_without_a_given_hash_counts_by_the_hash_of_its_text() -> None:
+    digest = _sha("hello")
+    step = Step("add_comment", _send, {"body_sha256": digest, "body_bytes": 5})
+    plan = planned(
+        steps=[step],
+        intent={"b": digest},
+        bodies=[{"sha256": digest, "bytes": 5}],
+        shown=[ShownText("comment", "hello")],
+    )
+    build_plan("comment", "main", "human:x", plan)
+
+
+@pytest.mark.parametrize("to", ["text", True, 3, 2.5])
+def test_a_change_value_with_no_same_label_shown_text_is_refused(to: Any) -> None:
+    plan = planned(steps=[], changes=[{"name": "cf_1", "from": None, "to": to}])
+    with pytest.raises(ValueError, match="shown"):
+        build_plan("update", "main", "human:x", plan)
+
+
+def test_a_same_label_shown_text_of_another_label_does_not_count() -> None:
+    plan = planned(
+        steps=[],
+        changes=[{"name": "cf_1", "from": None, "to": "text"}],
+        shown=[ShownText("cf_2", "text")],
+    )
+    with pytest.raises(ValueError, match="shown"):
+        build_plan("update", "main", "human:x", plan)
+
+
+@pytest.mark.parametrize(
+    "to", [{"name": "Done", "category": "done"}, [{"id": "1"}], {"x": 1}, ["a", 1]]
+)
+def test_a_non_string_change_value_with_no_shown_text_is_refused(to: Any) -> None:
+    plan = planned(steps=[], changes=[{"name": "cf_1", "from": None, "to": to}])
+    with pytest.raises(ValueError, match="shown"):
+        build_plan("update", "main", "human:x", plan)
+
+
+@pytest.mark.parametrize("to", [{"name": "Done", "category": "done"}, [{"id": "1"}]])
+def test_a_non_string_change_value_with_a_same_label_shown_text_passes(to: Any) -> None:
+    plan = planned(
+        steps=[],
+        changes=[{"name": "cf_1", "from": None, "to": to}],
+        shown=[ShownText("cf_1", "rendered text")],
+    )
+    build_plan("update", "main", "human:x", plan)
+
+
+@pytest.mark.parametrize("to", [None, []])
+def test_an_absent_or_empty_change_value_needs_no_shown_text(to: Any) -> None:
+    plan = planned(steps=[], changes=[{"name": "cf_1", "from": None, "to": to}])
+    build_plan("update", "main", "human:x", plan)
+
+
+def test_a_list_of_strings_is_shown_by_the_dialog_itself() -> None:
+    plan = planned(steps=[], changes=[{"name": "labels", "from": None, "to": ["a", "b"]}])
+    build_plan("update", "main", "human:x", plan)
+
+
+def test_a_string_change_shown_with_other_text_is_refused() -> None:
+    plan = planned(
+        steps=[],
+        changes=[{"name": "cf_1", "from": None, "to": "SENT"}],
+        shown=[ShownText("cf_1", "SHOWN")],
+    )
+    with pytest.raises(ValueError, match="differs"):
+        build_plan("update", "main", "human:x", plan)
+
+
+def test_a_string_change_shown_with_other_text_passes_when_the_hash_is_in_the_plan() -> None:
+    digest = "c" * 64
+    step = Step("add_comment", _send, {"body_sha256": digest, "body_bytes": 3})
+    plan = planned(
+        steps=[step],
+        intent={"bodies": [digest]},
+        bodies=[{"sha256": digest, "bytes": 3}],
+        changes=[{"name": "description", "from": None, "to": "rendered markdown"}],
+        shown=[ShownText("description", "rendered markdown, other text", "body", digest)],
+    )
+    build_plan("update", "main", "human:x", plan)

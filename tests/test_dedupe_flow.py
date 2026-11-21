@@ -289,6 +289,18 @@ def test_a_post_hook_calling_ticketctl_with_the_same_key_does_not_deadlock(
     assert len(creates(world)) == 1
 
 
+def test_pre_hook_time_longer_than_the_timeout_does_not_expire_the_lock_budget(
+    world: World,
+) -> None:
+    """The deadline does not run during the ``pre-`` hooks: the lock and the guard keep the time."""
+    hooks = Hooks()
+    hooks.before = lambda: time.sleep(1.4)
+    held = world.hash_of(StubCreate("t", dedupe_key="paused"))
+    out = world.run(StubCreate("t", dedupe_key="paused"), yes=True, expect_plan=held,
+                    timeout_s=1.0, seams=Seams(hooks=hooks))  # fmt: skip
+    assert out["result"] == "ok" and len(creates(world)) == 1
+
+
 def test_no_dedupe_key_takes_no_lock_and_makes_no_lock_files(world: World) -> None:
     world.run(StubCreate("t", dedupe_key=None), yes=True,
               expect_plan=world.hash_of(StubCreate("t", dedupe_key=None)))  # fmt: skip

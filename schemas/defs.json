@@ -748,7 +748,8 @@
           ]
         },
         "changed": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "true when a provider write landed: result ok, and partial inside its envelope; false for unchanged."
         },
         "result": {
           "enum": [
