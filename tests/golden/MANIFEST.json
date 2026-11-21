@@ -16,6 +16,7 @@
   "cli/sprint-remove.json": "60412d5e4392bd60389396d637c8e70d43fd92724228dff73cf527a9163a53bb",
   "cli/sprints-list.json": "451608369c01d5fd1ce73ebd7542bcd849399c2526b654eef8e1b3ab24b5d718",
   "cli/sprints-show.json": "2165b82f86843e1be9ff4e93af5c1dcd6e68d9b87dffa54ed8258a9cf8dfaeda",
+  "cli/transition.json": "e696319dfc2c8a6c1fc270d57a707d7a9d7d328e4df1bf2878f28eccdc920243",
   "cli/transitions.json": "30f8108cf31fff3e71c0a8ed41637a2b40df18a965e31bdaf64fd92df538e8e8",
   "cli/validate.json": "46fcc32646332cea3f346c3ea7b3a614d4baa5543119a53f8c5ea0756f268431",
   "cli/whoami.json": "3ce9034afc4ed222aa032f9ad47a0d479c5f6089a77df54d7ddeed499fde08db",
