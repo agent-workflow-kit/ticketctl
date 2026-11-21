@@ -1,0 +1,22 @@
+{
+  "action": "sprint_remove",
+  "already_posted": false,
+  "attempt_id": "0123456789abcdef",
+  "changed": true,
+  "comment_id": null,
+  "decision_ids": [],
+  "key": "DEMO-2",
+  "result": "ok",
+  "reused": false,
+  "site": "main",
+  "steps": [
+    {
+      "kind": "sprint_remove",
+      "status": "done"
+    }
+  ],
+  "url": "https://tracker.example.test/browse/DEMO-2",
+  "warnings": [
+    "other_sprints_dropped"
+  ]
+}

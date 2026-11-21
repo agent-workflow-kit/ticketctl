@@ -1,0 +1,15 @@
+{
+  "action": "sprint_remove",
+  "already_posted": false,
+  "attempt_id": null,
+  "changed": false,
+  "comment_id": null,
+  "decision_ids": [],
+  "key": "DEMO-3",
+  "result": "unchanged",
+  "reused": false,
+  "site": "main",
+  "steps": [],
+  "url": "https://tracker.example.test/browse/DEMO-3",
+  "warnings": []
+}

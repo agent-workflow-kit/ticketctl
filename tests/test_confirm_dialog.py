@@ -180,6 +180,14 @@ def test_from_values_are_cut_to_20_lines_or_2000_characters() -> None:
     assert f"({50_000 - shown} more characters, see --json)" in out
 
 
+def test_a_string_list_from_of_a_non_sprint_change_is_rendered() -> None:
+    change = {"name": "labels", "from": ["old-one", "old-two"], "to": ["new"]}
+    out = compose(plan_of(changes=[change]))
+    section = out.split("current labels (provider text):")[1].split("\n\n")[0]
+    assert "| old-one" in section
+    assert "| old-two" in section
+
+
 def test_status_changes_are_summarized_not_dumped() -> None:
     plan = plan_of(
         action="transition",

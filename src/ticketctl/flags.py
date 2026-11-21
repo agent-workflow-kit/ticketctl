@@ -103,7 +103,12 @@ def sprint_selector_arg(value: str) -> str:
     """`open`, `next` or a numeric sprint id."""
     if value in ("open", "next"):
         return value
-    return numeric_id_arg(value)
+    try:
+        return numeric_id_arg(value)
+    except argparse.ArgumentTypeError:
+        raise argparse.ArgumentTypeError(
+            "--sprint takes open, next or a numeric id (sprint names are not supported)"
+        ) from None
 
 
 def parse_duration(value: str) -> float:
