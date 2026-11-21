@@ -671,6 +671,9 @@ class _Run:
         self.action.prepare(pc)  # step 1: no provider call
         attempt_id = self.seams.attempt_id()
 
+        # todo(#24): the --timeout deadline starts here and is never paused, so the confirmation
+        # prompt and the pre- hooks count against it (docs/interface.md says they do not); the
+        # dedupe lock wait and the lag guard read it. Needs a Deadline pause/extend around them.
         gw = self.seams.gateway or open_gateway(self.rt, self.site)
         wgw = WriteGateway(gw, body_chars=pc.body_chars)
         # Step 2: a fresh account, never the cache, then the configured expectation.

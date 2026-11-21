@@ -79,15 +79,16 @@ def test_a_bad_bucket_name_is_refused() -> None:
             BucketLock(Path("/nonexistent"), bad, timeout=1.0)
 
 
-def test_at_most_256_files_ever_exist(state_dir: Path) -> None:
-    for i in range(1500):
+def test_many_keys_never_exceed_256_lock_files(state_dir: Path) -> None:
+    names = {dedupe.bucket_name("main", "DEMO", f"key-{i}") for i in range(300)}
+    assert all(re.fullmatch(r"[0-9a-f]{2}", n) for n in names)
+    for i in range(300):
         name = dedupe.bucket_name("main", "DEMO", f"key-{i}")
         with BucketLock(state_dir, name, timeout=1.0):
             pass
-    files = lock_files(state_dir)
-    assert len(files) <= dedupe.BUCKETS == 256
-    assert len(files) > 200  # the hash spreads (a stuck name would show here)
-    assert all(re.fullmatch(r"[0-9a-f]{2}", f) for f in files)
+    assert set(lock_files(state_dir)) == names  # exactly the names produced, nothing else
+    assert len(names) <= dedupe.BUCKETS == 256
+    assert len(names) > 150  # the hash spreads (a stuck name would show here)
 
 
 # --- the lock ---------------------------------------------------------------------------------
@@ -189,10 +190,13 @@ def test_a_hardlinked_lock_file_is_refused_and_not_left_locked(
     (state_dir / "locks").mkdir(parents=True)
     other = tmp_path / "other"
     other.write_text("x")
+    other.chmod(0o644)
     os.link(other, state_dir / "locks" / "ab")
     with pytest.raises(StateError) as info:
         BucketLock(state_dir, "ab", timeout=1.0).__enter__()
     assert info.value.reason == "state_type"
+    assert stat.S_IMODE(other.stat().st_mode) == 0o644  # the target's mode was never changed
+    assert other.read_text() == "x"
     fd = os.open(other, os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the refusal released its flock
@@ -247,6 +251,40 @@ def test_a_file_removed_while_waiting_is_reopened(state_dir: Path) -> None:
     thread.join(30)
     assert outcome == [True]  # it reopened the current file instead of holding the unlinked one
     assert path.exists()
+
+
+def test_the_lock_directory_descriptor_is_closed(state_dir: Path) -> None:
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("no /proc/self/fd")
+    with BucketLock(state_dir, "ab", timeout=1.0):  # warm up: create the directory and file
+        pass
+    before = len(os.listdir("/proc/self/fd"))
+    for _ in range(50):
+        with BucketLock(state_dir, "ab", timeout=1.0):
+            pass
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+@pytest.mark.parametrize("call", ["utime", "ftruncate"])
+def test_a_failing_release_update_is_state_io_and_frees_the_lock(
+    call: str, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = getattr(os, call)
+
+    def boom(target: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(target, int):  # only the lock's descriptor; paths keep working
+            raise OSError(5, "injected")
+        return real(target, *args, **kwargs)
+
+    lock = BucketLock(state_dir, "ab", timeout=1.0)
+    lock.__enter__()
+    monkeypatch.setattr(os, call, boom)
+    with pytest.raises(StateError) as info:
+        lock.__exit__(None, None, None)
+    monkeypatch.undo()
+    assert info.value.reason == "state_io"
+    assert not dedupe._held_names()
+    assert free(state_dir, "ab")  # the fd was closed: the lock can be taken again
 
 
 # --- real processes ---------------------------------------------------------------------------
@@ -517,6 +555,14 @@ def test_a_wait_that_does_not_fit_the_command_timeout_is_a_timeout_not_absent() 
     assert v.waits == [5.0]
 
 
+def test_a_wait_exactly_equal_to_the_time_left_fits_and_is_taken() -> None:
+    v = Virtual()
+    v.budget_left = 2.0  # "does not fit" means the wait is strictly greater than the time left
+    look = hits_after(v, 2)
+    got = dedupe.run_guard(look, LagDecision(quick_rerun=True), clock=v.clock(), budget=v.budget)
+    assert got == "found" and v.waits == [2.0]
+
+
 def test_an_exhausted_budget_with_no_guard_still_looks_once() -> None:
     v = Virtual()
     v.budget_left = 0.0
@@ -560,3 +606,50 @@ def test_audit_tail_refuses_a_symlinked_audit_file(state_dir: Path, tmp_path: Pa
     (state_dir / "audit.jsonl").symlink_to(target)
     with pytest.raises(StateError):
         dedupe.audit_tail(state_dir)
+
+
+def test_audit_tail_keeps_the_first_line_when_the_cut_is_on_a_line_boundary(
+    state_dir: Path,
+) -> None:
+    write_audit(state_dir, [b'{"x":1}\n', b'{"y":2}\n'])
+    assert dedupe.audit_tail(state_dir, max_bytes=8) == [{"y": 2}]
+
+
+# --- guarded_lookup and the held bucket ---------------------------------------------------------
+
+
+def fake_ctx(state_dir: Path) -> Any:
+    from types import SimpleNamespace
+
+    gw = SimpleNamespace(deadline=SimpleNamespace(remaining=lambda: 1000.0))
+    return SimpleNamespace(site="main", rt=SimpleNamespace(state_dir=state_dir), gw=gw)
+
+
+def test_guarded_lookup_under_the_matching_lock_runs_the_quick_rerun(state_dir: Path) -> None:
+    name = dedupe.bucket_name("main", "DEMO", "k")
+    with BucketLock(state_dir, name, timeout=1.0):
+        pass  # a release: the next holder sees a fresh modification time
+    v = Virtual(start=time.time())  # the lock file's time is real wall time
+    look = hits_after(v, 2)
+    with BucketLock(state_dir, name, timeout=1.0):
+        got = dedupe.guarded_lookup(
+            fake_ctx(state_dir), scope="DEMO", dedupe_key="k", lookup=look, clock=v.clock()
+        )
+    assert got == "found" and v.waits == [2.0]
+
+
+def test_guarded_lookup_with_a_scope_that_is_not_the_held_bucket_is_an_internal_error(
+    state_dir: Path,
+) -> None:
+    name = dedupe.bucket_name("main", "DEMO", "k")
+    wrong = "OTHER"
+    assert dedupe.bucket_name("main", wrong, "k") != name
+    with BucketLock(state_dir, name, timeout=1.0):
+        with pytest.raises(ValueError, match="bucket"):
+            dedupe.guarded_lookup(
+                fake_ctx(state_dir), scope=wrong, dedupe_key="k", lookup=lambda: None
+            )
+    with pytest.raises(ValueError, match="bucket"):  # no lock held at all
+        dedupe.guarded_lookup(
+            fake_ctx(state_dir), scope="DEMO", dedupe_key="k", lookup=lambda: None
+        )

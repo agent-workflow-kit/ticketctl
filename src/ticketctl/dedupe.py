@@ -9,9 +9,10 @@ only serializes two unrelated writers, and nothing accumulates (at most 256 file
 The directory and the files go through ``state.py`` (``0700`` and ``0600``, ``O_NOFOLLOW``, owner
 and type checks, the inode recheck of ``locked_append_file``), and a file with more than one link
 is refused. The descriptor is close-on-exec (``state.open_file``), so a hook or any child never
-inherits it. The wait is bounded by what is left of the command timeout, then exit 12
-``unavailable`` with ``reason: locked``; the wait uses the monotonic clock. The kernel drops the
-lock when its holder dies, so a killed holder never wedges a waiter.
+inherits it. The wait is bounded by what is left of the command deadline (which, today, also
+counts the confirmation prompt and the ``pre-`` hook time, see ``todo(#24)`` in ``writeflow.py``),
+then exit 12 ``unavailable`` with ``reason: locked``; the wait uses the monotonic clock. The
+kernel drops the lock when its holder dies, so a killed holder never wedges a waiter.
 
 On release the holder sets the file's modification time to now (a lock file that was never
 released holds size 0 and its mtime is its creation, which says nothing; a released one holds one
@@ -25,8 +26,9 @@ lookup that finds nothing is repeated before it concludes "absent": once after 2
 file was modified within the last 5 s, and every 5 s until 60 s after the record's ``ts`` when the
 tail of ``audit.jsonl`` holds a same-site, same-key create attempt of the last 120 s that is
 ``attempted`` without an outcome, ``unknown`` or ``ok``. A hit ends the wait at once. Waits are
-bounded by the command's remaining time: when a needed wait does not fit, nothing is sent and the
-error is ``timeout`` (a create must not conclude "absent" from a lookup the guard distrusts).
+bounded by the command deadline's remaining time (prompt and hook time included, as above): when
+a needed wait does not fit (strictly longer than the time left), nothing is sent and the error is
+``timeout`` (a create must not conclude "absent" from a lookup the guard distrusts).
 The decision is a pure function (:func:`decide`) of the lock mtime, the audit records and the
 wall clock; waits go through an injectable :class:`Clock` so tests run on virtual time.
 
@@ -121,7 +123,7 @@ class BucketLock:
             os.close(dir_fd)
         if locks_fd is None:
             raise StateError("state_io", "cannot open the lock directory")
-        cm = state.locked_append_file(locks_fd, self._name, timeout=self._timeout)
+        cm = state.locked_append_file(locks_fd, self._name, timeout=self._timeout, single_link=True)
         try:
             try:
                 fd = cm.__enter__()
@@ -133,9 +135,6 @@ class BucketLock:
                         reason="locked",
                     ) from None
                 raise
-            if os.fstat(fd).st_nlink != 1:  # a hard link to some other file
-                cm.__exit__(None, None, None)
-                raise StateError("state_type", "state lock file has more than one link")
         except BaseException:
             os.close(locks_fd)
             raise
@@ -238,15 +237,19 @@ def audit_tail(state_dir: Path, *, max_bytes: int = TAIL_BYTES) -> list[dict[str
     try:
         size = os.fstat(fd).st_size
         start = max(0, size - max_bytes)
-        data = os.pread(fd, size - start, start)
+        # one byte before the window tells whether the cut fell on a line boundary
+        data = os.pread(fd, size - start + (start > 0), max(0, start - 1))
     except OSError as exc:
         raise StateError("state_io", "cannot read the audit log") from exc
     finally:
         os.close(fd)
+    cut = start > 0 and data[:1] != b"\n"  # the window starts inside a line
+    if start > 0:
+        data = data[1:]
     lines = data.split(b"\n")
     lines.pop()  # the piece after the last newline: empty, or a torn line
-    if start > 0 and lines:
-        lines.pop(0)  # the first line may be cut
+    if cut and lines:
+        lines.pop(0)  # the first line is only a tail
     out: list[dict[str, Any]] = []
     for line in lines:
         try:
@@ -375,10 +378,15 @@ def guarded_lookup[T](
 
     ``scope`` is the project; ``lookup`` returns the found object or None. Call it only while
     the bucket lock is held: the lock file's time is read as the previous holder's release.
+    ``ValueError`` (an internal error) when the bucket derived from ``scope`` and ``dedupe_key``
+    is not one this thread holds for the state directory (a wrong ``scope`` would silently
+    disable the quick re-run).
     """
     clock = clock or Clock()
     name = bucket_name(ctx.site, scope, dedupe_key)
     state_dir = ctx.rt.state_dir
+    if (str(state_dir), name) not in _held_names():
+        raise ValueError("guarded_lookup needs the dedupe lock of its own bucket to be held")
     decision = decide(
         lock_released_at=lock_mtime(state_dir, name),
         records=audit_tail(state_dir),

@@ -152,7 +152,7 @@ Read-command assumptions (issue #18, unverified against a real site; the code ta
 | `state` | the state directory: location, `0700` and ownership checks, symlink refusal, safe file opens relative to the directory descriptor, the `flock` helper (bounded wait, reopen after rotation), the tree cleaner every writer runs content through |
 | `audit` | `audit.jsonl` and `log.jsonl` appends with `flock`, rotation, `export` |
 | `cache` | field list, priority list and identity cache with atomic replace, keyed by site, url and email hash |
-| `dedupe` | the dedupe lock and the lookups for comment and create |
+| `dedupe` | the dedupe bucket lock and the create lag guard (the lookups arrive with #31 and #33) |
 
 Time zones for `search` timestamps come from the system zoneinfo database through `zoneinfo`; `UTC` and `Etc/UTC` are built in. There is deliberately no `tzdata` dependency (one more runtime package for a case Linux, WSL and macOS cover), so a minimal container without the database fails a timestamp search with exit 22 `invalid_value` ("system time zone database not found or zone unknown") while durations and dates still work. Dependencies: `pyyaml` (config; the standard library cannot read YAML) and `pydantic` (validation), both required by the design guide. No HTTP library: `http.client` through the gateway. Test-only: `jsonschema` (development group) validates the golden files and the error envelope against `schemas/`.
 
