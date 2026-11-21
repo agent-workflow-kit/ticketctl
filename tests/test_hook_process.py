@@ -14,9 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.hook_support import PidRegistry, alive, pids, script, wait_dead, wait_file  # noqa: F401
+from tests.hook_support import PidRegistry, alive, script, wait_dead, wait_file
 from ticketctl import gateway
 from ticketctl.gateway import run_hook, spawn_detached
+
+pytest_plugins = ["tests.hook_support"]  # the `pids` fixture
 
 ENV = {"PATH": "", "LC_ALL": "C"}
 
@@ -55,7 +57,9 @@ def test_the_child_gets_exactly_the_given_environment(tmp_path: Path, pids: PidR
     assert names - {"A_VAR", "B_VAR", "LC_CTYPE"} == set()  # the interpreter adds LC_CTYPE itself
 
 
-def test_the_child_is_a_session_leader_with_its_own_group(tmp_path: Path, pids: PidRegistry) -> None:
+def test_the_child_is_a_session_leader_with_its_own_group(
+    tmp_path: Path, pids: PidRegistry
+) -> None:
     body = "import os\nprint(os.getpid(), os.getpgid(0), os.getsid(0))\n"
     res = go(script(tmp_path, "grp.py", body), pids)
     pid, pgid, sid = map(int, res.stdout.split())

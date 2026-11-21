@@ -75,7 +75,7 @@ class Entry:
 
 
 def entries_for(rt: Runtime, phase: str, family: str) -> list[Entry]:
-    """The hooks of ``<phase>-<family>``: configured in list order, then ``--hook`` in argv order."""
+    """The hooks of ``<phase>-<family>``: configured in list order, then ``--hook`` in order."""
     name = f"{phase}-{family}"
     out = [
         Entry(name, h.cmd, h.timeout.total_seconds(), h.async_, "config")
@@ -101,9 +101,7 @@ def hook_env(rt: Runtime, name: str, object_id: str | None) -> dict[str, str]:
             if len(value) >= MIN_SECRET_LENGTH:
                 secret_values.add(value)
     env = {
-        k: v
-        for k, v in rt.env.items()
-        if k not in secret_vars and v.strip() not in secret_values
+        k: v for k, v in rt.env.items() if k not in secret_vars and v.strip() not in secret_values
     }
     env.update(
         {"TICKETCTL_HOOK": name, "TICKETCTL_ID": object_id or "", "TICKETCTL_OBJECT_TYPE": "ticket"}
@@ -278,7 +276,9 @@ def build_payload(
                 "result": info.result,
                 "error": error,
                 "steps": [{"kind": s["kind"], "status": s["status"]} for s in info.steps],
-                "provider_ids": [i for i in info.provider_ids if GRAMMARS["provider_id"].matches(i)],
+                "provider_ids": [
+                    i for i in info.provider_ids if GRAMMARS["provider_id"].matches(i)
+                ],
                 "changed": info.changed,
             }
         )
@@ -463,7 +463,9 @@ class HookRunner:
         if entry.async_:
             stdin = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("ascii")
             env = hook_env(self.rt, entry.name, payload["object_id"])
-            (self._spawn or spawn_detached)(self._argv(entry), stdin=stdin, env=env, on_start=self.on_start)
+            (self._spawn or spawn_detached)(
+                self._argv(entry), stdin=stdin, env=env, on_start=self.on_start
+            )
             return
         run = self._execute(entry, payload)
         if run is None:

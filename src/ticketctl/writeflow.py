@@ -357,7 +357,7 @@ class HookResult:
 
 @dataclass
 class PostInfo:
-    """What a ``post-`` hook is told (the payload itself is #25's)."""
+    """What a ``post-`` hook is told (``ticketctl.hooks.build_payload`` makes the payload)."""
 
     result: str  # ok, failed, partial, unknown
     error: dict[str, str | None] | None

@@ -18,15 +18,17 @@ from typing import Any
 
 import pytest
 
-from tests.fake_provider import SITE_TOKEN
+from tests.fake_provider import SITE_TOKEN, FakeProvider
 from tests.golden import validator
-from tests.hook_support import PidRegistry, alive, pids, shell_command, wait_dead, wait_file  # noqa: F401
-from tests.test_writeflow import TOKEN_VAR, World, world  # noqa: F401
+from tests.hook_support import PidRegistry, shell_command, wait_dead, wait_file
+from tests.test_writeflow import TOKEN_VAR, World
 from tests.write_stub import StubComment, StubTransition
 from ticketctl import flags, hooks
 from ticketctl.errors import TicketctlError
 from ticketctl.plan import Planned
 from ticketctl.writeflow import PostInfo, Seams
+
+pytest_plugins = ["tests.hook_support"]  # the `pids` fixture
 
 PY = shell_command([sys.executable, "-I"])
 
@@ -112,7 +114,7 @@ class Rig:
             self.pids.add(row["pid"])
         return rows
 
-    def config(self, **hooks_by_name: list[str] | list[tuple[str, int]]) -> None:
+    def config(self, **hooks_by_name: list[Any]) -> None:
         lines = ["hooks:"]
         for name, cmds in hooks_by_name.items():
             lines.append(f"  {name.replace('_', '-')}:")
@@ -123,16 +125,22 @@ class Rig:
 
 
 @pytest.fixture
-def rig(world: World, tmp_path: Path, pids: PidRegistry) -> Rig:  # noqa: F811
+def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeProvider) -> World:
+    return World(tmp_path, monkeypatch, fake)
+
+
+@pytest.fixture
+def rig(world: World, tmp_path: Path, pids: PidRegistry) -> Rig:
     return Rig(world, tmp_path, pids)
-
-
-def seams(pids: PidRegistry) -> Seams:  # noqa: F811
-    return Seams(hooks=None)
 
 
 def held(world: World, action_factory: Callable[[], Any]) -> str:
     return world.hash_of(action_factory())
+
+
+def details(err: TicketctlError) -> dict[str, Any]:
+    assert err.details is not None
+    return err.details
 
 
 def new() -> HTransition:
@@ -201,9 +209,10 @@ def test_the_environment_is_the_tools_minus_every_credential_variable(
     assert env["TICKETCTL_HOOK"] == "pre-transition"
     assert env["TICKETCTL_ID"] == "DEMO-2" and env["TICKETCTL_OBJECT_TYPE"] == "ticket"
     assert env["TICKETCTL_TEST_KEEP"] == "kept"
-    for name in (TOKEN_VAR, other_token, other_email, "TICKETCTL_TEST_COPY"):
-        assert name not in env, name
-    assert SITE_TOKEN not in json.dumps(call)
+    present = [n for n in (TOKEN_VAR, other_token, other_email, "TICKETCTL_TEST_COPY") if n in env]
+    assert present == []  # names only: never a value in a failure message
+    leaked = SITE_TOKEN in json.dumps(call)
+    assert not leaked
     assert call["cwd"] == str(Path.cwd())
 
 
@@ -247,14 +256,12 @@ def test_a_dry_run_runs_no_hook(rig: Rig, world: World) -> None:
 def test_exit_13_escalates_later_hooks_still_run_and_the_override_continues(
     rig: Rig, world: World
 ) -> None:
-    rig.config(
-        pre_transition=[rig.hook(exit=13, out='{"decision_id": "esc.1"}'), rig.hook(exit=0)]
-    )
+    rig.config(pre_transition=[rig.hook(exit=13, out='{"decision_id": "esc.1"}'), rig.hook(exit=0)])
     h = world.hash_of(new())
     err = world.fail(new(), yes=True, expect_plan=h)
     assert (err.exit, err.code) == (13, "escalated")
     assert [c["n"] for c in rig.calls()] == [1, 2]
-    assert err.details["hook"] == "pre-transition" and err.details["decision_ids"] == ["esc.1"]
+    assert details(err)["hook"] == "pre-transition" and details(err)["decision_ids"] == ["esc.1"]
     assert world.writes() == [] and world.records() == []
     out = world.run(new(), yes=True, expect_plan=h, override_escalation="ticketctl")
     assert out["result"] == "ok" and out["decision_ids"] == ["esc.1"]
@@ -267,8 +274,8 @@ def test_any_other_nonzero_exit_vetoes_at_once(rig: Rig, world: World, code: int
     h = world.hash_of(new())
     err = world.fail(new(), yes=True, expect_plan=h)
     assert (err.exit, err.code) == (11, "vetoed")
-    assert err.details["hook"] == "pre-transition" and err.details["hook_stderr"] == "not today"
-    assert err.details["plan"]["plan_sha256"] == h
+    assert details(err)["hook"] == "pre-transition" and details(err)["hook_stderr"] == "not today"
+    assert details(err)["plan"]["plan_sha256"] == h
     assert [c["n"] for c in rig.calls()] == [1]  # the later hook did not run
     assert world.writes() == [] and world.records() == []
 
@@ -281,7 +288,7 @@ def test_the_override_never_overrides_a_veto_and_a_later_veto_beats_an_escalatio
     )
     h = world.hash_of(new())
     err = world.fail(new(), yes=True, expect_plan=h, override_escalation="ticketctl")
-    assert err.code == "vetoed" and err.details["decision_ids"] == ["veto.id"]
+    assert err.code == "vetoed" and details(err)["decision_ids"] == ["veto.id"]
     assert world.writes() == []
 
 
@@ -333,7 +340,9 @@ def test_a_payload_that_lacks_a_fact_fails_closed(rig: Rig, world: World) -> Non
 
 
 def test_a_timed_out_pre_hook_is_a_veto_and_its_group_is_signaled(
-    rig: Rig, world: World, pids: PidRegistry  # noqa: F811
+    rig: Rig,
+    world: World,
+    pids: PidRegistry,
 ) -> None:
     marker = rig.tmp / "grandchild"
     extra = (
@@ -363,7 +372,7 @@ def test_veto_stderr_is_sanitized_scrubbed_and_capped(rig: Rig, world: World) ->
     err_text = f"\x1b[31mred\x1b[0m token {SITE_TOKEN} end\n" + "z" * 20000
     rig.config(pre_transition=[rig.hook(exit=2, err=err_text)])
     err = world.fail(new(), yes=True, expect_plan=world.hash_of(new()))
-    shown = err.details["hook_stderr"]
+    shown = details(err)["hook_stderr"]
     assert len(shown.encode()) <= 4096 and "\x1b" not in shown and "\n" not in shown
     assert "<U+001B>" in shown and SITE_TOKEN not in shown and "<redacted>" in shown
 
@@ -409,7 +418,9 @@ def test_more_than_16_ids_are_cut_with_the_truncation_warning(rig: Rig, world: W
 
 
 def test_a_hook_cannot_change_the_plan_through_its_output(rig: Rig, world: World) -> None:
-    out = json.dumps({"decision_id": "x.1", "plan": {"steps": []}, "action": "delete", "key": "X-1"})
+    out = json.dumps(
+        {"decision_id": "x.1", "plan": {"steps": []}, "action": "delete", "key": "X-1"}
+    )
     rig.config(pre_transition=[rig.hook(out=out)])
     result = run_ok(world)
     assert (result["action"], result["key"]) == ("transition", "DEMO-2")
@@ -487,7 +498,7 @@ def test_post_hooks_run_after_the_outcome_record_and_the_lock_release(
     assert [r["result"] for r in world.records()] == ["attempted", "ok"]
 
 
-def test_an_async_post_hook_is_detached(rig: Rig, world: World, pids: PidRegistry) -> None:  # noqa: F811
+def test_an_async_post_hook_is_detached(rig: Rig, world: World, pids: PidRegistry) -> None:
     cmd = rig.hook(sleep=0.3)
     world.write_config(
         f"hooks:\n  post-transition:\n    - cmd: {json.dumps(cmd)}\n      async: true\n"
@@ -539,7 +550,11 @@ def _planned(**hook: Any) -> Planned:
             "sprint",
             {**FACTS, "sprints": [{"id": 5, "state": "active"}, {"id": 6, "state": "future"}]},
         ),
-        ("create", "create", {"project": "DEMO", "create": {"type": "Task", "parent": None, "assign": "me"}}),
+        (
+            "create",
+            "create",
+            {"project": "DEMO", "create": {"type": "Task", "parent": None, "assign": "me"}},
+        ),
     ],
 )
 @pytest.mark.parametrize("phase", ["pre", "post"])
@@ -551,8 +566,12 @@ def test_every_family_payload_validates(
     name = f"{phase}-{hook_name}"
     info = None
     if phase == "post":
-        info = PostInfo("ok", None, [{"kind": "create", "status": "done"}], ["10001"], True, "DEMO-9")
-    payload = hooks.build_payload(name, _plan(action, key), planned, "0123456789abcdef", ["d.1"], info)
+        info = PostInfo(
+            "ok", None, [{"kind": "create", "status": "done"}], ["10001"], True, "DEMO-9"
+        )
+    payload = hooks.build_payload(
+        name, _plan(action, key), planned, "0123456789abcdef", ["d.1"], info
+    )
     validator(f"hooks/{name}.json").validate(payload)
     if action == "create":
         assert payload["object_id"] == ("DEMO-9" if phase == "post" else None)
@@ -561,8 +580,20 @@ def test_every_family_payload_validates(
 @pytest.mark.parametrize(
     "info",
     [
-        PostInfo("failed", {"code": "rejected", "reason": None}, [{"kind": "set_fields", "status": "failed"}], [], False),
-        PostInfo("unknown", {"code": "outcome_unknown", "reason": None}, [{"kind": "set_fields", "status": "failed"}], [], None),
+        PostInfo(
+            "failed",
+            {"code": "rejected", "reason": None},
+            [{"kind": "set_fields", "status": "failed"}],
+            [],
+            False,
+        ),
+        PostInfo(
+            "unknown",
+            {"code": "outcome_unknown", "reason": None},
+            [{"kind": "set_fields", "status": "failed"}],
+            [],
+            None,
+        ),
         PostInfo(
             "partial",
             {"code": "timeout", "reason": None},
@@ -583,7 +614,9 @@ def test_post_payloads_of_a_failure_validate(info: PostInfo) -> None:
 def test_a_create_that_created_nothing_has_a_null_object_id() -> None:
     info = PostInfo("failed", {"code": "rejected", "reason": None}, [], [], False)
     facts = {"project": "DEMO", "create": {"type": "Task", "parent": "DEMO-1", "assign": None}}
-    payload = hooks.build_payload("post-create", _plan("create", None), _planned(**facts), "0123456789abcdef", [], info)
+    payload = hooks.build_payload(
+        "post-create", _plan("create", None), _planned(**facts), "0123456789abcdef", [], info
+    )
     assert payload["object_id"] is None
     validator("hooks/post-create.json").validate(payload)
 
@@ -591,7 +624,11 @@ def test_a_create_that_created_nothing_has_a_null_object_id() -> None:
 def test_provider_names_in_the_payload_pass_the_sanitizer() -> None:
     ticket = {**TICKET, "status": "Do\x1bne\u202e", "type": "T" * 900}
     payload = hooks.build_payload(
-        "pre-update", _plan("update"), _planned(**{**FACTS, "ticket": ticket}), "0123456789abcdef", []
+        "pre-update",
+        _plan("update"),
+        _planned(**{**FACTS, "ticket": ticket}),
+        "0123456789abcdef",
+        [],
     )
     assert "\x1b" not in json.dumps(payload) and "\u202e" not in payload["ticket"]["status"]
     assert len(payload["ticket"]["type"]) <= 256
@@ -639,6 +676,8 @@ def test_a_hook_command_with_control_characters_or_too_long_is_refused(command: 
     assert command[:5] not in str(info.value) or command[:1] == "x"
 
 
-@pytest.mark.parametrize("command", ["true", "my-check --flag 'a b'\t| cat", "écho ünï", "x" * 4096])
+@pytest.mark.parametrize(
+    "command", ["true", "my-check --flag 'a b'\t| cat", "écho ünï", "x" * 4096]
+)
 def test_ordinary_hook_commands_are_accepted(command: str) -> None:
     assert flags._hook(f"pre-comment={command}") == f"pre-comment={command}"  # noqa: SLF001

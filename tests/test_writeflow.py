@@ -1493,9 +1493,10 @@ def test_a_mapping_with_version_and_content_is_a_document_even_when_not_adf() ->
         check_outbound({"payload": {"version": 3, "content": "plain text"}}, body_chars=30000)
 
 
-def test_a_configured_hook_refuses_even_a_run_that_would_be_a_noop(world: World) -> None:
-    world.write_config("hooks:\n  pre-transition:\n    - cmd: /bin/true\n")
+def test_a_configured_hook_does_not_run_for_a_noop(world: World) -> None:
+    # a hook that would veto if it ran: the no-op returns before any hook
+    world.write_config("hooks:\n  pre-transition:\n    - cmd: exit 1\n")
     world.fake.tickets["DEMO-2"].status = "Done"
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
-    assert (err.exit, err.code, err.reason) == (1, "internal", "hooks_unavailable")
+    out = world.run(StubTransition("DEMO-2", "Done"), yes=True, expect_plan="0" * 64)
+    assert out["result"] == "unchanged"
     assert world.writes() == [] and world.records() == []
