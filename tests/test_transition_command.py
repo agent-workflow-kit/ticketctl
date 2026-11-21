@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from ticketctl import commands, transitioncmd
 from ticketctl import hooks as hooks_module
 from ticketctl.errors import TicketctlError
 from ticketctl.plan import Planned
+from ticketctl.setconvert import FieldValue
 from ticketctl.transitioncmd import TransitionAction
 from ticketctl.writeflow import HookResult, PostInfo, Seams
 
@@ -69,6 +71,30 @@ class RichFake(FakeProvider):
 @pytest.fixture
 def rich_fake() -> Iterator[RichFake]:
     provider = RichFake()
+    provider.start()
+    try:
+        yield provider
+    finally:
+        provider.close()
+    assert not [e for e in provider.errors if not e.client_malformed]
+
+
+class ExtraFake(FakeProvider):
+    """The fake with extra raw items put in front of the transition list."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepend: list[Any] = []
+
+    def _transitions(self, call: fp.Call, key: str) -> fp.Out:
+        out = super()._transitions(call, key)
+        out.body["transitions"] = [*copy.deepcopy(self.prepend), *out.body["transitions"]]
+        return out
+
+
+@pytest.fixture
+def extra_fake() -> Iterator[ExtraFake]:
+    provider = ExtraFake()
     provider.start()
     try:
         yield provider
@@ -712,6 +738,13 @@ def test_bad_arguments_are_exit_2_and_send_nothing(cli: Cli, argv: list[str]) ->
     assert cli.fake.calls == []
 
 
+@pytest.mark.parametrize("value", ["none", "bad id!", "ME", "Me"])
+def test_a_bad_assign_argument_is_invalid_argument(cli: Cli, value: str) -> None:
+    code, env = cli.doc("--dry-run", "transition", "DEMO-2", "--to", "Done", "--assign", value)
+    assert (code, env["error"]["reason"]) == (2, "invalid_argument")
+    assert cli.fake.calls == []
+
+
 def test_the_site_is_chosen_from_the_key_and_a_missing_ticket_is_exit_10(cli: Cli) -> None:
     code, env = cli.doc("--dry-run", "transition", "DEMO-99", "--to", "Done")
     assert (code, env["error"]["code"]) == (10, "not_found")
@@ -727,3 +760,284 @@ def test_the_result_and_error_documents_validate(cli: Cli) -> None:
     assert (code, env["error"]["reason"]) == (22, "needs_resolution")
     validator("cli/error.json").validate(env)
     assert json.dumps(env).count(SITE_TOKEN) == 0
+
+
+# ---------------------------------------------------------------------------------------------
+# Round 1 review fixes
+# ---------------------------------------------------------------------------------------------
+
+
+def _without_listed_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = fp.FakeProvider._transition_obj
+
+    def bare(self: FakeProvider, t: fp.Ticket, tid: str, expand: bool) -> dict[str, Any]:
+        out = original(self, t, tid, expand)
+        if expand:
+            out["fields"].pop("resolution", None)
+        return out
+
+    monkeypatch.setattr(fp.FakeProvider, "_transition_obj", bare)
+
+
+@pytest.mark.parametrize("fields", [["Mystery=1"], ["Story Points=abc"], ["Comment="]])
+def test_if_status_comes_before_field_errors(
+    rich_fake: RichFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fields: list[str]
+) -> None:
+    w = World(tmp_path, monkeypatch, rich_fake)
+    action = act("DEMO-2", to="Done", resolution="Done", fields=fields, if_status="Backlog")
+    err = w.fail(action)
+    assert (err.exit, err.code) == (20, "precondition_failed")
+    again = act("DEMO-2", to="Done", resolution="Done", fields=fields, if_status="in progress")
+    assert w.fail(again).code == "invalid_request"
+
+
+def test_if_status_comes_before_a_rich_text_actor_refusal(
+    rich_fake: RichFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = World(tmp_path, monkeypatch, rich_fake)
+    note = tmp_path / "note.md"
+    note.write_text("text\n", encoding="utf-8")
+    fields = [f"Comment=@{note}"]
+    err = w.fail(
+        act("DEMO-2", to="Done", resolution="Done", fields=fields, if_status="Backlog"),
+        actor="auto:unknown",
+    )
+    assert (err.exit, err.code) == (20, "precondition_failed")
+
+
+def test_if_status_comes_before_a_failing_resolution_lookup(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_listed_resolution(monkeypatch)
+    world.fake.inject(Fault("status", method="GET", path="/resolution", status=404, times=None))
+    err = world.fail(act("DEMO-2", to="Done", resolution="Done", if_status="Backlog"))
+    assert (err.exit, err.code) == (20, "precondition_failed")
+    err = world.fail(act("DEMO-2", to="Done", resolution="Done", if_status="in progress"))
+    assert err.code == "provider_changed"
+
+
+def test_if_status_comes_before_a_failing_field_list_lookup(world: World, subtask: str) -> None:
+    world.fake.inject(Fault("status", method="GET", path="/field$", status=404, times=None))
+    fields = ["parent=DEMO-1"]
+    mismatch = act(subtask, to="Done", resolution="Done", fields=fields, if_status="In Progress")
+    err = world.fail(mismatch)
+    assert (err.exit, err.code) == (20, "precondition_failed")
+    match = act(subtask, to="Done", resolution="Done", fields=fields, if_status="backlog")
+    err = world.fail(match)
+    assert err.code == "provider_changed"
+
+
+def test_an_empty_field_value_does_not_supply_a_required_field(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = fp.FakeProvider._transition_obj
+
+    def points_required(self: FakeProvider, t: fp.Ticket, tid: str, expand: bool) -> dict[str, Any]:
+        out = original(self, t, tid, expand)
+        if expand:
+            out["fields"][fp.F_POINTS] = {
+                "required": True,
+                "name": "Story Points",
+                "schema": {"type": "number", "custom": f"{NS}:float"},
+                "operations": ["set"],
+            }
+        return out
+
+    def cleared(resolved: list[Any], vctx: Any) -> list[FieldValue]:
+        return [FieldValue(r.field, r.field.name, None, None, True) for r in resolved]
+
+    monkeypatch.setattr(fp.FakeProvider, "_transition_obj", points_required)
+    monkeypatch.setattr(transitioncmd, "convert_all", cleared)
+    err = world.fail(act("DEMO-2", to="Backlog", fields=["Story Points="]))
+    assert (err.exit, err.reason) == (22, "missing_required_fields")
+
+
+def test_an_unknown_status_category_or_nameless_priority_is_not_provider_changed(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = fp.FakeProvider._all_fields
+
+    def odd(self: FakeProvider, t: fp.Ticket) -> dict[str, Any]:
+        out = original(self, t)
+        out["status"] = {**out["status"], "statusCategory": {"key": "undefined"}}
+        out["priority"] = {"id": "3"}
+        return out
+
+    monkeypatch.setattr(fp.FakeProvider, "_all_fields", odd)
+    plan = world.run(act("DEMO-2", to="Backlog"), dry_run=True)
+    assert plan["warnings"] == []
+    assert plan["changes"][0]["from"] == {"name": "In Progress", "category": "indeterminate"}
+
+
+def test_the_resolution_list_of_the_kept_transition_is_the_one_used(
+    extra_fake: ExtraFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed first item that shares an id with a valid later one is not the metadata."""
+    extra_fake.prepend = [
+        {
+            "id": "41",
+            "name": "Broken",
+            "fields": {
+                "resolution": {
+                    "required": True,
+                    "name": "Resolution",
+                    "key": "resolution",
+                    "schema": {"type": "resolution", "system": "resolution"},
+                    "operations": ["set"],
+                    "allowedValues": [{"id": "1", "name": "Bogus"}],
+                }
+            },
+        }
+    ]
+    w = World(tmp_path, monkeypatch, extra_fake)
+    err = w.fail(act("DEMO-2", to="Done", resolution="Bogus"))
+    assert (err.exit, err.reason) == (22, "invalid_value")
+    assert w.run(act("DEMO-2", to="Done", resolution="done"), dry_run=True)["steps"]
+
+
+def test_an_unreadable_transition_item_is_warned_when_the_lookup_misses(
+    extra_fake: ExtraFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    extra_fake.prepend = [{"id": "zz"}]
+    w = World(tmp_path, monkeypatch, extra_fake)
+    err = w.fail(act("DEMO-2", to="Nowhere"))
+    assert err.code == "no_such_transition"
+    assert re.search(
+        r"the transitions could not be read completely \(transitions\.unreadable\)",
+        capsys.readouterr().err,
+    )
+
+
+def test_an_unreadable_transition_item_is_silent_when_the_lookup_found_its_target(
+    extra_fake: ExtraFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    extra_fake.prepend = [{"id": "zz"}]
+    w = World(tmp_path, monkeypatch, extra_fake)
+    w.run(act("DEMO-2", to="Backlog"), dry_run=True)
+    assert capsys.readouterr().err == ""
+
+
+def test_an_unreadable_field_list_is_warned_even_when_the_target_is_found(
+    extra_fake: ExtraFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    extra_fake.prepend = [
+        {
+            "id": "77",
+            "name": "No fields",
+            "to": extra_fake._status_obj("Backlog"),
+            "hasScreen": True,
+        }
+    ]
+    w = World(tmp_path, monkeypatch, extra_fake)
+    w.run(act("DEMO-1", to="In Progress"), dry_run=True)
+    assert re.search(r"could not be read completely \(required_fields\)", capsys.readouterr().err)
+
+
+def _many_targets(monkeypatch: pytest.MonkeyPatch, count: int, *, same: str | None = None) -> None:
+    for i in range(count):
+        target = same or f"S{i:02d}"
+        if same is None:
+            monkeypatch.setitem(fp.STATUSES, target, ("300", "new"))
+        monkeypatch.setitem(fp.TRANSITIONS, str(100 + i), (f"To {i}", target))
+
+
+def test_available_targets_are_capped_at_fifty(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _many_targets(monkeypatch, 51)
+    err = world.fail(act("DEMO-2", to="Nowhere"))
+    assert err.details is not None and len(err.details["available_targets"]) == 50
+
+
+def test_ambiguous_candidates_are_capped_at_fifty(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _many_targets(monkeypatch, 51, same="Backlog")
+    err = world.fail(act("DEMO-2", to="Backlog"))
+    assert err.code == "ambiguous_transition"
+    assert err.details is not None and len(err.details["candidates"]) == 50
+
+
+def test_needs_resolution_candidates_are_capped_at_fifty(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fp, "RESOLUTIONS", [f"R{i:02d}" for i in range(51)])
+    err = world.fail(act("DEMO-2", to="Done"))
+    assert err.reason == "needs_resolution"
+    assert err.details is not None and len(err.details["candidates"]) == 50
+
+
+def test_invalid_resolution_candidates_are_capped_at_fifty(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fp, "RESOLUTIONS", [f"R{i:02d}" for i in range(51)])
+    err = world.fail(act("DEMO-2", to="Done", resolution="Nope"))
+    assert err.reason == "invalid_value"
+    assert err.details is not None and len(err.details["candidates"]) == 50
+
+
+ASSIGN_ON_START = "    transitions:\n      assign_on_start: me\n"
+
+
+def test_assign_on_start_changes_the_hash_and_sends_the_assign_call(world: World) -> None:
+    plain = world.hash_of(act("DEMO-1", to="In Progress"))
+    world.write_config(ASSIGN_ON_START)
+    started = world.hash_of(act("DEMO-1", to="In Progress"))
+    assert started != plain
+    result = apply(world, act("DEMO-1", to="In Progress"))
+    assert kinds(result) == ["assign", "transition"]
+    assert [c.path.rsplit("/", 1)[-1] for c in world.writes()] == ["assignee", "transitions"]
+    assert world.fake.tickets["DEMO-1"].assignee == ME_ACCOUNT
+
+
+def test_assign_on_start_with_the_id_of_the_current_status_has_no_steps(world: World) -> None:
+    world.write_config(ASSIGN_ON_START)
+    plan = world.run(act("DEMO-1", transition_id="51"), dry_run=True)
+    assert plan["steps"] == []
+
+
+@pytest.mark.parametrize("which", ["to", "if_status"])
+def test_a_secret_in_a_name_option_is_refused(world: World, which: str) -> None:
+    leaked = SITE_TOKEN
+    kw: dict[str, Any] = {"to": "Done", "resolution": "Done"}
+    kw[which] = leaked
+    err = world.fail(act("DEMO-2", **kw))
+    assert (err.exit, err.reason) == (22, "secret_in_body")
+    assert world.writes() == []
+    assert leaked not in json.dumps([err.message, err.details])
+
+
+def test_a_secret_in_a_field_value_is_refused(world: World, subtask: str) -> None:
+    leaked = SITE_TOKEN
+    err = world.fail(act(subtask, to="In Progress", fields=[f"parent={leaked}"]))
+    assert (err.exit, err.reason) == (22, "secret_in_body")
+    assert world.writes() == []
+    assert leaked not in json.dumps([err.message, err.details])
+
+
+def test_a_secret_in_a_rich_text_field_file_is_refused(
+    rich_fake: RichFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = World(tmp_path, monkeypatch, rich_fake)
+    note = tmp_path / "note.md"
+    note.write_text(f"leaked {SITE_TOKEN}\n", encoding="utf-8")
+    err = w.fail(act("DEMO-2", to="Done", resolution="Done", fields=[f"Comment=@{note}"]))
+    assert (err.exit, err.reason) == (22, "secret_in_body")
+    assert w.writes() == []
+    assert SITE_TOKEN not in json.dumps([err.message, err.details])
+
+
+def test_no_hint_when_the_plan_assigned_and_the_transition_is_rejected(world: World) -> None:
+    world.fake.inject(Fault("status", method="POST", path="/transitions", status=400, times=1))
+    action = act("DEMO-1", to="In Progress", assign="me")
+    err = world.fail(action, yes=True, expect_plan=world.hash_of(action))
+    assert world.fake.tickets["DEMO-1"].assignee == ME_ACCOUNT
+    assert "reason_hint" not in json.dumps(err.details)
+
+
+def test_no_hint_for_a_non_400_refusal_of_an_unassigned_ticket(world: World) -> None:
+    world.fake.inject(Fault("status", method="POST", path="/transitions", status=403, times=1))
+    action = act("DEMO-1", to="In Progress")
+    err = world.fail(action, yes=True, expect_plan=world.hash_of(action))
+    assert err.exit == 12
+    assert "reason_hint" not in json.dumps(err.details)

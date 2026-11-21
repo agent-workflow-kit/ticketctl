@@ -42,11 +42,16 @@ from .fieldload import load_resolutions, load_site_fields
 from .fieldmap import MAX_CANDIDATES, SiteFields
 from .flags import Globals
 from .plan import Planned, ShownText, Step, canonical_bytes
-from .readutil import hide_field_ids, object_error
+from .readutil import hide_field_ids, object_error, warn_incomplete
 from .runtime import load_runtime
 from .sanitize import CAPS, GRAMMARS, query, sanitize_field, sanitize_line, segment
 from .setconvert import FieldValue, ValueContext, convert_all
-from .transitionscmd import TRANSITIONS_TEMPLATE, transition_list
+from .transitionscmd import (
+    MAX_TRANSITIONS,
+    TRANSITIONS_TEMPLATE,
+    transition_list,
+    transition_object,
+)
 from .writeflow import Context, PrepareContext, StepResult, WriteGateway, raise_for_write
 
 ISSUE_TEMPLATE = "/rest/api/3/issue/{key}"
@@ -122,13 +127,15 @@ def _read_ticket(ctx: Context, key: str) -> TicketState:
     category = status.get("statusCategory")
     cat = category.get("key") if isinstance(category, dict) else None
     if cat not in ("new", "indeterminate", "done"):
-        raise TicketctlError("provider_changed", "the ticket has no readable status category")
+        # Jira also has the category key "undefined"; it is not a closed ticket.
+        cat = "indeterminate"
     kind = fields.get("issuetype")
     if not isinstance(kind, dict) or not isinstance(kind.get("subtask", False), bool):
         raise TicketctlError("provider_changed", "the ticket has no readable type")
     assignee = fields.get("assignee")
     assignee_id = assignee.get("accountId") if isinstance(assignee, dict) else None
     priority = fields.get("priority")
+    priority_name = priority.get("name") if isinstance(priority, dict) else None
     return TicketState(
         key,
         {"name": _text(status.get("name"), "status"), "category": str(cat)},
@@ -136,14 +143,15 @@ def _read_ticket(ctx: Context, key: str) -> TicketState:
         assignee_id if GRAMMARS["account_id"].matches(assignee_id) else None,
         _text(kind.get("name"), "type"),
         bool(kind.get("subtask", False)),
-        _text(priority.get("name"), "priority") if isinstance(priority, dict) else None,
+        _text(priority_name, "priority") if priority_name else None,
     )
 
 
 @dataclass
 class Listing:
     transitions: list[dict[str, Any]]
-    raw: dict[str, dict[str, Any]]  # by transition id
+    raw: dict[str, dict[str, Any]]  # by transition id: the raw item of the kept transition
+    marks: set[str] = field(default_factory=set)
 
 
 def _read_transitions(ctx: Context, key: str) -> Listing:
@@ -155,13 +163,16 @@ def _read_transitions(ctx: Context, key: str) -> Listing:
     )
     if not 200 <= res.status < 300:
         raise object_error(res.status, "ticket")
-    listed = transition_list(res.data, set())
+    marks: set[str] = set()
+    listed = transition_list(res.data, marks)
+    # The raw item is the one transition_list kept: the first readable item of that id.
     raw: dict[str, dict[str, Any]] = {}
     items = res.data.get("transitions") if isinstance(res.data, dict) else None
-    for item in items if isinstance(items, list) else []:
-        if isinstance(item, dict) and str(item.get("id")) not in raw:
-            raw[str(item.get("id"))] = item
-    return Listing(listed, raw)
+    for item in (items if isinstance(items, list) else [])[:MAX_TRANSITIONS]:
+        kept = transition_object(item, set())
+        if kept is not None and kept["id"] not in raw:
+            raw[kept["id"]] = item
+    return Listing(listed, raw, marks)
 
 
 def _targets(transitions: list[dict[str, Any]]) -> list[str]:
@@ -248,9 +259,8 @@ class TransitionAction:
         if self.transition_id is not None:
             listing = _read_transitions(ctx, self.key)
             chosen = next((t for t in listing.transitions if t["id"] == self.transition_id), None)
-            if (
-                chosen is None
-            ):  # rule 1: an id the live list lacks is refused even when it is a no-op
+            if chosen is None:  # rule 1: an id the live list lacks is refused even for a no-op
+                warn_incomplete(ctx.rt, "the transitions", listing.marks)
                 raise self._no_such(listing)
             at_target = _same(chosen["to"]["name"], ticket.status["name"])
         else:
@@ -265,6 +275,12 @@ class TransitionAction:
                     self._errors.append(self._ambiguous(hits))
                 else:
                     self._errors.append(self._no_such(listing))
+        if (
+            listing is not None
+            and listing.marks
+            and (chosen is None or "required_fields" in listing.marks)
+        ):
+            warn_incomplete(ctx.rt, "the transitions", listing.marks)
         send_transition = not at_target
 
         # --- assign ---
@@ -481,7 +497,11 @@ class TransitionAction:
             )
             return wanted[:NAME_CAP]
         if allowed is None:
-            allowed = load_resolutions(ctx.rt, ctx.site, ctx.gw).names  # type: ignore[arg-type]
+            try:
+                allowed = load_resolutions(ctx.rt, ctx.site, ctx.gw).names
+            except TicketctlError as err:  # raised by check, after --if-status
+                self._errors.append(err)
+                return wanted
         hits = sorted({a for a in allowed if _same(a, wanted)})
         if len(hits) == 1:
             return hits[0]
@@ -498,6 +518,14 @@ class TransitionAction:
         return wanted
 
     def _fields(self, ctx: Context, meta: tuple[setspec.MetaField, ...]) -> _Fields:
+        """The ``--field`` values; an error is recorded for ``check`` (after ``--if-status``)."""
+        try:
+            return self._collect_fields(ctx, meta)
+        except TicketctlError as err:
+            self._errors.append(err)
+            return _Fields()
+
+    def _collect_fields(self, ctx: Context, meta: tuple[setspec.MetaField, ...]) -> _Fields:
         out = _Fields()
         if not self.assignments:
             return out
@@ -508,7 +536,7 @@ class TransitionAction:
         site_fields: SiteFields = load_site_fields(
             ctx.rt,
             ctx.site,
-            ctx.gw,  # type: ignore[arg-type]
+            ctx.gw,
             needs=needs,
         )
         resolved = setspec.resolve_assignments(
@@ -522,7 +550,8 @@ class TransitionAction:
                 if r.assignment.name in LOGICAL_FIELDS or r.assignment.name in extra_names
                 else hide_field_ids(r.field.name)
             )
-            out.names.append(r.field.name)
+            if value.payload is not None and value.payload != []:
+                out.names.append(r.field.name)  # a cleared value does not supply a field
             if kind == "comment":
                 if value.payload is None:
                     raise TicketctlError(

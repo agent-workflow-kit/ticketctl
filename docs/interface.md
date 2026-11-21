@@ -287,7 +287,7 @@ The order is fixed: the `pre-` hook runs after the confirmation, so a hook can v
 | `sprint_moved` | a sprint add moves the ticket out of another sprint |
 | `body_near_limit` | the body is over 90% of `limits.body_chars` |
 | `duplicate_dedupe_matches` | several own tickets matched a create dedupe label |
-| `assign_skipped` | `--assign` was not applied because the ticket has an assignee |
+| `assign_skipped` | `--assign` was not applied because the ticket has an assignee other than the requested target |
 | `audit_incomplete` | a result only: an outcome record could not be written |
 | `decision_ids_truncated` | a result only: hook decision ids beyond 16 in all (flag ids first) were dropped |
 
@@ -322,6 +322,7 @@ The remaining rules of the command, where the paragraphs above leave room:
 
 - `--assign` takes `me` or an account id; `none` and any other spelling of `me` or `none` exit 2 `invalid_argument` (an assign that only acts on a free ticket cannot unassign). The plan warns `assign_skipped` only when the ticket has an assignee other than the requested target (a ticket already assigned to the target needs nothing and says nothing), so a re-run after the assign landed does not warn.
 - The checks run in this order: the live ticket and, while a transition step can remain, the transition list are read; a `--transition-id` that the list lacks is exit 20 `no_such_transition` even for a no-op; a ticket already in the target is `unchanged` (or has the assign step alone); then `--if-status`; then `no_such_transition` or `ambiguous_transition` for `--to` (`details.available_targets`, and `details.candidates` as `id: name`), `needs_resolution` (`details.candidates` lists the allowed resolutions when the transition lists them), an invalid resolution (exit 22 `invalid_value` with `details.candidates`; a resolution is matched case-insensitively and sent in the provider's spelling) and `missing_required_fields` (the required fields of the transition that `--field` did not give, `resolution` excluded). `--resolution` and `--field` are ignored for an `unchanged` result and for a plan that holds only the assign step.
+- The candidate lists of these errors (`available_targets`, the `candidates` of `ambiguous_transition`, `needs_resolution` and an invalid resolution) are sorted and capped at 50 entries.
 - `--field` names resolve against the transition's own field list and the values are converted once; a field of schema type `comment` is posted as `update.comment` (an `add` operation), every other field goes in `fields`. Their `changes` entries have `from: null` (the current values are not read) and are named by the typed logical or `extra` name, else by the field's display name; their value hashes are in the intent.
 - The intent holds the resolved target status name, the resolved transition id (null when no step sends one), the canonical resolution, the effective assign target and the `--field` value hashes; the facts hold the lower-cased current status and an assignee only when it is neither `me` nor the requested target.
 
