@@ -132,6 +132,8 @@ class Deadline:
     def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._end = clock() + seconds
+        self._pauses = 0  # nesting depth: only the outermost block extends the deadline
+        self._paused_at = 0.0
 
     def remaining(self) -> float:
         return max(0.0, self._end - self._clock())
@@ -143,11 +145,15 @@ class Deadline:
     @contextlib.contextmanager
     def paused(self) -> Iterator[None]:
         """The time spent inside the block does not count (a prompt, a hook run)."""
-        started = self._clock()
+        if self._pauses == 0:
+            self._paused_at = self._clock()
+        self._pauses += 1
         try:
             yield
         finally:
-            self._end += max(0.0, self._clock() - started)
+            self._pauses -= 1
+            if self._pauses == 0:
+                self._end += max(0.0, self._clock() - self._paused_at)
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")

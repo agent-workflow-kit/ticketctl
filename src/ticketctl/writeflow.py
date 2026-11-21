@@ -738,10 +738,12 @@ class _Run:
             )
 
         lock = self._lock(ctx, planned)
-        lock.__enter__()  # a failure to take the lock is before any send: it propagates
+        taken = False
         interrupted: _Interrupt | None = None
         outcome = _Outcome(None, None, None)
         try:  # steps 7 and 8; the finally is the one release point for every exit
+            lock.__enter__()  # a failure to take the lock is before any send: it propagates
+            taken = True
             fresh, fresh_plan = self._read(ctx, fresh=True)
             if not fresh.steps:
                 return self._unchanged(ctx, fresh, decision_ids)
@@ -755,7 +757,11 @@ class _Run:
         except _Interrupt as stop:
             interrupted = stop
         finally:
-            self._release(lock)
+            stopped = self._release(lock) if taken else None
+            if stopped is not None:  # an interrupt in the release: the hook still runs
+                info = interrupted.info if interrupted is not None else outcome.info
+                self._post(plan, planned, ctx, decision_ids, _Outcome(None, None, info))
+                raise stopped
         if interrupted is not None:
             self._post(plan, planned, ctx, decision_ids, _Outcome(None, None, interrupted.info))
             raise interrupted.exc from None
@@ -774,12 +780,16 @@ class _Run:
         if cut and "decision_ids_truncated" not in self.extra_warnings:
             self.extra_warnings.append("decision_ids_truncated")
 
-    def _release(self, lock: AbstractContextManager[None]) -> None:
-        """A release failure after the outcome is a warning: the result must survive it."""
+    def _release(self, lock: AbstractContextManager[None]) -> BaseException | None:
+        """A release failure after the outcome is a warning: the result must survive it. An
+        interrupt in the release is returned for the caller to raise after the post hook."""
         try:
             lock.__exit__(None, None, None)
         except Exception:  # noqa: BLE001 - the write landed or was refused; say so, do not hide it
             self.rt.warn("warning: the lock could not be released")
+        except BaseException as exc:  # noqa: BLE001
+            return exc
+        return None
 
     def _lock(self, ctx: Context, planned: Planned) -> AbstractContextManager[None]:
         if planned.dedupe_key is None:
@@ -856,14 +866,68 @@ class _Run:
             return _Outcome(None, self._audit_failed(exc), None)
         done: list[dict[str, str]] = []
         provider_ids: list[str] = []
-        created_key: str | None = None
+        st = _SendState()
+        try:  # any interrupt anywhere in the send: the post hook still runs (_interrupt_info)
+            return self._send_steps(
+                ctx, planned, plan_sha, decision_ids, log, done, provider_ids, st
+            )
+        except _Interrupt:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - a gap between two statements of the send
+            steps = planned.steps
+            if st.number and st.sent and len(done) < st.number:  # the write landed, unrecorded
+                done.append({"kind": steps[st.number - 1].kind, "status": "done"})
+                st.landed = True
+            elif st.number and len(done) < st.number:  # the step in flight has no outcome yet
+                st.unknown = st.calling  # the request may have gone out
+                code = "outcome_unknown" if st.unknown else "internal"
+                st.error = {"code": code, "reason": None}
+                done.append({"kind": steps[st.number - 1].kind, "status": "failed", "code": code})
+            info = None
+            if st.started:
+                info = self._interrupt_info(planned, done, provider_ids, st)
+            raise _Interrupt(exc, info) from None
+
+    def _interrupt_info(
+        self, planned: Planned, done: list[dict[str, str]], provider_ids: list[str], st: _SendState
+    ) -> PostInfo:
+        """What the post hook is told when the command ends here: ``done`` holds the steps up to
+        and including the failing one, the rest are listed as skipped. Any ``partial`` has
+        ``changed`` true (a step landed); only ``unknown`` has null."""
+        steps = planned.steps
+        kinds = _kinds(
+            [*done, *({"kind": s.kind, "status": "skipped"} for s in steps[len(done) :])]
+        )
+        key = st.created_key or planned.key or planned.existing_key
+        failed = any(s["status"] == "failed" for s in done)
+        if st.landed:
+            if not failed and len(done) == len(steps):
+                return PostInfo("ok", None, kinds, provider_ids, True, key)
+            error = st.error or {"code": "internal", "reason": None}
+            return PostInfo("partial", error, kinds, provider_ids, True, key)
+        error = st.error or {"code": "internal", "reason": None}
+        if st.unknown:
+            return PostInfo("unknown", error, kinds, provider_ids, None)
+        return PostInfo("failed", error, kinds, provider_ids, False)
+
+    def _send_steps(
+        self,
+        ctx: Context,
+        planned: Planned,
+        plan_sha: str,
+        decision_ids: list[str],
+        log: _Audit,
+        done: list[dict[str, str]],
+        provider_ids: list[str],
+        st: _SendState,
+    ) -> _Outcome:
         comment_id: str | None = None
-        landed = False
         # the error, whether the outcome is unknown, whether the audit refused the send
         failure: tuple[TicketctlError, bool, bool] | None = None
         steps = planned.steps
 
         for number, step in enumerate(steps, start=1):
+            st.number, st.calling, st.sent = number, False, False
             try:
                 log.append(
                     number,
@@ -880,61 +944,40 @@ class _Run:
                 failure = (err, False, True)
                 done.append({"kind": step.kind, "status": "failed", "code": err.code})
                 break
-            except BaseException as exc:  # an interrupt before this step was sent: nothing is sent
-                info = None
-                if landed:
-                    done.append({"kind": step.kind, "status": "failed", "code": "internal"})
-                    done.extend({"kind": s.kind, "status": "skipped"} for s in steps[number:])
-                    info = PostInfo(
-                        "partial", {"code": "internal", "reason": None}, _kinds(done),
-                        provider_ids, True,
-                    )  # fmt: skip
-                raise _Interrupt(exc, info) from None
+            st.started = True  # an interrupt inside the first append runs no hook (interface.md)
             try:
+                st.calling = True
                 res = step.send(ctx.gw)
             except BaseException as exc:  # noqa: BLE001 - an outcome record is written for all
                 err, unknown = self._classify(exc)
-                result_name = "unknown" if unknown else ("partial" if landed else "failed")
+                result_name = "unknown" if unknown else ("partial" if st.landed else "failed")
                 done.append({"kind": step.kind, "status": "failed", "code": err.code})
-                interrupt = None
-                if not isinstance(exc, Exception):
-                    interrupt = PostInfo(
-                        "partial" if landed else "unknown",
-                        {"code": err.code, "reason": err.reason},
-                        _kinds(done),
-                        provider_ids,
-                        None,
-                    )
+                st.error, st.unknown = {"code": err.code, "reason": err.reason}, unknown
+                info = self._interrupt_info(planned, done, provider_ids, st)
                 self._outcome(
                     log, number, step, result_name,
                     changed=None if unknown else False,
                     reason=err.code, provider_ids=[], key=None,
-                    interrupted=interrupt,
+                    interrupted=info,
                 )  # fmt: skip
-                if interrupt is not None:
-                    raise _Interrupt(exc, interrupt) from None
+                if not isinstance(exc, Exception):
+                    raise _Interrupt(exc, info) from None
                 failure = (err, unknown, False)
                 break
+            st.sent = True
             ids = [i for i in res.provider_ids if GRAMMARS["provider_id"].matches(i)]
             key = res.key if res.key and audit.TICKET_KEY.fullmatch(res.key) else None
-            landed = True
+            st.landed = True
             provider_ids.extend(ids)
-            created_key = created_key or key
+            st.created_key = st.created_key or key
             comment_id = comment_id or res.comment_id
             done.append({"kind": step.kind, "status": "done"})
-            finished = number == len(steps)
             self._outcome(
                 log, number, step, "ok", changed=True, reason=None, provider_ids=ids,
                 key=key or planned.key,
-                interrupted=PostInfo(
-                    "ok" if finished else "partial",
-                    None if finished else {"code": "internal", "reason": None},
-                    _kinds(
-                        [*done, *({"kind": s.kind, "status": "skipped"} for s in steps[number:])]
-                    ),
-                    provider_ids, True, created_key,
-                ),
+                interrupted=self._interrupt_info(planned, done, provider_ids, st),
             )  # fmt: skip
+        st.number = 0  # the loop is over: no step is in flight
 
         for step in steps[len(done) :]:
             done.append({"kind": step.kind, "status": "skipped"})
@@ -943,26 +986,22 @@ class _Run:
             *self.extra_warnings,
             *(["audit_incomplete"] if self.audit_incomplete else []),
         ]
-        key = created_key or planned.key or planned.existing_key
+        key = st.created_key or planned.key or planned.existing_key
 
         if failure is None:
             result = result_object(
                 ctx, planned, result="ok", steps=done, key=key, comment_id=comment_id,
                 attempt_id=ctx.attempt_id, decision_ids=decision_ids, warnings=warnings,
             )  # fmt: skip
-            info = PostInfo("ok", None, _kinds(done), provider_ids, True, key)
-            return _Outcome(result, None, info)
+            return _Outcome(result, None, self._interrupt_info(planned, done, provider_ids, st))
 
         err, unknown, audit_refused = failure
         self._retry_rules(err, planned)
-        error_info = {"code": err.code, "reason": err.reason}
-        if not landed:
+        st.error, st.unknown = {"code": err.code, "reason": err.reason}, unknown
+        if not st.landed:
             if audit_refused:  # no attempted record exists: no attempt_id, no post hook
                 return _Outcome(None, err, None)
-            info = PostInfo(
-                "unknown" if unknown else "failed", error_info, _kinds(done), provider_ids,
-                None if unknown else False,
-            )  # fmt: skip
+            info = self._interrupt_info(planned, done, provider_ids, st)
             return _Outcome(None, _with_details(err, attempt_id=ctx.attempt_id), info)
         partial = result_object(
             ctx, planned, result="partial", steps=done, key=key, comment_id=comment_id,
@@ -980,9 +1019,7 @@ class _Run:
             site=ctx.site,
             key=key,
         )
-        info = PostInfo(
-            "partial", error_info, _kinds(done), provider_ids, None if unknown else True, key
-        )
+        info = self._interrupt_info(planned, done, provider_ids, st)
         return _Outcome(None, envelope, info)
 
     def _outcome(
@@ -1058,6 +1095,20 @@ class _Run:
         except Exception:  # noqa: BLE001 - a post hook is never fatal
             with contextlib.suppress(Exception):
                 self.rt.warn("warning: a post hook failed")
+
+
+@dataclass
+class _SendState:
+    """Where a send stands, for the post hook when an interrupt ends it anywhere."""
+
+    number: int = 0  # the 1-based step in flight (0: none)
+    calling: bool = False  # the in-flight step's send was called
+    sent: bool = False  # the in-flight step's request returned
+    started: bool = False  # an attempted record was written: a post hook is owed
+    landed: bool = False
+    unknown: bool = False
+    error: dict[str, str | None] | None = None
+    created_key: str | None = None
 
 
 class _Interrupt(Exception):

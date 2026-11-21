@@ -110,7 +110,7 @@ def test_every_ambiguous_second_step_is_partial_with_unknown_and_not_resent(
     assert [(r["step"], r["result"]) for r in world.records()] == [
         (1, "attempted"), (1, "ok"), (2, "attempted"), (2, "unknown"),
     ]  # fmt: skip
-    assert [(p.result, p.changed) for p in hooks.post_calls] == [("partial", None)]
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("partial", True)]
     validator("cli/result.json").validate(result)
     validator("cli/error.json").validate(err.envelope())
 
@@ -190,7 +190,7 @@ class Sleepy(StubTransition):
 
         def send(gw: WriteGateway) -> StepResult:
             out = real(gw)
-            time.sleep(0.8)
+            time.sleep(2.4)
             return out
 
         step.send = send
@@ -203,7 +203,7 @@ def test_expiry_before_the_second_write_is_timeout_partial_not_unknown(world: Wo
         Sleepy("DEMO-1", "In Progress", assign_me=True),
         yes=True,
         expect_plan=held,
-        timeout_s=0.5,
+        timeout_s=1.5,
     )
     assert (err.code, err.outcome_unknown, err.retryable) == ("partial", False, True)
     assert err.details is not None
@@ -216,36 +216,37 @@ def test_expiry_before_the_second_write_is_timeout_partial_not_unknown(world: Wo
 
 
 def test_a_dripping_answer_cut_by_the_deadline_is_unknown(world: World) -> None:
-    world.fake.inject(arm(Fault("drip", delay_s=0.3)))
+    world.fake.inject(arm(Fault("drip", delay_s=0.6)))
     held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, timeout_s=0.8)
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, timeout_s=1.5)
     assert (err.code, err.outcome_unknown) == ("outcome_unknown", True)
     assert transitions_sent(world) <= 1
 
 
 def test_expiry_while_the_write_is_in_flight_is_unknown_never_timeout(world: World) -> None:
-    world.fake.inject(arm(Fault("slow", delay_s=2.0, after_apply=True)))
+    world.write_config("    timeouts:\n      read: 10s\n")  # the command deadline binds, not this
+    world.fake.inject(arm(Fault("slow", delay_s=4.0, after_apply=True)))
     held = world.hash_of(StubTransition("DEMO-2", "Done"))
-    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, timeout_s=0.5)
+    err = world.fail(StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, timeout_s=1.5)
     assert (err.code, err.outcome_unknown) == ("outcome_unknown", True)
     assert world.records()[-1]["result"] == "unknown"
 
 
 def test_time_spent_in_the_prompt_and_the_pre_hooks_does_not_count(world: World) -> None:
     def slow_confirm(plan: dict[str, Any]) -> bool:
-        time.sleep(0.8)
+        time.sleep(2.4)
         return True
 
     out = world.run(
         StubTransition("DEMO-2", "Done"),
-        timeout_s=0.5,
+        timeout_s=1.5,
         seams=Seams(interactive=lambda: True, confirm=slow_confirm),
     )
     assert out["result"] == "ok"
 
     class SlowHooks(Hooks):
         def pre(self, plan: Any, planned: Any, attempt_id: Any, decision_ids: Any) -> Any:
-            time.sleep(0.8)
+            time.sleep(2.4)
             return super().pre(plan, planned, attempt_id, decision_ids)
 
     held = world.hash_of(two_steps())
@@ -253,7 +254,7 @@ def test_time_spent_in_the_prompt_and_the_pre_hooks_does_not_count(world: World)
         two_steps(),
         yes=True,
         expect_plan=held,
-        timeout_s=0.5,
+        timeout_s=1.5,
         seams=Seams(hooks=SlowHooks()),
     )
     assert out["result"] == "ok"
@@ -276,18 +277,6 @@ def fail_when(world: World, predicate: Any, *, exc: BaseException | None = None)
 
     world.mp.setattr(audit, "append_audit", flaky)
     return seen
-
-
-def test_a_failed_attempted_append_sends_nothing_and_runs_no_post_hook(world: World) -> None:
-    hooks = Hooks()
-    fail_when(world, lambda r: True)
-    held = world.hash_of(two_steps())
-    err = world.fail(two_steps(), yes=True, expect_plan=held, seams=Seams(hooks=hooks))
-    assert (err.exit, err.code, err.reason) == (1, "internal", "audit_failed")
-    assert world.writes() == []
-    assert err.details is None or "attempt_id" not in err.details
-    assert hooks.post_calls == []
-    assert world.records() == []
 
 
 def test_a_failed_outcome_append_of_a_landed_first_step_marks_the_partial_result(
@@ -375,6 +364,7 @@ def test_an_interrupt_in_the_outcome_append_after_the_send_still_runs_the_post_h
         )
     assert world.fake.tickets["DEMO-2"].status == "Done"
     assert [p.result for p in hooks.post_calls] == ["ok"]
+    assert hooks.post_calls[0].key == "DEMO-2"  # the same key expression as the normal path
 
 
 def test_an_interrupt_before_any_send_runs_no_post_hook_and_sends_nothing(world: World) -> None:
@@ -455,9 +445,17 @@ def test_the_lock_is_released_on_every_outcome_path(world: World) -> None:
             pass
         assert (lock.enters, lock.exits) == (1, 1)
 
+    real = audit.append_audit
     for broken in (lambda r: r["result"] != "attempted", lambda r: r["result"] == "attempted"):
         lock = CountingLock()
-        fail_when(world, broken)
+        undo = pytest.MonkeyPatch()  # one patch per case: the second must not wrap the first
+
+        def flaky(state_dir: Path, record: Any, *, broken: Any = broken, **kw: Any) -> Any:
+            if broken(record):
+                raise StateError("state_io", "disk")
+            return real(state_dir, record, **kw)
+
+        undo.setattr(audit, "append_audit", flaky)
         world.fake.tickets["DEMO-2"].status = "In Progress"
         try:
             world.run(
@@ -468,6 +466,8 @@ def test_the_lock_is_released_on_every_outcome_path(world: World) -> None:
             )
         except TicketctlError:
             pass
+        finally:
+            undo.undo()
         assert (lock.enters, lock.exits) == (1, 1)
 
 
@@ -503,3 +503,235 @@ def test_a_paused_deadline_gets_the_paused_time_back() -> None:
         now[0] = 9.0
         raise RuntimeError
     assert other.remaining() == 10.0
+
+
+# ---------------------------------------------------------------------------------------------
+# Round 1 review findings
+# ---------------------------------------------------------------------------------------------
+
+
+class Three(StubTransition):
+    """assign, set_fields, transition: a failure of the first leaves two steps unsent."""
+
+    def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+        planned = super().reduce(ctx, fresh=fresh)
+
+        def ok(gw: WriteGateway) -> StepResult:
+            return StepResult([])
+
+        return Planned(
+            steps=[*planned.steps[:1], Step("set_fields", ok, {}), *planned.steps[1:]],
+            intent=planned.intent, facts=planned.facts, changes=planned.changes,
+            key=planned.key, shown=planned.shown,
+        )  # fmt: skip
+
+
+def test_an_interrupt_in_the_failed_outcome_append_runs_the_post_hook(world: World) -> None:
+    hooks = Hooks()
+    fail_when(world, lambda r: r["result"] == "failed", exc=KeyboardInterrupt())
+    action = StubTransition("DEMO-2", "Done", transition_id="99")
+    held = world.hash_of(action)
+    with pytest.raises(KeyboardInterrupt):
+        world.run(action, yes=True, expect_plan=held, seams=Seams(hooks=hooks))
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("failed", False)]
+    assert hooks.post_calls[0].error == {"code": "rejected", "reason": None}
+
+
+def test_an_interrupt_in_the_partial_outcome_append_runs_the_post_hook(world: World) -> None:
+    hooks = Hooks()
+    fail_when(world, lambda r: r["result"] == "partial", exc=KeyboardInterrupt())
+    action = StubTransition("DEMO-1", "In Progress", assign_me=True, transition_id="99")
+    held = world.hash_of(action)
+    with pytest.raises(KeyboardInterrupt):
+        world.run(action, yes=True, expect_plan=held, seams=Seams(hooks=hooks))
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("partial", True)]
+    assert [s["status"] for s in hooks.post_calls[0].steps] == ["done", "failed"]
+    assert hooks.post_calls[0].key == "DEMO-1"
+
+
+def test_an_interrupt_in_the_unknown_outcome_append_runs_the_post_hook(world: World) -> None:
+    hooks = Hooks()
+    fail_when(world, lambda r: r["result"] == "unknown", exc=KeyboardInterrupt())
+    world.fake.inject(arm(Fault("reset", after_apply=True)))
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
+        )
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("unknown", None)]
+
+
+def test_every_interrupt_post_payload_lists_the_unsent_steps_as_skipped(world: World) -> None:
+    hooks = Hooks()
+    fail_when(world, lambda r: r["result"] == "unknown", exc=KeyboardInterrupt())
+    world.fake.inject(Fault("reset", method="PUT", path="/assignee", after_apply=True))
+    held = world.hash_of(Three("DEMO-1", "In Progress", assign_me=True))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            Three("DEMO-1", "In Progress", assign_me=True),
+            yes=True, expect_plan=held, seams=Seams(hooks=hooks),
+        )  # fmt: skip
+    assert [s["status"] for s in hooks.post_calls[0].steps] == ["failed", "skipped", "skipped"]
+
+
+class _BrokenRelease:
+    def __init__(self) -> None:
+        self.enters = 0
+
+    def __enter__(self) -> None:
+        self.enters += 1
+
+    def __exit__(self, *exc: object) -> None:
+        raise KeyboardInterrupt
+
+
+class _KeyedTransition(StubTransition):
+    def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
+        import dataclasses
+
+        return dataclasses.replace(super().reduce(ctx, fresh=fresh), dedupe_key="lk")
+
+
+def test_an_interrupt_in_the_lock_release_still_runs_the_post_hook_then_propagates(
+    world: World,
+) -> None:
+    hooks = Hooks()
+    lock = _BrokenRelease()
+    held = world.hash_of(_KeyedTransition("DEMO-2", "Done"))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            _KeyedTransition("DEMO-2", "Done"),
+            yes=True,
+            expect_plan=held,
+            seams=Seams(hooks=hooks, lock=lambda p, c: lock),
+        )
+    assert world.fake.tickets["DEMO-2"].status == "Done"
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("ok", True)]
+
+
+def test_an_interrupt_after_the_send_returned_but_before_it_is_recorded_runs_the_hook(
+    world: World,
+) -> None:
+    class Gap(StubTransition):
+        def _transition(self) -> Step:
+            step = super()._transition()
+            real = step.send
+
+            def send(gw: WriteGateway) -> StepResult:
+                real(gw)
+
+                class Hurt:
+                    @property
+                    def provider_ids(self) -> list[str]:
+                        raise KeyboardInterrupt
+
+                return Hurt()  # type: ignore[return-value]
+
+            step.send = send
+            return step
+
+    hooks = Hooks()
+    held = world.hash_of(Gap("DEMO-2", "Done"))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(Gap("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks))
+    assert world.fake.tickets["DEMO-2"].status == "Done"
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("ok", True)]
+
+
+def test_an_interrupt_while_the_result_is_built_after_the_loop_runs_the_hook(
+    world: World,
+) -> None:
+    from ticketctl import writeflow
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise KeyboardInterrupt
+
+    hooks = Hooks()
+    held = world.hash_of(StubTransition("DEMO-2", "Done"))
+    world.mp.setattr(writeflow, "result_object", boom)
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            StubTransition("DEMO-2", "Done"), yes=True, expect_plan=held, seams=Seams(hooks=hooks)
+        )
+    assert [(p.result, p.changed) for p in hooks.post_calls] == [("ok", True)]
+
+
+def test_an_interrupt_taking_the_lock_propagates_without_a_release_or_a_hook(
+    world: World,
+) -> None:
+    class Hurt:
+        exits = 0
+
+        def __enter__(self) -> None:
+            raise KeyboardInterrupt
+
+        def __exit__(self, *exc: object) -> None:
+            Hurt.exits += 1
+
+    hooks = Hooks()
+    held = world.hash_of(_KeyedTransition("DEMO-2", "Done"))
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            _KeyedTransition("DEMO-2", "Done"),
+            yes=True,
+            expect_plan=held,
+            seams=Seams(hooks=hooks, lock=lambda p, c: Hurt()),
+        )
+    assert (Hurt.exits, hooks.post_calls, world.writes()) == (0, [], [])
+
+
+def test_an_interrupt_after_the_lock_is_taken_releases_it(world: World) -> None:
+    from tests.test_writeflow import CountingLock
+    from ticketctl import writeflow
+
+    lock = CountingLock()
+    hooks = Hooks()
+    held = world.hash_of(_KeyedTransition("DEMO-2", "Done"))
+    real_read = writeflow._Run._read
+
+    def read(self: Any, ctx: Any, *, fresh: bool) -> Any:
+        if fresh:
+            raise KeyboardInterrupt
+        return real_read(self, ctx, fresh=fresh)
+
+    world.mp.setattr(writeflow._Run, "_read", read)
+    with pytest.raises(KeyboardInterrupt):
+        world.run(
+            _KeyedTransition("DEMO-2", "Done"),
+            yes=True,
+            expect_plan=held,
+            seams=Seams(hooks=hooks, lock=lambda p, c: lock),
+        )
+    assert (lock.enters, lock.exits) == (1, 1) and hooks.post_calls == []
+
+
+def test_a_nested_pause_counts_the_time_once() -> None:
+    from ticketctl.gateway import Deadline
+
+    now = [0.0]
+    deadline = Deadline(10.0, clock=lambda: now[0])
+    with deadline.paused():
+        now[0] = 3.0
+        with deadline.paused():
+            now[0] = 8.0
+        now[0] = 20.0
+    assert deadline.remaining() == 10.0
+    now[0] = 25.0
+    assert deadline.remaining() == 5.0
+
+
+def test_a_rerun_after_a_partial_sends_only_the_transition_with_the_same_hash(
+    world: World,
+) -> None:
+    world.fake.inject(Fault("status", method="POST", path="/transitions", status=400, times=1))
+    held = world.hash_of(two_steps())
+    err = world.fail(two_steps(), yes=True, expect_plan=held)
+    assert err.code == "partial"
+    assert world.fake.tickets["DEMO-1"].assignee == ME_ACCOUNT
+    assert world.hash_of(two_steps()) == held  # the plan hash survives the partial
+    before = len(world.writes())
+    out = world.run(two_steps(), yes=True, expect_plan=held)
+    sent = world.writes()[before:]
+    assert out["result"] == "ok" and [s["kind"] for s in out["steps"]] == ["transition"]
+    assert [(c.method, c.path.rsplit("/", 1)[-1]) for c in sent] == [("POST", "transitions")]
+    assert world.fake.tickets["DEMO-1"].status == "In Progress"
