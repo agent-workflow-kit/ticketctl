@@ -1,4 +1,5 @@
 {
+  "cli/comment.json": "c9d54809f86e6963497dcc60d738c2b65e06099fd0f9c3787ed86d883794742c",
   "cli/comments.json": "d488ec3b67512ba568bccc8772452c69f2d010235afc768bb79fc8dccce75041",
   "cli/error.json": "097d2e2a92d31a140e99e5df7210556db43402d83a9e89bd90de3ea16aa632db",
   "cli/export.json": "60c482e3a9064e4169886fd936fa9e54118ab36589a94ccfdcbb9553e16a8a16",
@@ -16,5 +17,7 @@
   "cli/transition.json": "e696319dfc2c8a6c1fc270d57a707d7a9d7d328e4df1bf2878f28eccdc920243",
   "cli/transitions.json": "30f8108cf31fff3e71c0a8ed41637a2b40df18a965e31bdaf64fd92df538e8e8",
   "cli/validate.json": "46fcc32646332cea3f346c3ea7b3a614d4baa5543119a53f8c5ea0756f268431",
-  "cli/whoami.json": "3ce9034afc4ed222aa032f9ad47a0d479c5f6089a77df54d7ddeed499fde08db"
+  "cli/whoami.json": "3ce9034afc4ed222aa032f9ad47a0d479c5f6089a77df54d7ddeed499fde08db",
+  "hooks/post-comment.json": "1d7a130add0edcdfb614daf1ed7c569f6c99f417c0464641843853ffb26ae70f",
+  "hooks/pre-comment.json": "55bf26c1310ed6125260a66183328d93568287da8c92e9a119a347df94e3da62"
 }

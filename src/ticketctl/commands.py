@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import (
+    commentcmd,
     commentscmd,
     exportcmd,
     fieldscmd,
@@ -167,7 +168,12 @@ def _transition(p: argparse.ArgumentParser) -> None:
 
 def _comment(p: argparse.ArgumentParser) -> None:
     _key(p)
-    _add(p, "--body")
+    _add(
+        p,
+        "--body",
+        help="the comment text (Markdown); a body starting with '-' needs --body=TEXT "
+        "or --body-file",
+    )
     _add(p, "--body-file")
     _add(p, "--format", choices=["markdown", "adf"])
     _add(p, "--dedupe-key", type=dedupe_key_arg)
@@ -312,7 +318,9 @@ def _specs() -> list[CommandSpec]:
             _transition,
             writeflow.human,
         ),
-        CommandSpec(("comment",), w, "post a comment", _stub(29), _comment),
+        CommandSpec(
+            ("comment",), w, "post a comment", commentcmd.comment, _comment, writeflow.human
+        ),
         CommandSpec(("create",), w, "create a ticket", _stub(31), _create),
         CommandSpec(("update",), w, "update a ticket", _stub(30), _update),
         CommandSpec(("sprint", "add"), w, "add a ticket to a sprint", _stub(34), _sprint_add),
