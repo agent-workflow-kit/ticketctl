@@ -28,9 +28,10 @@ Public API:
 Both writers are closed over the schemas' key sets: a header, body, title or token field cannot be
 written because no such key exists, and each free-text value is checked against its schema
 pattern. Every string that passes is then sanitized and scrubbed (``sanitize.render``), and the
-JSON is written with ``ensure_ascii=True``. Neither file is read or written outside the flock.
+JSON is written with ``ensure_ascii=True``. Every writer holds the flock for its whole append.
 
-TODO(#36): ``export``.
+``export`` (``exportcmd.py``) is the deliberate exception: it only reads ``audit.jsonl``, without
+the flock, with the same tolerance.
 """
 
 from __future__ import annotations
@@ -127,6 +128,11 @@ def _is_int(value: object, minimum: int = 0, maximum: int | None = None) -> bool
         and value >= minimum
         and (maximum is None or value <= maximum)
     )
+
+
+def valid_seq(value: object) -> bool:
+    """True for a ``seq`` the writer accepts: an integer (not a bool) from 1 to 2**53."""
+    return _is_int(value, 1, MAX_SEQ)
 
 
 def _text(value: object, pattern: re.Pattern[str], what: str, maximum: int | None = None) -> None:

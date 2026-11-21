@@ -55,7 +55,6 @@ PENDING: dict[str, int] = {
     "cli/create.json": 31,
     "cli/sprint-add.json": 34,
     "cli/sprint-remove.json": 34,
-    "cli/export.json": 36,
     **{
         f"hooks/{when}-{kind}.json": 25
         for when in ("pre", "post")
