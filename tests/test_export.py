@@ -16,7 +16,7 @@ from tests.golden import assert_golden
 from ticketctl import audit, exportcmd, state
 from ticketctl.cli import main
 
-SECRET = "tok-sentinel-0123456789"
+CANARY = "canary-value-0123456789"
 
 
 @pytest.fixture
@@ -227,17 +227,17 @@ def test_output_is_sanitized_and_scrubbed_again(
     cfg = sd.parent / "config.yaml"
     cfg.write_text(
         "sites:\n  main:\n    url: https://example.test\n    email: a@example.test\n"
-        "    token_env: EXPORT_TEST_TOKEN\n"
+        "    token_env: EXPORT_TEST_VALUE\n"
     )
-    monkeypatch.setenv("EXPORT_TEST_TOKEN", SECRET)
+    monkeypatch.setenv("EXPORT_TEST_VALUE", CANARY)
     evil = (
-        '{"v":1,"seq":1,"ts":"2026-01-01T00:00:00Z","note":"a\\u202eb\\u0000c ' + SECRET + '",'
-        '"k\\u202e":1,"nest":[{"x":"\\u200b' + SECRET + '"}]}\n'
+        '{"v":1,"seq":1,"ts":"2026-01-01T00:00:00Z","note":"a\\u202eb\\u0000c ' + CANARY + '",'
+        '"k\\u202e":1,"nest":[{"x":"\\u200b' + CANARY + '"}]}\n'
     ).encode()
     raw(sd, evil)
     code, out, _ = run(capsys, "--config", str(cfg), "export")
     assert code == 0
-    assert SECRET not in out
+    assert CANARY not in out
     assert not re.search(r"[^\x20-\x7e\n]", out)
     rec = json.loads(out)
     assert "<U+202E>" in rec["note"] and "<U+0000>" in rec["note"] and "<redacted>" in rec["note"]
