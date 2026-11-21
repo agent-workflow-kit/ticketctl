@@ -656,6 +656,24 @@ def test_an_interrupt_while_the_result_is_built_after_the_loop_runs_the_hook(
     assert [(p.result, p.changed) for p in hooks.post_calls] == [("ok", True)]
 
 
+def test_an_interrupt_after_a_refused_attempted_append_reports_the_audit_refusal(
+    world: World,
+) -> None:
+    from ticketctl import writeflow
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise KeyboardInterrupt
+
+    hooks = Hooks()
+    fail_when(world, lambda r: r["step"] == 2 and r["result"] == "attempted")
+    held = world.hash_of(two_steps())
+    world.mp.setattr(writeflow._Run, "_retry_rules", boom)
+    with pytest.raises(KeyboardInterrupt):
+        world.run(two_steps(), yes=True, expect_plan=held, seams=Seams(hooks=hooks))
+    assert [p.result for p in hooks.post_calls] == ["partial"]
+    assert hooks.post_calls[0].error == {"code": "internal", "reason": "audit_failed"}
+
+
 def test_an_interrupt_taking_the_lock_propagates_without_a_release_or_a_hook(
     world: World,
 ) -> None:

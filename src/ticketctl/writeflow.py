@@ -885,7 +885,10 @@ class _Run:
                 done.append({"kind": steps[st.number - 1].kind, "status": "failed", "code": code})
             info = None
             if st.started:
-                info = self._interrupt_info(planned, done, provider_ids, st)
+                try:
+                    info = self._interrupt_info(planned, done, provider_ids, st)
+                except Exception:  # noqa: BLE001 - never mask the original exception
+                    info = None
             raise _Interrupt(exc, info) from None
 
     def _interrupt_info(
@@ -942,6 +945,7 @@ class _Run:
                 # Nothing may be sent without its attempted record.
                 err = self._audit_failed(exc)
                 failure = (err, False, True)
+                st.error = {"code": err.code, "reason": err.reason}
                 done.append({"kind": step.kind, "status": "failed", "code": err.code})
                 break
             st.started = True  # an interrupt inside the first append runs no hook (interface.md)
