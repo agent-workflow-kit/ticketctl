@@ -1,0 +1,88 @@
+{
+  "items": [
+    {
+      "actor_kind": "auto",
+      "author": {
+        "account_id": "acct-0001",
+        "display_name": "Fake Me"
+      },
+      "authored_by_ticketctl": true,
+      "body": "first, mine",
+      "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "created": "2026-03-01T15:00:00Z",
+      "dedupe_key_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "id": "101",
+      "own": true,
+      "truncated": false,
+      "updated": "2026-03-01T15:00:00Z"
+    },
+    {
+      "actor_kind": null,
+      "author": {
+        "account_id": "acct-0002",
+        "display_name": "Fake Other"
+      },
+      "authored_by_ticketctl": false,
+      "body": "second, other",
+      "body_sha256": null,
+      "created": "2026-03-01T15:10:00Z",
+      "dedupe_key_sha256": null,
+      "id": "102",
+      "own": false,
+      "truncated": false,
+      "updated": "2026-03-01T15:10:00Z"
+    },
+    {
+      "actor_kind": null,
+      "author": {
+        "account_id": "acct-0002",
+        "display_name": "Fake Other"
+      },
+      "authored_by_ticketctl": false,
+      "body": "third, forged",
+      "body_sha256": null,
+      "created": "2026-03-01T15:20:00Z",
+      "dedupe_key_sha256": null,
+      "id": "103",
+      "own": false,
+      "truncated": false,
+      "updated": "2026-03-01T15:20:00Z"
+    },
+    {
+      "actor_kind": null,
+      "author": {
+        "account_id": "acct-0001",
+        "display_name": "Fake Me"
+      },
+      "authored_by_ticketctl": false,
+      "body": "fourth, mine plain",
+      "body_sha256": null,
+      "created": "2026-03-01T15:30:00Z",
+      "dedupe_key_sha256": null,
+      "id": "104",
+      "own": true,
+      "truncated": false,
+      "updated": "2026-03-01T15:35:00Z"
+    },
+    {
+      "actor_kind": null,
+      "author": {
+        "account_id": "acct-0003",
+        "display_name": "Fake Stranger"
+      },
+      "authored_by_ticketctl": false,
+      "body": "fifth, stranger",
+      "body_sha256": null,
+      "created": "2026-03-01T15:40:00Z",
+      "dedupe_key_sha256": null,
+      "id": "105",
+      "own": false,
+      "truncated": false,
+      "updated": "2026-03-01T15:40:00Z"
+    }
+  ],
+  "key": "DEMO-1",
+  "site": "main",
+  "total": 5,
+  "truncated": false
+}

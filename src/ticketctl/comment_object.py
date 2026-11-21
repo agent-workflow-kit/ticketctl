@@ -3,8 +3,8 @@
 Pure logic, no I/O: :func:`comment_object` turns one provider comment (read with
 ``expand=properties``) into the object of ``schemas/defs.json#comment`` and :func:`comment_list`
 turns a comment page into the ``{items, total, truncated}`` part of ``get --comments N``. ``get``
-(``getcmd``) owns the provider call; the ``comments`` command, TODO(#18), reuses these two
-functions and adds its own paging, ``--since``, ``--own`` and ordering.
+(``getcmd``) owns the provider call; the ``comments`` command (``commentscmd``) reuses
+``comment_object`` and ``order_key`` and adds its own paging, ``--since``, ``--own`` and ordering.
 
 Rules this module settles where the interface leaves room (all conservative):
 
@@ -153,6 +153,11 @@ def comment_object(
     }
 
 
+def order_key(obj: dict[str, Any]) -> tuple[str, int, str]:
+    """Oldest-first sort key of a comment object: ``created``, then the id (numeric ids by size)."""
+    return obj["created"], len(obj["id"]), obj["id"]
+
+
 def comment_list(page: object, limit: int, me_account_id: str | None) -> CommentPage:
     """``{items, total, truncated}`` for a page read newest first with ``maxResults=limit``.
 
@@ -187,10 +192,7 @@ def comment_list(page: object, limit: int, me_account_id: str | None) -> Comment
         else:
             seen.add(obj["id"])
             kept.append((obj, own_marks))
-    kept.sort(
-        key=lambda pair: (pair[0]["created"], len(pair[0]["id"]), pair[0]["id"]),
-        reverse=True,
-    )
+    kept.sort(key=lambda pair: order_key(pair[0]), reverse=True)
     newest = kept[:limit]
     newest.reverse()
     for _, own_marks in newest:
@@ -209,4 +211,4 @@ def comment_list(page: object, limit: int, me_account_id: str | None) -> Comment
     )
 
 
-__all__ = ["MAX_COMMENTS", "CommentPage", "comment_list", "comment_object"]
+__all__ = ["MAX_COMMENTS", "CommentPage", "comment_list", "comment_object", "order_key"]
