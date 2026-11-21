@@ -423,7 +423,7 @@ def test_a_secret_in_a_title_label_or_body_is_refused_and_never_echoed(
 
 
 def test_hostile_values_are_sent_as_data(cli: Cli) -> None:
-    title = 'x" OR project = "OTHER'
+    title = 'x" OR project = "DEMO'
     code, result = cli.create(*BASE, title, "--dedupe-key", "h")
     assert code == 0 and cli.fake.tickets[result["key"]].summary == title
 
