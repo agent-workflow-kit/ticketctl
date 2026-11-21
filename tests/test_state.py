@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ticketctl import state
+from ticketctl import sanitize, state
 from ticketctl.state import StateError
 
 
@@ -283,6 +283,17 @@ def test_a_renamed_file_makes_the_waiter_reopen_the_new_one(home: Path) -> None:
 def test_clean_tree_sanitizes_strings_and_keys() -> None:
     cleaned = state.clean_tree({"k\x1b": ["\x1b[31mred", "ok", 3, None, True, 1.5]})
     assert cleaned == {"k<U+001B>": ["<U+001B>[31mred", "ok", 3, None, True, 1.5]}
+
+
+def test_clean_tree_leaves_numbers_alone_by_default() -> None:
+    sanitize.configure_scrubber(["12345678"])
+    assert state.clean_tree([12345678, 912345678]) == [12345678, 912345678]
+
+
+def test_clean_tree_redacts_only_an_exactly_equal_number_when_asked() -> None:
+    sanitize.configure_scrubber(["12345678"])
+    cleaned = state.clean_tree([12345678, 912345678, 123456789], redact_numbers=True)
+    assert cleaned == ["<redacted>", 912345678, 123456789]
 
 
 @pytest.mark.parametrize(

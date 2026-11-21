@@ -39,7 +39,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-from ticketctl.sanitize import render
+from ticketctl.sanitize import REDACTED, render, scrub
 
 LOCK_TIMEOUT = 10.0
 _REOPEN_LIMIT = 50
@@ -295,12 +295,16 @@ MAX_DEPTH = 12
 MAX_NODES = 100_000
 
 
-def clean_tree(value: object, *, max_nodes: int = MAX_NODES) -> object:
+def clean_tree(
+    value: object, *, max_nodes: int = MAX_NODES, redact_numbers: bool = False
+) -> object:
     """Return ``value`` with every string (and key) sanitized then scrubbed.
 
     Accepts dicts with string keys, lists, tuples, strings, ints, finite floats, bools and None;
     anything else, a tree deeper than 12 levels or one with more than ``max_nodes`` nodes is
-    ``record_invalid``. The result is a new structure; the input is not changed.
+    ``record_invalid``. With ``redact_numbers`` (off by default, so writers keep their integers) a
+    number whose text equals a registered secret exactly becomes the string ``<redacted>``.
+    The result is a new structure; the input is not changed.
     """
     budget = [max_nodes]
 
@@ -310,12 +314,14 @@ def clean_tree(value: object, *, max_nodes: int = MAX_NODES) -> object:
             raise StateError("record_invalid", "record is too large or too deeply nested")
         if isinstance(node, str):
             return render(node)
-        if node is None or isinstance(node, bool | int):
+        if node is None or isinstance(node, bool):
             return node
+        if isinstance(node, int):
+            return REDACTED if redact_numbers and scrub(str(node)) == REDACTED else node
         if isinstance(node, float):
             if node != node or node in (float("inf"), float("-inf")):
                 raise StateError("record_invalid", "record holds a non-finite number")
-            return node
+            return REDACTED if redact_numbers and scrub(repr(node)) == REDACTED else node
         if isinstance(node, Mapping):
             out: dict[str, object] = {}
             for key, item in node.items():

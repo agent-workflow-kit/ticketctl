@@ -1,6 +1,7 @@
 {
   "cli/comments.json": "91d4dce390c7587f972677c8a3ed4538392cd023fdb3ae56bb54c6b53d011e23",
   "cli/error.json": "a44a087b71ea9c3bb457bacdf47287645b282f037d37dced053f27dd59ded99a",
+  "cli/export.json": "38c196ebde25836f1032546486dab1f5b0caf1cb249cde11cd56067d9d85d9f8",
   "cli/fields-check.json": "f9636a31740b1891fd9e8b604287da863116dbe57735d234adb715a583a1d619",
   "cli/fields-list.json": "3b9669c7ee2d2eb7417cb9db7835dad37dc426ecfa7d11c9081bc5a27f5191a2",
   "cli/fields-refresh.json": "52274c424d56e97f4b9a42a80fff24e80ba52f118de916b205b2e11aab0f32af",
