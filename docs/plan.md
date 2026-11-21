@@ -65,7 +65,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 **Goal**: `transition`, `comment` and `update` follow the one flow with plan, `--dry-run`, confirmation, hooks, stale check, audit and partial results.
 **Success Criteria**: the eight-step order holds; idempotency is evaluated before validation errors and before the plan hash comparison; a re-run after a lost response is `unchanged`; `partial` and `outcome_unknown` exit 12 with the result in the envelope; confirmation reads `/dev/tty`, a decline is exit 20 `declined`; `--yes` needs `--expect-plan` and, for `comment`, a dedupe key; hooks run after the confirmation; the audit has an `attempted` and an outcome record per provider call.
 **Tests**: each step of the flow against the fake provider with each quirk switch; the assign step rule (deterministic, the provider's 400 is `rejected` with the hint); done transitions always carry a resolution; hash scope (a plan under `auto:` confirmed under `human:` matches; a takeover by another assignee is `stale_ticket`); veto, escalation and `--override-escalation`; hooks with a timeout and a process group; payloads carry no ticket text; audit append failure sends nothing; pty tests for the prompt; spike regressions V-7 to V-11.
-**Status**: Not Started
+**Status**: In Progress (the engine, plan, hash and audit pair landed with #23; the dialog, hooks and commands follow)
 
 ## Stage 4: create, dedupe and sprints
 
