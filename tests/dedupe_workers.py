@@ -32,7 +32,9 @@ def counter_worker(state_dir: str, name: str, counter: str, rounds: int, go: Eve
 def cli_worker(argv: list[str], out: str, ready: Event) -> None:
     """Run one ``ticketctl`` command in this process; its stdout goes to ``out``.
 
-    ``ready`` is set right before the command starts (everything is imported by then).
+    ``ready`` is set immediately before this process enters the bucket lock (the lock's
+    ``__enter__`` is wrapped), so it proves the worker finished its lock-free phase and is
+    about to wait on the lock.
 
     The exit code is written first on its own line, then the JSON document.
     """
@@ -41,8 +43,14 @@ def cli_worker(argv: list[str], out: str, ready: Event) -> None:
 
     from ticketctl.cli import main
 
+    original_enter = dedupe.BucketLock.__enter__
+
+    def signalling_enter(self: dedupe.BucketLock) -> object:
+        ready.set()
+        return original_enter(self)
+
+    dedupe.BucketLock.__enter__ = signalling_enter  # type: ignore[method-assign]
     buf = io.StringIO()
-    ready.set()
     with contextlib.redirect_stdout(buf):
         code = main(argv)
     Path(out).write_text(f"{code}\n{buf.getvalue()}")

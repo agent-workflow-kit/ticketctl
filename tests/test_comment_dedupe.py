@@ -388,16 +388,23 @@ def test_two_processes_with_one_key_post_once(
         SPAWN.Process(target=dedupe_workers.cli_worker, args=(full, str(o), r))
         for o, r in zip(outs, ready, strict=True)
     ]
-    # the parent holds the bucket until both workers signalled they are about to run the command
-    with dedupe.BucketLock(state, name, timeout=30.0):
+    # the parent holds the bucket until both workers signalled they are about to enter the lock
+    try:
+        with dedupe.BucketLock(state, name, timeout=30.0):
+            for p in procs:
+                p.start()
+            assert all(r.wait(60) for r in ready)
+            time.sleep(1.0)  # a short grace for both to block on the lock
+            assert not any(o.exists() for o in outs)
         for p in procs:
-            p.start()
-        assert all(r.wait(60) for r in ready)
-        time.sleep(1.0)  # a short grace for both to reach the lock
-        assert not any(o.exists() for o in outs)
-    for p in procs:
-        p.join(60)
-        assert p.exitcode == 0
+            p.join(60)
+            assert p.exitcode == 0
+    finally:
+        for p in procs:
+            if p.is_alive():
+                p.terminate()
+            if p.pid is not None:
+                p.join(10)
     docs = [json.loads(o.read_text().split("\n", 1)[1]) for o in outs]
     codes = [int(o.read_text().split("\n", 1)[0]) for o in outs]
     assert codes == [0, 0]
