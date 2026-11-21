@@ -42,7 +42,7 @@ import argparse
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import identity, selection
 from .comment_object import comment_object, order_key
@@ -54,6 +54,9 @@ from .runtime import Runtime, for_site, load_runtime, open_gateway
 from .sanitize import query, segment
 from .search_compile import is_rfc3339
 from .timestamps import normalize_ts
+
+if TYPE_CHECKING:
+    from .writeflow import WriteGateway
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -125,7 +128,7 @@ def _count(page: dict[str, Any]) -> int | None:
 
 
 def scan_comments(
-    gw: Gateway,
+    gw: Gateway | WriteGateway,
     key: str,
     me_account_id: str | None,
     *,

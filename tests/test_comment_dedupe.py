@@ -7,7 +7,6 @@ import json
 import multiprocessing
 import re
 import time
-from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -19,8 +18,7 @@ from tests.fake_provider import ME_ACCOUNT, OTHER_ACCOUNT, FakeProvider, Fault
 from tests.golden import assert_golden, validator
 from tests.test_comment import ATTEMPT, SITE_ENV_VAR, Cli  # noqa: F401  (fixture parts)
 from tests.test_comment import cli as cli  # noqa: F401  (the fixture)
-from ticketctl import attribution, commentcmd, commentscmd, dedupe
-from ticketctl.errors import TicketctlError
+from ticketctl import attribution, commentscmd, dedupe
 
 SPAWN = multiprocessing.get_context("spawn")
 KEY = "DEMO-2"
@@ -67,7 +65,12 @@ def seed(
 
 
 def meta_for(dedupe_key: str, body_sha: str = "a" * 64) -> dict[str, Any]:
-    return {"v": 1, "actor_kind": "auto", "body_sha256": body_sha, "key_sha256": key_hash(dedupe_key)}
+    return {
+        "v": 1,
+        "actor_kind": "auto",
+        "body_sha256": body_sha,
+        "key_sha256": key_hash(dedupe_key),
+    }
 
 
 def gets(cli: Cli) -> list[Any]:
@@ -239,7 +242,11 @@ def test_more_than_1000_newer_comments_is_lookup_incomplete_and_not_retryable(cl
         seed(cli)
     before = len(cli.writes())
     code, env = cli.doc("--dry-run", "comment", KEY, "--body", "hello", "--dedupe-key", "t1")
-    assert (code, env["error"]["code"], env["error"]["retryable"]) == (12, "lookup_incomplete", False)
+    assert (code, env["error"]["code"], env["error"]["retryable"]) == (
+        12,
+        "lookup_incomplete",
+        False,
+    )
     validator("cli/error.json").validate(env)
     assert len(cli.writes()) == before
 
