@@ -276,7 +276,8 @@ class TransitionAction:
                 else:
                     self._errors.append(self._no_such(listing))
         if (
-            listing is not None
+            not fresh
+            and listing is not None
             and listing.marks
             and (chosen is None or "required_fields" in listing.marks)
         ):

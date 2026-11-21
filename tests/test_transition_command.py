@@ -933,6 +933,26 @@ def test_an_unreadable_field_list_is_warned_even_when_the_target_is_found(
     assert re.search(r"could not be read completely \(required_fields\)", capsys.readouterr().err)
 
 
+def test_an_unreadable_field_list_is_warned_once_on_an_apply(
+    extra_fake: ExtraFake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    extra_fake.prepend = [
+        {
+            "id": "77",
+            "name": "No fields",
+            "to": extra_fake._status_obj("Backlog"),
+            "hasScreen": True,
+        }
+    ]
+    w = World(tmp_path, monkeypatch, extra_fake)
+    held = w.hash_of(act("DEMO-1", to="In Progress"))
+    capsys.readouterr()
+    # The fake rejects the send itself; both reductions (plan and under the lock) have run by then.
+    w.fail(act("DEMO-1", to="In Progress"), yes=True, expect_plan=held)
+    err = capsys.readouterr().err
+    assert err.count("could not be read completely (required_fields)") == 1
+
+
 def _many_targets(monkeypatch: pytest.MonkeyPatch, count: int, *, same: str | None = None) -> None:
     for i in range(count):
         target = same or f"S{i:02d}"
