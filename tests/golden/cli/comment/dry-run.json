@@ -1,0 +1,18 @@
+{
+  "action": "comment",
+  "actor": "auto:unknown",
+  "changes": [],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "61b3cee54871d0f39a9bc0bd56219917fefa1f373569bb8eee7750d2925114f1",
+  "site": "main",
+  "steps": [
+    {
+      "body_bytes": 210,
+      "body_sha256": "cc1d0af8abcd7432f1402046dbb5453d3bffcfb70b2930d453e3cfcbd48bfea8",
+      "kind": "add_comment"
+    }
+  ],
+  "warnings": []
+}
