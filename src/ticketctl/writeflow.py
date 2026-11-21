@@ -41,7 +41,9 @@ TODO(#24): the confirmation dialog on ``/dev/tty`` (``Seams.confirm``).
 TODO(#25): hook execution, payloads and decision ids (``Seams.hooks``), the hook hash of the audit.
 TODO(#26): the remaining partial and ``outcome_unknown`` result shaping and the audit-failure
 paths beyond what this engine needs.
-TODO(#32): the dedupe lock and the create lag guard (``Seams.lock``).
+The dedupe lock (``Seams.lock``, default ``dedupe.bucket_lock``) and the create lag guard
+(``dedupe.guarded_lookup``, called by the create action's ``reduce(fresh=True)``) live in
+``dedupe.py`` (#32).
 """
 
 from __future__ import annotations
@@ -58,9 +60,10 @@ from typing import Any, Protocol
 from . import attribution, audit, flags, identity
 from .adf_validate import canonical_json, validate_adf
 from .attribution import Format, Kind, RichText
+from .dedupe import bucket_lock
 from .errors import TicketctlError, from_exception, usage_error
 from .flags import Globals
-from .gateway import Gateway, Response, Target
+from .gateway import Deadline, Gateway, Response, Target
 from .plan import Planned, Step, build_plan, canonical_bytes
 from .runtime import Runtime, for_site, open_gateway
 from .sanitize import GRAMMARS, add_secrets, ensure_no_secret, sanitize_field
@@ -125,6 +128,11 @@ class WriteGateway:
     @property
     def target(self) -> Target:
         return self._gw.target
+
+    @property
+    def deadline(self) -> Deadline:
+        """The whole-command clock (the lock wait and the lag guard are bounded by it)."""
+        return self._gw.deadline
 
     def request(
         self,
@@ -403,11 +411,6 @@ class NoHooks:
         return None
 
 
-def _no_lock(planned: Planned, ctx: Context) -> AbstractContextManager[None]:
-    # todo(#32): dedupe-keyed writes must hold the lock; the default seam holds none
-    return nullcontext()
-
-
 def _new_attempt_id() -> str:
     return secrets.token_hex(8)
 
@@ -426,7 +429,7 @@ class Seams:
     interactive: Callable[[], bool] | None = None
     confirm: Callable[[dict[str, Any]], bool] | None = None
     hooks: Hooks = field(default_factory=NoHooks)  # todo(#25): the real runner
-    lock: Callable[[Planned, Context], AbstractContextManager[None]] = _no_lock
+    lock: Callable[[Planned, Context], AbstractContextManager[None]] = bucket_lock
     attempt_id: Callable[[], str] = _new_attempt_id
 
 
