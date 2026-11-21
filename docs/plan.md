@@ -37,7 +37,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `attribution` | 2 | the attribution paragraph and the comment property value, the rich-text path rules per actor kind, the default actor |
 | `plan`, `writeflow` | 3 | plan building, canonical hash, the write order, partial results |
 | `hooks` | 3 | hook execution (process groups, timeouts, payloads) |
-| `dedupe` | 4 | the dedupe bucket lock and the create lag guard (the lookups arrive with #31 and #33) |
+| `dedupe` | 4 | the dedupe bucket lock and the create lag guard (the comment lookup lives in `commentcmd`; the create lookup arrives with #31) |
 
 ## Stage 0: foundation
 

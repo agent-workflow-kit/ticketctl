@@ -250,47 +250,11 @@ def test_the_plan_hash_changes_with_the_body_and_the_key(cli: Cli) -> None:
     assert base != h("--body", "one", "--dedupe-key", "k")
 
 
-def test_outcome_unknown_with_a_dedupe_key_is_not_retryable_until_the_lookup_exists(
-    cli: Cli,
-) -> None:
-    # todo(#33): find_existing is a stub, so a keyed re-run would post the comment again; once the
-    # lookup exists this becomes retryable True again (the engine default).
-    before = len(cli.fake.tickets["DEMO-2"].comments)
-    cli.fake.inject(Fault("reset", method="POST", path="/comment", after_apply=True))
-    _, plan = cli.doc("--dry-run", "comment", "DEMO-2", "--body", "x", "--dedupe-key", "u1")
-    code, env = cli.doc(
-        "--yes", "--expect-plan", plan["plan_sha256"], "comment", "DEMO-2", "--body", "x",
-        "--dedupe-key", "u1",
-    )  # fmt: skip
-    assert (code, env["error"]["code"], env["error"]["outcome_unknown"]) == (
-        12, "outcome_unknown", True,
-    )  # fmt: skip
-    assert env["error"]["retryable"] is False
-    assert "may post the comment again" in env["error"]["message"]
-    assert env["error"]["details"]["attempt_id"] == ATTEMPT
-    # the write landed once; an automatic re-run with the same key would make it two
-    assert len(cli.fake.tickets["DEMO-2"].comments) == before + 1
-
-
 def test_a_provider_refusal_is_rejected(cli: Cli) -> None:
     cli.fake.inject(Fault("status", status=400, method="POST", path="/comment"))
     code, env = cli.post("--body", "x", "--dedupe-key", "r1")
     assert (code, env["error"]["code"]) == (12, "rejected")
     validator("cli/error.json").validate(env)
-
-
-def test_the_dedupe_seam_makes_the_comment_already_posted(
-    cli: Cli, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """SEAM ONLY: ``find_existing`` is a stub until #33, so this golden is produced by a patched
-    seam and shows the result shape of a dedupe hit, not a real lookup (todo(#33): replace it with
-    a test against the fake provider's comments once the lookup exists)."""
-    monkeypatch.setattr(commentcmd.CommentAction, "find_existing", lambda self, ctx, rich: "777")
-    code, result = cli.post("--body", "x", "--dedupe-key", "d1")
-    assert code == 0 and result["result"] == "unchanged"
-    assert result["already_posted"] is True and result["comment_id"] == "777"
-    assert result["attempt_id"] is None and cli.writes() == []
-    assert_golden("cli", "comment", "already-posted", cli.norm(result))
 
 
 def test_the_seam_is_not_asked_without_a_dedupe_key(

@@ -15,17 +15,23 @@
   ``ticketctl.meta`` value is built by ``attribution.comment_meta`` and rides in the same request
   as the comment, so the comment and its property cannot part.
 
-Dedupe (#33) plugs in at :meth:`CommentAction.find_existing`: it returns the id of a comment that
-already carries the dedupe key (then the plan has no step and the result is ``already_posted``).
-It returns ``None`` here: nothing is looked up until #33.
+Dedupe plugs in at :meth:`CommentAction.find_existing`: it returns the id of a comment of the
+fresh account that already carries the dedupe key and the same body hash (then the plan has no
+step and the result is ``already_posted``). The same key with another body is exit 20
+``already_exists`` (``details.existing_id``), and a key that is not found while the scan cannot
+prove absence in two scans is exit 12 ``lookup_incomplete`` (not retryable). ``reduce`` runs it
+lock-free for the plan and again under the bucket lock (``dedupe.bucket_lock``, scope = the ticket
+key) as the fresh check; a comment list is read-your-writes, so no lag guard
+(``dedupe.guarded_lookup``) is needed.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 from typing import Any
 
-from . import attribution, selection, writeflow
+from . import attribution, commentscmd, selection, writeflow
 from .adf_render import render_adf
 from .errors import TicketctlError
 from .flags import Globals
@@ -68,9 +74,7 @@ class CommentAction:
 
     name = "comment"
     yes_needs_dedupe_key = True
-    # todo(#33): set to True when find_existing looks the key up; until then a keyed re-run posts
-    # again, so the engine reports outcome_unknown as not retryable (writeflow._retry_rules).
-    dedupe_lookup = False
+    dedupe_lookup = True  # a keyed re-run finds the comment: outcome_unknown stays retryable
 
     def __init__(
         self,
@@ -99,10 +103,45 @@ class CommentAction:
     def find_existing(self, ctx: Context, rich: attribution.RichText) -> str | None:
         """The id of a comment of this account that already holds the dedupe key, or None.
 
-        TODO(#33): the lookup by ``ticketctl.meta.key_sha256`` through ``commentscmd.scan_comments``
-        (a truncated scan cannot prove absence).
+        Reads the comments newest first (at most 1000, ``commentscmd.scan_comments``) and keeps the
+        own comments whose ``ticketctl.meta`` carries ``key_sha256`` of this key (the reader
+        accepts only ``v == 1`` and a 64-hex hash, so a malformed or foreign property is no
+        marker). A hit with the same body hash is returned (the newest such one); a hit with
+        another body hash is exit 20 ``already_exists``. With no hit, a scan that cannot prove
+        absence (bounds reached, a comment dropped, a property that could not be read) is scanned
+        once more and then is exit 12 ``lookup_incomplete``; it is not retryable. A comment list
+        that cannot be read at all is the provider error (``scan_comments`` raises it).
         """
-        return None
+        assert self.dedupe_key is not None
+        wanted = hashlib.sha256(self.dedupe_key.encode("utf-8")).hexdigest()
+        for _ in range(2):  # a concurrent comment can repeat an id between pages: rescan once
+            scan = commentscmd.scan_comments(
+                ctx.gw,
+                self.key,
+                ctx.me.account_id,
+                limit=commentscmd.MAX_SCAN,
+                newest_first=True,
+                since=None,
+                own_only=True,
+            )
+            hits = [c for c in scan.items if c["dedupe_key_sha256"] == wanted]
+            for hit in hits:  # scan.items is newest first
+                if hit["body_sha256"] == rich.sha256:
+                    return str(hit["id"])
+            if hits:
+                raise TicketctlError(
+                    "already_exists",
+                    "a comment with this dedupe key and another body exists; "
+                    "use a new key or keep the existing comment",
+                    details={"existing_id": str(hits[0]["id"])},
+                )
+            if not (scan.truncated or "comments" in scan.marks):
+                return None
+        raise TicketctlError(
+            "lookup_incomplete",
+            "the ticket's comments could not be read completely, so the dedupe key cannot be "
+            "ruled out; nothing was posted (only a human may post without a key)",
+        )
 
     def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
         rich = self.rich

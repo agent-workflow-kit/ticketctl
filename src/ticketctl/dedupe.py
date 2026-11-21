@@ -34,7 +34,7 @@ The decision is a pure function (:func:`decide`) of the lock mtime, the audit re
 wall clock; waits go through an injectable :class:`Clock` so tests run on virtual time.
 
 TODO(#31): the ``create`` action calls :func:`guarded_lookup` from ``reduce(fresh=True)``.
-TODO(#33): the comment dedupe needs no guard (its list is read-your-writes).
+The comment dedupe (#33) needs no guard (its list is read-your-writes).
 """
 
 from __future__ import annotations
