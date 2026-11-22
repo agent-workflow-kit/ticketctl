@@ -1,6 +1,6 @@
 # ticketctl: interface
 
-Status: 0.1.0-design. Written before implementation (architecture §18.1). This document is the single normative source for ticketctl's rules; `docs/design.md`, the README and the architecture link to its headings and never restate its tables. The `--json` shapes, hook payloads, config, audit and log records are specified in [schemas/](../schemas/).
+Status: 0.1.0-design. The commands, including the write commands, are implemented; live verification (the live suites against a real site and the macOS checklist) remains. This document is the single normative source for ticketctl's rules; `docs/design.md`, the README and the architecture link to its headings and never restate its tables. The `--json` shapes, hook payloads, config, audit and log records are specified in [schemas/](../schemas/).
 
 ticketctl is normalized ticket access for one ticket provider at a time. Jira Cloud is the only provider in 0.x. It reads tickets, searches them, lists transitions, comments, and performs writes (`transition`, `comment`, `create`, `update`, sprint add and remove) through one confirm-by-default write flow. It is stateless: it keeps a small cache and its audit and request logs, and no database.
 

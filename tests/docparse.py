@@ -105,8 +105,30 @@ def _cells(line: str) -> tuple[str, ...]:
     return tuple(cells)
 
 
-def tables(body: str) -> list[Table]:
-    """Every pipe table in ``body`` (a header row, a separator row, then body rows)."""
+_SEPARATOR = re.compile(r"[ \t]*\|?[ \t:|-]+\|[ \t:|-]*")
+
+
+def _continues(lines: list[str], end: int) -> int | None:
+    """The index of a ``|`` row that goes on with a table after a gap of up to 3 lines.
+
+    A row that starts a new table (a header with a separator under it) is not a continuation.
+    The scan stops at a heading.
+    """
+    for k in range(end + 1, min(end + 4, len(lines))):
+        if _HEADING.match(lines[k]):
+            return None
+        if lines[k].lstrip().startswith("|"):
+            new_table = k + 1 < len(lines) and _SEPARATOR.fullmatch(lines[k + 1]) is not None
+            return None if new_table else k
+    return None
+
+
+def tables(body: str, where: str = "the document") -> list[Table]:
+    """Every pipe table in ``body`` (a header row, a separator row, then body rows).
+
+    A blank line inside a table ends it in Markdown, so rows after the blank line would be lost
+    silently; a ``|`` row that follows within three lines raises a ``ParityError`` naming ``where``.
+    """
     lines = body.splitlines()
     out: list[Table] = []
     i = 0
@@ -123,6 +145,9 @@ def tables(body: str) -> list[Table]:
             while j < len(lines) and lines[j].lstrip().startswith("|"):
                 rows.append(_cells(lines[j]))
                 j += 1
+            gap = _continues(lines, j)
+            if gap is not None:
+                raise ParityError(f"table in {where} continues after a blank line: line {gap + 1}")
             out.append(Table(header, tuple(rows)))
             i = j
         else:
@@ -130,9 +155,9 @@ def tables(body: str) -> list[Table]:
     return out
 
 
-def table(body: str, *header: str) -> Table:
+def table(body: str, *header: str, where: str = "the document") -> Table:
     """The one table whose header row starts with ``header``."""
-    hits = [t for t in tables(body) if t.header[: len(header)] == header]
+    hits = [t for t in tables(body, where) if t.header[: len(header)] == header]
     if len(hits) != 1:
         raise ParityError(
             f"expected exactly one table with header {list(header)}, found {len(hits)}"
@@ -159,11 +184,11 @@ def without_parens(text: str) -> str:
     return text
 
 
-def capture(text: str, pattern: str, what: str) -> str:
-    """Group 1 of the first match of ``pattern``; a missing match names ``what``."""
+def capture(text: str, pattern: str, what: str, source: str = "the document") -> str:
+    """Group 1 of the first match of ``pattern``; a missing match names ``what`` and ``source``."""
     match = re.search(pattern, text, re.S)
     if not match:
-        raise ParityError(f"cannot find {what} in the document")
+        raise ParityError(f"cannot find {what} in {source}")
     return match.group(1)
 
 

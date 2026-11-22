@@ -4,7 +4,7 @@ Normalized ticket access (Jira Cloud first; other providers later). Read, search
 
 ## Status
 
-Every command below is implemented against the fake provider. The live suites against a real site and the macOS checklist are the remaining release-readiness work (Stage 6 of [docs/plan.md](docs/plan.md)). The normative contract is [docs/interface.md](docs/interface.md); the decisions and live verification are in [docs/design.md](docs/design.md).
+Every command below is implemented. The live suites against a real site, the macOS checklist and a cron-style minimal-environment run are the remaining release-readiness work (Stage 6 of [docs/plan.md](docs/plan.md)). The normative contract is [docs/interface.md](docs/interface.md); the decisions and live verification are in [docs/design.md](docs/design.md).
 
 ## Layer
 

@@ -9,6 +9,7 @@ it a changed copy of one document or schema and expect the failure: they prove e
 
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import re
@@ -27,8 +28,12 @@ from tests import golden
 from ticketctl import audit, config, plan
 from ticketctl.commands import REGISTRY
 from ticketctl.errors import CODES, DETAILS_KEYS
+from ticketctl.flags import build_global_parser
 
 ROOT = Path(__file__).resolve().parent.parent
+INTERFACE_FILE = "docs/interface.md"
+README_FILE = "README.md"
+EXAMPLE_FILE = "config.example.yaml"
 NO_DEFAULT = object()
 # Schemas that belong to no single command: shared output shapes.
 SHARED_CLI = {"plan", "result", "error"}
@@ -78,7 +83,9 @@ def repo() -> Repo:
 
 def doc_exit_table(md: str) -> dict[str, tuple[int, frozenset[str]]]:
     """`code` -> (exit, reasons) from the Exit codes table."""
-    t = dp.table(dp.section(md, "Exit codes"), "Exit", "`code`", "`reason`")
+    t = dp.table(
+        dp.section(md, "Exit codes"), "Exit", "`code`", "`reason`", where="section Exit codes"
+    )
     out: dict[str, tuple[int, frozenset[str]]] = {}
     for row in t.rows:
         if not row[0].isdigit():
@@ -121,7 +128,11 @@ def check_readme_exit_codes(r: Repo) -> None:
     doc = doc_exit_table(r.interface)
     body = dp.section(r.readme, "Exit codes")
     sentence = dp.capture(
-        body, r"(Shared codes from the design guide .*? `invalid_request`)", "status list"
+        body,
+        r"(?i)((?:the )?shared codes from the design guide .*? `invalid_request`)",
+        "the sentence 'Shared codes from the design guide (...) plus ... `invalid_request`' "
+        "(section Exit codes)",
+        README_FILE,
     )
     shown = {int(x) for x in re.findall(r"\d+", sentence)}
     dp.assert_same(
@@ -135,6 +146,21 @@ def check_readme_exit_codes(r: Repo) -> None:
     seen = set(dp.names(body))
     dp.assert_same("README reasons", seen & reasons, "defs.json error_reason", reasons)
     dp.assert_same("README unknown names", seen - reasons - codes, "nothing", [])
+    # The grouping: each `exit N` group names only codes and reasons that have status N.
+    statuses: dict[str, set[int]] = {}
+    for code, (status, rs) in doc.items():
+        for name in (code, *rs):
+            statuses.setdefault(name, set()).add(status)
+    parts = re.split(r"\bexit (\d+)\b", body)
+    wrong = [
+        f"{name} is under exit {parts[i]} in the README, the interface has it under "
+        f"{sorted(statuses[name])}"
+        for i in range(1, len(parts), 2)
+        for name in dp.names(parts[i + 1])
+        if name in statuses and int(parts[i]) not in statuses[name]
+    ]
+    if wrong:
+        raise AssertionError("README exit-code grouping differs: " + "; ".join(wrong))
 
 
 # --- enums --------------------------------------------------------------------------------------
@@ -142,7 +168,7 @@ def check_readme_exit_codes(r: Repo) -> None:
 
 def check_plan_enums(r: Repo) -> None:
     body = dp.section(r.interface, "Plan object")
-    warns = dp.table(body, "Code", "Meaning")
+    warns = dp.table(body, "Code", "Meaning", where="section Plan object")
     doc_warnings = [dp.spans(row[0])[0] for row in warns.rows]
     dp.assert_same(
         "interface warnings", doc_warnings, "defs.json warning_code", r.enum("warning_code")
@@ -152,7 +178,12 @@ def check_plan_enums(r: Repo) -> None:
     dp.assert_same("interface step kinds", kinds, "defs.json step_kind", r.enum("step_kind"))
     dp.assert_same("interface step kinds", kinds, "plan.STEP_KINDS", plan.STEP_KINDS)
     dp.assert_same("interface step kinds", kinds, "audit.STEP_KINDS", audit.STEP_KINDS)
-    sentence = dp.capture(body, r"The action names are (.*?) \(hooks use", "the action names")
+    sentence = dp.capture(
+        body,
+        r"(?i)(?:the |these )?action names are (.*?) \((?:the )?hooks use",
+        "the sentence 'The action names are ... (hooks use ...)' (section Plan object)",
+        INTERFACE_FILE,
+    )
     actions = dp.names(sentence)
     dp.assert_same("interface actions", actions, "defs.json action", r.enum("action"))
     dp.assert_same("interface actions", actions, "plan.ACTIONS", plan.ACTIONS)
@@ -174,7 +205,9 @@ def check_hook_names(r: Repo) -> None:
     dp.assert_same("interface hooks", doc, "schemas/hooks files", r.hook_stems())
     schema_hooks = r.schema("config.json")["properties"]["hooks"]["properties"]
     dp.assert_same("interface hooks", doc, "config.json hooks properties", schema_hooks)
-    kind_table = dp.table(dp.section(r.readme, "Hooks"), "Kind", "Hooks")
+    kind_table = dp.table(
+        dp.section(r.readme, "Hooks"), "Kind", "Hooks", where="README section Hooks"
+    )
     readme_hooks = [n for row in kind_table.rows for n in dp.names(row[1], r"(?:pre|post)-[a-z]+")]
     dp.assert_same("interface hooks", doc, "README hooks table", readme_hooks)
     for hook in doc:  # each hook schema names itself
@@ -184,7 +217,9 @@ def check_hook_names(r: Repo) -> None:
 
 
 def check_result_vocabularies(r: Repo) -> None:
-    t = dp.table(dp.section(r.interface, "Result object"), "Where", "Values")
+    t = dp.table(
+        dp.section(r.interface, "Result object"), "Where", "Values", where="section Result object"
+    )
     rows = {row[0]: dp.names(row[1]) for row in t.rows}
     result_doc = rows["result object"]
     dp.assert_same(
@@ -268,8 +303,9 @@ def check_object_keys(r: Repo) -> None:
     )
     details = dp.capture(
         dp.section(r.interface, "Error envelope"),
-        r"depends on the code: (.*?)\.\s+`confirmation_required`",
-        "the details keys",
+        r"depends on (?:the )?code: (.*?)\.\s+`confirmation_required`",
+        "the sentence '... depends on the code: ... `confirmation_required`' (Error envelope)",
+        INTERFACE_FILE,
     )
     keys = dp.names(dp.without_parens(details), r"[A-Za-z_]+")
     dp.assert_same(
@@ -280,7 +316,12 @@ def check_object_keys(r: Repo) -> None:
     )
     dp.assert_same("interface details keys", keys, "errors.DETAILS_KEYS", DETAILS_KEYS)
     audit_doc = dp.section(r.interface, "Audit and log")
-    fields = dp.capture(audit_doc, r"Fields: (.*?)\. `inputs` holds", "the audit fields")
+    fields = dp.capture(
+        audit_doc,
+        r"Fields: (.*?)\. `inputs` (?:holds|contains)",
+        "the sentence 'Fields: ... `inputs` holds' (section Audit and log)",
+        INTERFACE_FILE,
+    )
     schema = r.schema("audit.json")["properties"]
     dp.assert_same(
         "interface audit fields",
@@ -288,7 +329,12 @@ def check_object_keys(r: Repo) -> None:
         "audit.json properties",
         schema,
     )
-    inputs = dp.capture(audit_doc, r"`inputs` holds (.*?), as cheap evidence", "the audit inputs")
+    inputs = dp.capture(
+        audit_doc,
+        r"`inputs` (?:holds|contains) (.*?), as cheap evidence",
+        "the sentence '`inputs` holds ..., as cheap evidence' (section Audit and log)",
+        INTERFACE_FILE,
+    )
     dp.assert_same(
         "interface audit inputs",
         dp.names(dp.without_parens(inputs)),
@@ -387,7 +433,7 @@ def _duration(value: Any) -> Any:
 
 def doc_config_table(md: str) -> dict[str, Any]:
     """Config key -> default (``NO_DEFAULT`` when the row names none) from the Config table."""
-    t = dp.table(dp.section(md, "Config"), "Key", "Default", "Meaning")
+    t = dp.table(dp.section(md, "Config"), "Key", "Default", "Meaning", where="section Config")
     out: dict[str, Any] = {}
     for row in t.rows:
         keys = dp.spans(row[0])
@@ -447,56 +493,175 @@ def _value(tree: Any, segs: list[str]) -> Any:
     return tree
 
 
-def _states_default(text: str, key: str, default: Any) -> bool:
-    """Whether the comment block right above ``key:`` says ``Default: <default>``."""
-    lines = text.splitlines()
+# The example shows two commented hooks (a pre- and a post- one).
+EXPECTED_COMMENTED_HOOKS = 2
+_COMMENT = re.compile(r"^(\s*)# ?(.*)$")
+_SAMPLE_KEY = re.compile(r"\s*(?:-\s+)?([\w-]+):(?:\s|$)")
+_DEFAULT_COMMENT = re.compile(r"Default: (.+?)(?:\.(?:\s|$)| \(|$)")
+_KEY_LINE = re.compile(r"^(\s*)([\w.<>-]+):(?:\s|$)")
+
+
+def _schema_names(schema: Any) -> set[str]:
+    """Every property name and enum string of the schema: the keys a commented sample may use."""
+    out: set[str] = set(config.HOOK_NAMES)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "properties" and isinstance(value, dict):
+                    out.update(value)
+                if key == "enum" and isinstance(value, list):
+                    out.update(v for v in value if isinstance(v, str))
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema)
+    return out
+
+
+def _sample_key(body: str, known: set[str]) -> str | None:
+    """The key of a commented sample line (text after ``# ``), or None for a prose comment."""
+    match = _SAMPLE_KEY.match(body)
+    if not match:
+        return None
+    key = match.group(1)
+    if key in known or re.fullmatch(r"(?:pre|post)-[\w-]+", key):
+        return key
+    return None
+
+
+def uncomment_samples(text: str, known: set[str], skip: tuple[str, ...] = ()) -> str:
+    """``text`` with the commented sample lines uncommented (``# `` removed, indent kept)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        match = _COMMENT.match(line)
+        key = _sample_key(match.group(2), known) if match else None
+        if match and key is not None and key not in skip:
+            out.append(match.group(1) + match.group(2))
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def _load_mapping(text: str, what: str) -> dict[str, Any]:
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise AssertionError(f"{what} is not valid YAML: {str(exc)[:200]}") from None
+    if not isinstance(loaded, dict):
+        raise AssertionError(f"{what} is not a mapping")
+    return loaded
+
+
+def _key_lines(lines: list[str]) -> dict[tuple[str, ...], int]:
+    """Dotted key path (as a tuple) -> line index of every real (not commented) key line."""
+    stack: list[tuple[int, str]] = []
+    out: dict[tuple[str, ...], int] = {}
     for i, line in enumerate(lines):
-        if re.match(rf"^\s*{re.escape(key)}:", line):
-            block: list[str] = []
-            j = i - 1
-            while j >= 0 and lines[j].lstrip().startswith("#"):
-                block.append(lines[j])
-                j -= 1
-            shown = yaml.safe_dump(default, default_flow_style=True, width=1000).strip()
-            shown = shown.removesuffix("\n...").strip()
-            return any(re.search(rf"Default: {re.escape(shown)}(?!\w)", b, re.I) for b in block)
-    return False
+        if not line.strip() or line.lstrip().startswith(("#", "-")):
+            continue
+        match = _KEY_LINE.match(line)
+        if not match:
+            continue
+        indent = len(match.group(1))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, match.group(2)))
+        out.setdefault(tuple(key for _, key in stack), i)
+    return out
+
+
+def _line_of(keys: dict[tuple[str, ...], int], segs: list[str]) -> int | None:
+    for path, index in keys.items():
+        if len(path) == len(segs) and all(
+            s in ("<name>", p) for s, p in zip(segs, path, strict=True)
+        ):
+            return index
+    return None
+
+
+def _stated_defaults(lines: list[str], index: int, known: set[str]) -> list[str]:
+    """The ``Default: X`` values in the prose comment block directly above line ``index``."""
+    block: list[str] = []
+    j = index - 1
+    while j >= 0:
+        match = _COMMENT.match(lines[j])
+        if not match or _sample_key(match.group(2), known) is not None:
+            break
+        block.append(match.group(2).strip())
+        j -= 1
+    return _DEFAULT_COMMENT.findall(" ".join(reversed(block)))
+
+
+def _same_default(text: str, default: Any) -> bool:
+    try:
+        shown = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return bool(_duration(shown) == _duration(default))
 
 
 def check_example(r: Repo) -> None:
     schema = r.schema("config.json")
     paths = schema_paths(schema, {"hooks"})
-    parsed = yaml.safe_load(r.example)
-    if not isinstance(parsed, dict):
-        raise AssertionError("config.example.yaml is not a mapping")
+    known = _schema_names(schema)
+    lines = r.example.splitlines()
+    keys = _key_lines(lines)
+    parsed = _load_mapping(r.example, EXAMPLE_FILE)
+    sampled = _load_mapping(uncomment_samples(r.example, known), f"{EXAMPLE_FILE} (samples)")
     problems: list[str] = []
     for path, default in sorted(paths.items()):
         segs = path.split(".")
         named = segs[:-1] if segs[-1] == "<name>" else segs
-        commented = re.search(rf"^\s*#\s*{re.escape(named[-1])}:", r.example, re.M)
-        here = _present(parsed, named)
-        if not here and not commented:
+        if not _present(sampled, named):
             problems.append(f"{path}: not in the example (not even commented out)")
         elif default is not NO_DEFAULT:
-            if not here:
+            if not _present(parsed, named):
                 problems.append(f"{path}: has the default {default!r} but is only commented out")
-            elif _duration(_value(parsed, named)) != _duration(default) and not (
-                isinstance(default, list | dict) and _states_default(r.example, named[-1], default)
+                continue
+            shown = _value(parsed, named)
+            row = _line_of(keys, named)
+            stated = _stated_defaults(lines, row, known) if row is not None else []
+            if _duration(shown) != _duration(default) and not (
+                isinstance(default, list | dict) and any(_same_default(s, default) for s in stated)
             ):
                 problems.append(
-                    f"{path}: the example shows {_value(parsed, named)!r}, "
+                    f"{path}: the example shows {shown!r}, "
                     f"the default is {default!r} (a list or map may differ only if the comment "
                     "above says 'Default: ...')"
                 )
-    for hook in re.findall(r"^#\s{3}((?:pre|post)-[a-z]+):", r.example, re.M):
-        if hook not in r.enum("hook_name"):
-            problems.append(f"hooks.{hook}: not a hook name")
+            problems.extend(
+                f"{path}: the comment above says 'Default: {s}', the schema default is {default!r}"
+                for s in stated
+                if not _same_default(s, default)
+            )
+    hooks = sampled.get("hooks")
+    found = list(hooks) if isinstance(hooks, dict) else []
+    if len(found) < EXPECTED_COMMENTED_HOOKS:
+        problems.append(
+            f"expected {EXPECTED_COMMENTED_HOOKS} commented hooks, found {len(found)}: {found}"
+        )
+    problems.extend(
+        f"hooks.{hook}: not a hook name" for hook in found if hook not in config.HOOK_NAMES
+    )
     if problems:
-        raise AssertionError("config.example.yaml: " + "; ".join(problems))
+        raise AssertionError(f"{EXAMPLE_FILE}: " + "; ".join(problems))
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     errors = sorted(validator.iter_errors(parsed), key=lambda e: list(e.path))
     if errors:
-        raise AssertionError(f"config.example.yaml fails config.json: {errors[0].message[:200]}")
+        raise AssertionError(f"{EXAMPLE_FILE} fails config.json: {errors[0].message[:200]}")
+    # The commented samples must be valid too; `email_env` is the alternative to `email`.
+    samples = _load_mapping(
+        uncomment_samples(r.example, known, skip=("email_env",)), f"{EXAMPLE_FILE} (samples)"
+    )
+    errors = sorted(validator.iter_errors(samples), key=lambda e: list(e.path))
+    if errors:
+        raise AssertionError(
+            f"{EXAMPLE_FILE} with its commented samples uncommented fails config.json: "
+            f"{errors[0].message[:200]}"
+        )
 
 
 # --- environment variables ----------------------------------------------------------------------
@@ -511,6 +676,136 @@ def check_environment(r: Repo) -> None:
     dp.assert_same("interface environment variables", doc, "config.ENV_*", code)
 
 
+# --- flags --------------------------------------------------------------------------------------
+
+_FLAG_NAME = re.compile(r"--[a-z][a-z0-9-]*")
+_CHOICES = re.compile(r"[A-Za-z]\w*(?:\|[A-Za-z]\w*)+")
+_README_DEFAULT = re.compile(
+    r"(?i)\bdefault\s+`?([a-z_][a-z0-9_.]*)`?\s*(?:is\s+|of\s+|=\s*)?`?(\d+(?:ms|s|m|h|d)?)`?(?![\w.])"
+)
+
+
+def global_flags() -> dict[str, argparse.Action]:
+    """Option string -> action of the global flag parser."""
+    return dict(build_global_parser()._option_string_actions)  # noqa: SLF001
+
+
+def command_flags(path: tuple[str, ...]) -> dict[str, argparse.Action]:
+    """Option string -> action of one registry command's own flags."""
+    parser = argparse.ArgumentParser(add_help=False)
+    REGISTRY[path].add_arguments(parser)
+    return {opt: a for a in parser._actions for opt in a.option_strings}  # noqa: SLF001
+
+
+def _flag_name(span: str) -> str | None:
+    match = _FLAG_NAME.match(span)
+    return match.group(0) if match else None
+
+
+def _fence_split(md: str) -> tuple[list[str], list[str]]:
+    """The lines inside fenced blocks and the lines outside them."""
+    inside: list[str] = []
+    outside: list[str] = []
+    fence: str | None = None
+    for line in md.splitlines():
+        marker = re.match(r"^[ \t]*(`{3,}|~{3,})", line)
+        if marker:
+            fence = None if fence == marker.group(1)[0] else marker.group(1)[0]
+        elif fence is not None:
+            inside.append(line)
+        else:
+            outside.append(line)
+    return inside, outside
+
+
+def _example_command(tokens: list[str], line: str) -> tuple[str, ...]:
+    for size in (2, 1):
+        if tuple(tokens[:size]) in REGISTRY:
+            return tuple(tokens[:size])
+    if any(path[0] == tokens[0] for path in REGISTRY):
+        return ()  # a group word such as `sprints`: only the global flags apply
+    raise dp.ParityError(f"README example {line!r}: {tokens[0]!r} is not a command")
+
+
+def _choices_of(action: argparse.Action) -> set[str] | None:
+    if action.choices is not None:
+        return {str(c) for c in action.choices}
+    if isinstance(action.metavar, str) and "|" in action.metavar:
+        return set(action.metavar.split("|"))
+    return None
+
+
+def check_readme_flags(r: Repo) -> None:
+    """README flags exist, shown choices match the parser, a stated numeric default is true."""
+    glob = global_flags()
+    every = set(glob)
+    for path in REGISTRY:
+        every |= set(command_flags(path))
+    inside, outside = _fence_split(r.readme)
+    problems: list[str] = []
+    for line in inside:
+        text = line.strip()
+        if not text.startswith("ticketctl "):
+            continue
+        for part in text.removeprefix("ticketctl ").split(" | "):
+            tokens = part.split()
+            if not tokens:
+                continue
+            path = _example_command(tokens, text)
+            flags = {**glob, **(command_flags(path) if path else {})}
+            where = " ".join(path) or "ticketctl"
+            for i, token in enumerate(tokens):
+                if not token.startswith("--"):
+                    continue
+                name = token.partition("=")[0]
+                action = flags.get(name)
+                if action is None:
+                    problems.append(f"{text!r}: {name} is not a flag of {where} or a global flag")
+                    continue
+                following = tokens[i + 1] if i + 1 < len(tokens) else ""
+                if _CHOICES.fullmatch(following):
+                    shown, known = set(following.split("|")), _choices_of(action)
+                    if known is None:
+                        problems.append(
+                            f"{text!r}: {name} shows {following} but the parser has no choices"
+                        )
+                    elif shown != known:
+                        problems.append(
+                            f"{text!r}: {name} shows {sorted(shown)}, "
+                            f"the parser has {sorted(known)}"
+                        )
+    prose = "\n".join(outside)
+    for span in dp.spans(prose):
+        name = _flag_name(span)
+        if name is not None and span.startswith("--") and name not in every:
+            problems.append(f"README names {name}, which no command or global option has")
+    schema = r.schema("config.json")
+    leaves = schema_paths(schema, TABLE_LEAVES)
+    for key, value in _README_DEFAULT.findall(prose):
+        want = {d for p, d in leaves.items() if p.rsplit(".", 1)[-1] == key.rsplit(".", 1)[-1]}
+        if not want:
+            problems.append(f"README states a default for {key!r}, which is not a config key")
+        elif any(d is NO_DEFAULT or _duration(d) != _duration(value) for d in want):
+            problems.append(
+                f"README states the default {key} {value}, the schema default is {want}"
+            )
+    if problems:
+        raise AssertionError(f"{README_FILE} flags and defaults: " + "; ".join(problems))
+
+
+def check_global_flags(r: Repo) -> None:
+    body = dp.section(r.interface, "Global flags")
+    paragraph = next((line for line in body.splitlines() if line.strip()), "")
+    listed = dp.capture(
+        paragraph,
+        r"^(.*?`--version`)",
+        "the flag list that ends with `--version` (first paragraph of section Global flags)",
+        INTERFACE_FILE,
+    )
+    names = {n for span in dp.spans(listed) if span.startswith("--") and (n := _flag_name(span))}
+    dp.assert_same("interface Global flags", names, "the global argparse options", global_flags())
+
+
 CHECKS: dict[str, Callable[[Repo], None]] = {
     "exit_codes": check_exit_codes,
     "readme_exit_codes": check_readme_exit_codes,
@@ -523,6 +818,8 @@ CHECKS: dict[str, Callable[[Repo], None]] = {
     "config_table": check_config_table,
     "example": check_example,
     "environment": check_environment,
+    "readme_flags": check_readme_flags,
+    "global_flags": check_global_flags,
 }
 
 
@@ -560,6 +857,24 @@ def test_table_cells_keep_escaped_and_quoted_pipes() -> None:
 def test_table_header_must_match() -> None:
     with pytest.raises(dp.ParityError, match="header"):
         dp.table("| a | b |\n|---|---|\n| 1 | 2 |\n", "a", "c")
+
+
+def test_a_blank_line_inside_a_table_is_an_error() -> None:
+    md = "## Sec\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n| 3 | 4 |\n"
+    with pytest.raises(
+        dp.ParityError, match=r"table in section Sec continues after a blank line: line 7"
+    ):
+        dp.tables(md, "section Sec")
+
+
+def test_a_second_table_after_a_gap_is_not_a_continuation() -> None:
+    md = "| a | b |\n|---|---|\n| 1 | 2 |\n\nText.\n\n| c | d |\n|---|---|\n| 3 | 4 |\n"
+    assert [t.header for t in dp.tables(md)] == [("a", "b"), ("c", "d")]
+
+
+def test_a_row_after_a_heading_is_not_a_continuation() -> None:
+    md = "| a | b |\n|---|---|\n| 1 | 2 |\n\n## Next\n| x | y |\n"
+    assert [t.rows for t in dp.tables(md)] == [(("1", "2"),)]
 
 
 def test_assert_same_names_the_difference() -> None:
@@ -660,6 +975,13 @@ DOC_MUTATIONS = [
         "`TICKETCTL_LIVE` is the live-test switch",
         "`TICKETCTL_LIVEX` is the live-test switch",
         "TICKETCTL_LIVE",
+    ),
+    ("global_flags", "`--verbose`, `--quiet`, `--timeout", "`--verbose`, `--timeout", "--quiet"),
+    (
+        "global_flags",
+        "in addition to configured hooks), `--version`.",
+        "in addition to configured hooks), `--extra`, `--version`.",
+        "--extra",
     ),
 ]
 
@@ -817,6 +1139,26 @@ EXAMPLE_MUTATIONS = [
     ("  retry_after_max: 60s\n", "", "retry_after_max"),
     ("    token_env: JIRA_API_TOKEN\n", "    tokenenv: JIRA_API_TOKEN\n", "token_env"),
     ("    timeouts:\n      connect: 10s\n", "    timeouts:\n      connect: 11s\n", "connect"),
+    # a stale `Default:` comment fails even when the shown value equals the real default
+    ("cache. Default: 24h.", "cache. Default: 48h.", "cache_ttl"),
+    ("Default: 60s.", "Default: 90s.", "retry_after_max"),
+    # a leaf deleted from its own block is not covered by the same name elsewhere
+    ("me:\n  name: me\n", "me:\n", "me.name"),
+    # commented hooks: a wrong name, and fewer than expected
+    ("#   pre-transition:\n", "#   pre-transitionx:\n", "pre-transitionx"),
+    (
+        '# hooks:\n#   pre-transition:\n#     - cmd: "my-policy-check --stdin-json"\n'
+        "#       timeout: 30\n#   post-comment:\n"
+        '#     - cmd: "my-notifier --stdin-json"\n#       async: true\n',
+        "",
+        "commented hooks",
+    ),
+    # a commented sample that breaks the schema (a mapping names exactly one of name, id, schema)
+    (
+        "      #   name: Acceptance Criteria\n",
+        "      #   name: Acceptance Criteria\n      #   id: acceptance\n",
+        "commented samples",
+    ),
 ]
 
 
@@ -839,6 +1181,24 @@ README_MUTATIONS = [
         "`TICKETCTL_LIVEX` is the live-test switch",
         "TICKETCTL_LIVE",
     ),
+    ("readme_flags", "transition KEY --to STATUS", "transition KEY --too STATUS", "--too"),
+    ("readme_flags", "--sprint open|next|ID", "--sprint open|next|latest|ID", "--sprint"),
+    ("readme_flags", "--query my_open --json", "--query my_open --jsonx", "--jsonx"),
+    ("readme_flags", "`--dry-run`", "`--dry-runx`", "--dry-runx"),
+    ("readme_flags", "Stateless: a small", "Stateless (default timeout 300s): a small", "timeout"),
+    (
+        "readme_flags",
+        "Stateless: a small",
+        "Stateless (default nothing_here 5): a small",
+        "nothing_here",
+    ),
+    # `locked` belongs under exit 12, not exit 22
+    (
+        "exit_codes_readme",
+        "exit 12 `unavailable` with `locked`",
+        "exit 12 `unavailable`; exit 22 `locked`",
+        "locked is under exit 22",
+    ),
 ]
 
 
@@ -851,6 +1211,58 @@ def test_a_changed_readme_fails_its_check(
     changed = replace(repo, readme=mutate_text(repo.readme, old, new))
     with pytest.raises(AssertionError, match=re.escape(expected)):
         CHECKS[name](changed)
+
+
+WORDING_VARIANTS = [
+    ("plan_enums", "The action names are ", "These action names are "),
+    ("plan_enums", "(hooks use", "(the hooks use"),
+    ("object_keys", "depends on the code:", "depends on code:"),
+    ("object_keys", "`inputs` holds", "`inputs` contains"),
+]
+
+
+@pytest.mark.parametrize(("check", "old", "new"), WORDING_VARIANTS)
+def test_a_reworded_interface_sentence_still_parses(
+    repo: Repo, check: str, old: str, new: str
+) -> None:
+    CHECKS[check](replace(repo, interface=mutate_text(repo.interface, old, new)))
+
+
+def test_a_missing_interface_sentence_names_the_sentence_and_the_file(repo: Repo) -> None:
+    changed = replace(
+        repo,
+        interface=mutate_text(repo.interface, "The action names are ", "Names of the actions: "),
+    )
+    with pytest.raises(dp.ParityError, match=r"action names are .*docs/interface\.md"):
+        check_plan_enums(changed)
+
+
+def test_a_missing_readme_sentence_names_the_sentence_and_the_file(repo: Repo) -> None:
+    changed = replace(
+        repo, readme=mutate_text(repo.readme, "Shared codes from the design guide", "Codes")
+    )
+    with pytest.raises(dp.ParityError, match=r"Shared codes from the design guide.*README\.md"):
+        check_readme_exit_codes(changed)
+
+
+def test_the_readme_sentence_tolerates_a_leading_the_and_case(repo: Repo) -> None:
+    changed = replace(
+        repo,
+        readme=mutate_text(
+            repo.readme,
+            "Shared codes from the design guide",
+            "The shared codes from the Design Guide",
+        ),
+    )
+    check_readme_exit_codes(changed)
+
+
+def test_the_commented_samples_are_uncommented_and_valid(repo: Repo) -> None:
+    known = _schema_names(repo.schema("config.json"))
+    samples = yaml.safe_load(uncomment_samples(repo.example, known, skip=("email_env",)))
+    assert sorted(samples["hooks"]) == ["post-comment", "pre-transition"]
+    assert "acceptance_criteria" in samples["sites"]["main"]["fields"]
+    Draft202012Validator(repo.schema("config.json")).validate(samples)
 
 
 def test_a_command_without_a_golden_file_fails(repo: Repo, tmp_path: Path) -> None:
