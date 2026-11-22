@@ -37,7 +37,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 | `attribution` | 2 | the attribution paragraph and the comment property value, the rich-text path rules per actor kind, the default actor |
 | `plan`, `writeflow` | 3 | plan building, canonical hash, the write order, partial results |
 | `hooks` | 3 | hook execution (process groups, timeouts, payloads) |
-| `dedupe` | 4 | the dedupe bucket lock and the create lag guard (the comment lookup lives in `commentcmd`; the create lookup arrives with #31) |
+| `dedupe` | 4 | the dedupe bucket lock and the create lag guard (the comment lookup lives in `commentcmd`; the create lookup lives in `createcmd`) |
 
 ## Stage 0: foundation
 
@@ -72,7 +72,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 **Goal**: `create`, `sprint add|remove` and the dedupe mechanisms.
 **Success Criteria**: `create` is one provider call with labels, assignee and description in the body; the dedupe lock covers lookup and create only and the lag guard works; `reused` and `already_exists` follow the checks (reporter, type, title); `comment --dedupe-key` stores and finds the property; `sprint add|remove` takes one key and the guards hold.
 **Tests**: lookup and lag simulation in the fake (a label visible after a delay); concurrent creates with one key (two processes, one lock); a planted label with a different reporter is not reused; forged comment properties from another account are ignored; parent and issue type errors; sprint membership with closed, active and future sprints; spike regressions V-9, V-12, V-19, V-20, V-24 to V-33.
-**Status**: In Progress (the lock and lag guard landed with #32)
+**Status**: In Progress (the lock and lag guard landed with #32, `create` with #31)
 
 ## Stage 5: reliability and operations
 

@@ -26,7 +26,7 @@ Hash and partial runs: the facts of ``set_fields`` are the values before the cha
 old values are gone) and a re-run with the old ``--expect-plan`` is exit 20 ``stale_ticket``
 carrying the new plan (one step, ``assign``); a re-run without it sends only the remaining step.
 
-``create`` (#31) reuses :mod:`ticketctl.fieldwrite` for the same conversion and comparison.
+``create`` reuses :mod:`ticketctl.fieldwrite` for the same conversion and comparison.
 """
 
 from __future__ import annotations
@@ -49,10 +49,11 @@ from .fieldwrite import (
     fields_body,
     read_object,
     same_value,
+    value_hash,
 )
 from .flags import Globals
 from .gateway import Gateway
-from .plan import Planned, ShownText, Step, canonical_bytes
+from .plan import Planned, ShownText, Step
 from .runtime import load_runtime
 from .sanitize import (
     CAPS,
@@ -104,6 +105,26 @@ def check_offline(ns: argparse.Namespace) -> None:
 
 def _invalid(message: str) -> TicketctlError:
     return TicketctlError("invalid_request", message, reason="invalid_value")
+
+
+def read_title(pc: PrepareContext, title: str | None, title_file: str | None) -> str | None:
+    """``--title`` or ``--title-file`` (a path or ``-``) as one trimmed line of at most 255
+    characters (shared with ``create``); None when neither is given."""
+    if title_file is not None:
+        text = read_input(title_file, kind="title", body_chars=pc.body_chars)
+        text = text.removesuffix("\r\n") if text.endswith("\r\n") else text.removesuffix("\n")
+    elif title is not None:
+        text = title
+    else:
+        return None
+    text = text.strip()
+    if not text:
+        raise _invalid("the title is empty")
+    if len(text) > TITLE_MAX:
+        raise _invalid(f"the title is longer than {TITLE_MAX} characters")
+    if sanitize_line(text) != text:
+        raise _invalid("the title must be one line of visible text")
+    return text
 
 
 def update(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
@@ -199,21 +220,7 @@ class UpdateAction:
         pc.check_secrets(*named, *self.add_labels, *self.remove_labels)
 
     def _read_title(self, pc: PrepareContext) -> str | None:
-        if self._title_file is not None:
-            text = read_input(self._title_file, kind="title", body_chars=pc.body_chars)
-            text = text.removesuffix("\r\n") if text.endswith("\r\n") else text.removesuffix("\n")
-        elif self._title_arg is not None:
-            text = self._title_arg
-        else:
-            return None
-        text = text.strip()
-        if not text:
-            raise _invalid("the title is empty")
-        if len(text) > TITLE_MAX:
-            raise _invalid(f"the title is longer than {TITLE_MAX} characters")
-        if sanitize_line(text) != text:
-            raise _invalid("the title must be one line of visible text")
-        return text
+        return read_title(pc, self._title_arg, self._title_file)
 
     # -- steps 2 and 3 ---------------------------------------------------------------------
     def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
@@ -269,7 +276,7 @@ class UpdateAction:
         target = self._target(ctx)
         intent: dict[str, Any] = {
             "title": None if self.title is None else _hex(self.title),
-            "fields": {e.name: self._value_hash(e) for e in edits},
+            "fields": {e.name: value_hash(e) for e in edits},
             "labels": {"add": sorted(self.add_labels), "remove": sorted(self.remove_labels)},
             "assign": self.assign,
         }
@@ -377,13 +384,6 @@ class UpdateAction:
         if self.assign in (None, "none"):
             return None
         return self.assign
-
-    @staticmethod
-    def _value_hash(edit: FieldEdit) -> str:
-        rich = edit.value.rich
-        if rich is not None and rich.sha256 is not None:
-            return rich.sha256
-        return hashlib.sha256(canonical_bytes(edit.value.payload)).hexdigest()
 
     @staticmethod
     def _hook_facts(ctx: Context, fields: dict[str, Any], assign: str | None) -> dict[str, Any]:

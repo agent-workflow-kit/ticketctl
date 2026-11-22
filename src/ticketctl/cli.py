@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any
 
-from . import searchcmd, setspec, updatecmd
+from . import createcmd, searchcmd, setspec, updatecmd
 from .commands import REGISTRY, CommandSpec
 from .errors import TicketctlError, clean_message, from_exception, internal_error, usage_error
 from .flags import (
@@ -112,6 +112,8 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         searchcmd.check_offline(ns)
     elif spec.path == ("update",):
         updatecmd.check_offline(ns)
+    elif spec.path == ("create",):
+        createcmd.check_offline(ns)
     elif spec.path == ("sprint", "add") and ns.sprint is None:
         raise usage_error("missing_option", "sprint add needs --sprint open|next|<id>")
     elif spec.path == ("sprint", "remove") and ns.sprint is not None:
@@ -121,7 +123,6 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         setspec.check_offline(spec.path[0], getattr(ns, flag[2:]), flag)
     if spec.kind == "write":
         resolve_write_actor(g, me_name=lambda: _me_name(g))
-    # TODO(#31): the remaining "exactly one of" and per-command rules.
     check_yes(g, spec.path[0], getattr(ns, "dedupe_key", None))
 
 

@@ -1,0 +1,49 @@
+{
+  "tool": "ticketctl",
+  "hook": "post-create",
+  "object_type": "ticket",
+  "object_id": "DEMO-4",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "auto:unknown",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "create",
+    "steps": [
+      "create"
+    ],
+    "plan_sha256": "9c69ea990c254ca73d2515b0595f43e196ef654e90d1035f9270f75553f4524a",
+    "fields_changed": [
+      "title",
+      "description",
+      "assignee",
+      "priority"
+    ],
+    "dedupe_key": "h1"
+  },
+  "body": [
+    {
+      "sha256": "0af3a90d827efc76d3edb914989539708cf79ffb84d0298fa1ebe65edfa5ba52",
+      "bytes": 149
+    }
+  ],
+  "create": {
+    "type": "Task",
+    "parent": null,
+    "assign": "me"
+  },
+  "result": "ok",
+  "error": null,
+  "steps": [
+    {
+      "kind": "create",
+      "status": "done"
+    }
+  ],
+  "provider_ids": [
+    "10003",
+    "DEMO-4"
+  ],
+  "changed": true
+}
