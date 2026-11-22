@@ -38,8 +38,8 @@ The write flow (``writeflow.PrepareContext.prepare_rich``) calls ``prepare_rich_
 prepare step; an action sends ``comment_meta(actor, rich)`` (the same ``RichText``) in the create
 request and hands ``RichText.sha256`` to the plan, hooks and audit (``writeflow.body_info``).
 ``commentcmd.CommentAction.find_existing`` (the dedupe lookup of ``comment``) reads the property.
-TODO(#30): ``create`` calls this with ``kind="description"``; ``update`` and ``transition`` call it
-with ``kind="field"`` for each rich-text value.
+``create`` calls this with ``kind="description"``; ``update`` and ``transition`` call it with
+``kind="field"`` for each rich-text value.
 """
 
 from __future__ import annotations

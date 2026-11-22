@@ -17,6 +17,7 @@ from typing import Any
 from . import (
     commentcmd,
     commentscmd,
+    createcmd,
     exportcmd,
     fieldscmd,
     getcmd,
@@ -53,13 +54,6 @@ class CommandSpec:
     handler: Handler
     add_arguments: Adder
     human: Callable[[Any], str] | None = None  # plain-text form of the result (no `--json`)
-
-
-def _stub(owner: int) -> Handler:
-    def handler(g: Globals, a: argparse.Namespace) -> Any:
-        raise NotImplementedError(f"command is owned by #{owner}")
-
-    return handler
 
 
 def _none(p: argparse.ArgumentParser) -> None:
@@ -188,7 +182,7 @@ def _create(p: argparse.ArgumentParser) -> None:
     _add(p, "--title-file")
     _add(p, "--body-file")
     _add(p, "--parent")
-    _add(p, "--assign")
+    _add(p, "--assign", type=updatecmd.assign_arg, metavar="me|none|ACCOUNT")
     _add(p, "--label", action="append")
     _add(p, "--set", action="append")
     _add(p, "--dedupe-key", type=dedupe_key_arg)
@@ -323,7 +317,7 @@ def _specs() -> list[CommandSpec]:
         CommandSpec(
             ("comment",), w, "post a comment", commentcmd.comment, _comment, writeflow.human
         ),
-        CommandSpec(("create",), w, "create a ticket", _stub(31), _create),
+        CommandSpec(("create",), w, "create a ticket", createcmd.create, _create, writeflow.human),
         CommandSpec(
             ("update",),
             w,

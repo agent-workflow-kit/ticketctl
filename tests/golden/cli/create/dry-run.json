@@ -1,0 +1,31 @@
+{
+  "action": "create",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": null,
+      "name": "title",
+      "to": "T"
+    },
+    {
+      "from": null,
+      "name": "description",
+      "to": "Drafted with AI assistance and posted via ticketctl."
+    }
+  ],
+  "dedupe_key": "k1",
+  "dedupe_match": null,
+  "key": null,
+  "plan_sha256": "78f1c6ab0ba59030f3c37a524f4571e925ff3f9d6683bc7c44b11fa58b2847e6",
+  "site": "main",
+  "steps": [
+    {
+      "body_bytes": 149,
+      "body_sha256": "0af3a90d827efc76d3edb914989539708cf79ffb84d0298fa1ebe65edfa5ba52",
+      "kind": "create",
+      "project": "DEMO",
+      "type": "Task"
+    }
+  ],
+  "warnings": []
+}
