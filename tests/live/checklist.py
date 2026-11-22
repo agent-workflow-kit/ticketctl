@@ -87,16 +87,18 @@ ITEMS: tuple[Item, ...] = (
         "#3, #57",
         "A backslash outside a quoted string and the single-quote handling "
         "match the scanner's assumptions",
-        PROBED,
+        INDIRECT,
         ("test_text_and_scanner_samples",),
+        why="the ticketctl scanner refuses a backslash outside a quoted string before Jira sees it (exit 22), so only a backslash inside a phrase and the single-quote handling are observed",
     ),
     Item(
         "L08",
         "#3, #57, #17",
         "The incremental refresh combination: a named query, "
         "--updated-since, --order-by updated:asc and --cursor paging",
-        PROBED,
+        INDIRECT,
         ("test_incremental_refresh_combination",),
+        why="no named query is run (the suite has none to name): the run covers the flag combination only, observed through the printed order and the cursor",
     ),
     Item(
         "L09",
@@ -112,8 +114,9 @@ ITEMS: tuple[Item, ...] = (
         "search/jql answers {issues, nextPageToken}, the token only while more "
         "exist; maxResults 100 is honored with an explicit field list; a token stays valid "
         "for a whole paging run",
-        PROBED,
+        INDIRECT,
         ("test_search_multi_page_cursor",),
+        why="the CLI hides the raw response: the page size and the token are seen only as ticket counts, the next cursor and the request count",
         needs="at least 150 tickets visible in the probe project",
     ),
     Item(
@@ -175,8 +178,9 @@ ITEMS: tuple[Item, ...] = (
         "L18",
         "#58, #10",
         "The 401 body for a wrong token, and that a wrong token is bad_credentials",
-        PROBED,
+        INDIRECT,
         ("test_wrong_token_is_a_401",),
+        why="the CLI prints the error code and the HTTP status, not the 401 body",
         needs="TICKETCTL_LIVE_TOKEN_ENV (the name of the token variable of the site)",
     ),
     Item(
@@ -252,8 +256,9 @@ ITEMS: tuple[Item, ...] = (
         "GET /issue/{key} honors fields; the comment endpoint honors "
         "orderBy and maxResults; expand=properties embeds comment properties; total counts "
         "every comment",
-        PROBED,
+        INDIRECT,
         ("test_get_default_shape", "test_comments_shape"),
+        why="the CLI hides which parameters the provider honored: only the printed list, its order, the own-comment properties and the total are observed",
         needs="a ticket with comments (TICKETCTL_LIVE_TICKET)",
     ),
     Item(
@@ -340,8 +345,9 @@ ITEMS: tuple[Item, ...] = (
         "W06",
         "#3, #23",
         "The order of add and remove within one update (labels)",
-        PROBED,
+        INDIRECT,
         ("test_update_title_labels_order",),
+        why="one update adds one label and removes another and the result is read back; the same label in both is refused by ticketctl (exit 22), so the add-versus-remove order for one label is not probed",
     ),
     Item(
         "W07",

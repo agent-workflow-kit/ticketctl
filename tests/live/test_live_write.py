@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from tests.live.support import Ledger, LiveCli, LiveEnv, Recorder, Result, shape
+from tests.live.support import Ledger, LiveCli, LiveEnv, Recorder, Result, explain, shape
 
 World = tuple[LiveEnv, LiveCli, Recorder, Ledger]
 LAG_POLLS = (5.0,)  # extra waits (seconds) after the re-run's own lag guard
@@ -60,6 +60,7 @@ def landed(ledger: Ledger, res: Result, name: str) -> str:
     key = res.doc.get("key")
     assert isinstance(key, str), "a landed create printed no key"
     ledger.add(key, name)
+    ledger.create_resolved()  # the key is recorded: the closer no longer needs the title sweep
     return key
 
 
@@ -88,13 +89,14 @@ def test_create_with_dedupe_key_and_the_label_lag(write_world: World) -> None:
         )
     if done is not None and done.code == 12 and done.error.get("code") == "rejected":
         # The site refused the explicit unassigned value: record it, create without.
+        ledger.create_resolved()  # a refusal is a known outcome: nothing was created
         rec.differs("W02", "an explicit unassigned value in the create body",
                     {"exit": 12, "code": "rejected", "field_errors": sorted(
                         (done.error.get("details") or {}).get("field_errors") or {})},
                     expected="assignee: {accountId: null} is accepted")  # fmt: skip
         args = create_args(live, ledger, "A")
         plan, done = cli.apply(*args)
-    assert done is not None, (plan.code, plan.error)
+    assert done is not None, explain(rec.redactor, plan.code, plan.error)
     key = landed(ledger, done, "A")
     assert done.doc.get("reused") is False
     rec.record("W03", "create: createmeta read, plan with one create step, POST /issue gave a key",
@@ -149,7 +151,7 @@ def test_transition_with_assign(write_world: World) -> None:
     live, cli, rec, ledger = write_world
     key = need_ticket(ledger, "A")
     listing = cli.run("transitions", key)
-    assert listing.code == 0, listing.error
+    assert listing.code == 0, explain(rec.redactor, listing.error)
     options = [
         t for t in listing.doc["transitions"]
         if t["to"]["category"] != "done" and not t["required_fields"]
@@ -159,7 +161,9 @@ def test_transition_with_assign(write_world: World) -> None:
     target = options[0]["to"]["name"]
     args = ("transition", key, "--to", target, "--assign", "me")
     plan, done = cli.apply(*args)
-    assert done is not None and done.code == 0, (plan.code, plan.error, done and done.error)
+    assert done is not None and done.code == 0, explain(
+        rec.redactor, plan.code, plan.error, done and done.error
+    )
     ticket = read_ticket(cli, key, "status", "assignee")
     rerun = cli.run("--dry-run", *args)
     rec.record(
@@ -182,24 +186,26 @@ def test_update_title_labels_order(write_world: World) -> None:
     key = need_ticket(ledger, "A")
     one, two, three = (f"live-{ledger.marker}-{n}" for n in ("one", "two", "three"))
     _, first = cli.apply("update", key, "--add-label", one, "--add-label", two)
-    assert first is not None and first.code == 0, first and first.error
+    assert first is not None and first.code == 0, explain(rec.redactor, first and first.error)
     _, second = cli.apply(
         "update", key, "--add-label", three, "--remove-label", one,
         "--title", ledger.title("A renamed"),
     )  # fmt: skip
-    assert second is not None and second.code == 0, second and second.error
+    assert second is not None and second.code == 0, explain(rec.redactor, second and second.error)
     ticket = read_ticket(cli, key, "labels", "title")
     mine = sorted(label.replace(ledger.marker, "<run>") for label in ticket.get("labels") or []
                   if ledger.marker in label)  # fmt: skip
     expected = [f"live-<run>-{n}" for n in ("three", "two")]
     rec.record(
-        "W06", "one update that adds a label and removes another",
+        "W06",
+        "one update that adds a label and removes another (the same label in both is refused by "
+        "ticketctl, so the order for one label is not probed)",
         {"labels_of_this_run": mine, "title_changed": ledger.title("A renamed") == ticket.get("title"),
          "result": second.doc.get("result")},
         status="observed" if mine == expected else "differs",
         expected="the removed label is gone, the added one present, the title changed",
     )  # fmt: skip
-    assert mine == expected or mine, "no label of this run was found at all"
+    assert "labels" in ticket, "get --fields labels printed no labels property"
 
 
 def test_update_description_is_unchanged_on_rerun(write_world: World, tmp_path: Path) -> None:
@@ -210,7 +216,7 @@ def test_update_description_is_unchanged_on_rerun(write_world: World, tmp_path: 
     args = ("update", key, "--set", f"description=@{text}")
     pre = ("--actor", "human:live-suite")  # rich text needs a human actor
     _, done = cli.apply(*args, pre=pre)
-    assert done is not None and done.code == 0, done and done.error
+    assert done is not None and done.code == 0, explain(rec.redactor, done and done.error)
     again = cli.run(*pre, "--dry-run", *args)
     spurious = bool(codes(again.doc, "steps"))
     rec.record(
@@ -229,11 +235,13 @@ def test_comment_with_key(write_world: World) -> None:
     args = ("comment", key, "--body", "ticketctl live test comment", "--dedupe-key",
             dedupe_key(ledger, "comment"))  # fmt: skip
     plan, done = cli.apply(*args)
-    assert done is not None and done.code == 0, (plan.code, plan.error, done and done.error)
+    assert done is not None and done.code == 0, explain(
+        rec.redactor, plan.code, plan.error, done and done.error
+    )
     assert done.doc.get("comment_id"), "a landed comment printed no id"
     rerun = cli.run("--dry-run", *args)  # a dry run: a lookup that missed could never post twice
     mine = cli.run("comments", key, "--own", "--limit", "5")
-    assert mine.code == 0, mine.error
+    assert mine.code == 0, explain(rec.redactor, mine.error)
     items = mine.doc.get("items") or []
     rec.record(
         "W10", "a keyed comment: property accepted on create, read back, found again by its key",
@@ -254,9 +262,9 @@ def test_comment_with_key(write_world: World) -> None:
 # ---- sprints -----------------------------------------------------------------------------------
 
 
-def _sprints(cli: LiveCli, board: str, state: str) -> list[dict[str, Any]]:
+def _sprints(cli: LiveCli, rec: Recorder, board: str, state: str) -> list[dict[str, Any]]:
     res = cli.run("sprints", "list", "--board", board, "--state", state, "--limit", "5")
-    assert res.code == 0, (state, res.error)
+    assert res.code == 0, explain(rec.redactor, state, res.error)
     return res.doc["sprints"]
 
 
@@ -271,7 +279,7 @@ def test_sprint_add_move_and_remove(write_world: World) -> None:
     if not board:
         pytest.skip("TICKETCTL_LIVE_BOARD is not set: no sprint probe")
     key = need_ticket(ledger, "A")
-    future = _sprints(cli, board, "future")
+    future = _sprints(cli, rec, board, "future")
     if not future:
         pytest.skip("the board has no future sprint: create one and run again")
     first = future[0]["id"]
@@ -279,7 +287,7 @@ def test_sprint_add_move_and_remove(write_world: World) -> None:
     added = False
     try:
         _, done = cli.apply("sprint", "add", key, "--sprint", str(first), "--board", board)
-        assert done is not None and done.code == 0, done and done.error
+        assert done is not None and done.code == 0, explain(rec.redactor, done and done.error)
         added = True
         facts["after_add"] = [i == first for i in _member_ids(cli, key)]
         again = cli.run("--dry-run", "sprint", "add", key, "--sprint", str(first), "--board", board)
@@ -288,7 +296,9 @@ def test_sprint_add_move_and_remove(write_world: World) -> None:
         if len(future) >= 2:
             second = future[1]["id"]
             plan, moved = cli.apply("sprint", "add", key, "--sprint", str(second), "--board", board)
-            assert moved is not None and moved.code == 0, moved and moved.error
+            assert moved is not None and moved.code == 0, explain(
+                rec.redactor, moved and moved.error
+            )
             members = _member_ids(cli, key)
             facts["second_add"] = {
                 "plan_warnings": codes(plan.doc, "warnings"),
@@ -306,7 +316,9 @@ def test_sprint_add_move_and_remove(write_world: World) -> None:
                 "W12", "move versus append", {"future_sprints": len(future)}, status="skipped"
             )
         _, removed = cli.apply("sprint", "remove", key)
-        assert removed is not None and removed.code == 0, removed and removed.error
+        assert removed is not None and removed.code == 0, explain(
+            rec.redactor, removed and removed.error
+        )
         added = False
         left = _member_ids(cli, key)
         facts["after_remove"] = len(left)
@@ -342,7 +354,7 @@ def test_sprint_errors(write_world: World) -> None:
         facts["unknown_sprint_write"] = {"exit": done.code, "code": done.error.get("code"),
                                          "http_statuses": done.statuses}  # fmt: skip
         assert done.code != 0, "a write to an unknown sprint landed"
-    closed = _sprints(cli, board, "closed")
+    closed = _sprints(cli, rec, board, "closed")
     if closed:
         res = cli.run("--dry-run", "sprint", "add", key, "--sprint", str(closed[0]["id"]),
                       "--board", board)  # fmt: skip

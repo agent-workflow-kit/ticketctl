@@ -65,17 +65,35 @@ def _stop_when_the_budget_is_gone(request: pytest.FixtureRequest) -> Iterator[No
 _BUDGET_KEY = pytest.StashKey[Budget]()
 
 
+def _gate(*, write: bool) -> None:
+    """The fixtures re-check the gate: a renamed or copied module cannot bypass the collection hook."""
+    reason = skip_reason(os.environ, write=write)
+    if reason is not None:
+        pytest.skip(reason)
+
+
 def _build(
-    tmp_path_factory: pytest.TempPathFactory, suite: str, limit: int, session: pytest.Session
+    tmp_path_factory: pytest.TempPathFactory,
+    suite: str,
+    limit: int,
+    session: pytest.Session,
+    *,
+    read_only: bool,
 ) -> tuple[LiveEnv, LiveCli, Recorder, Budget]:
     live = LiveEnv.from_env(os.environ)
     state = tmp_path_factory.mktemp(f"live-state-{suite}")
     budget = Budget(state, limit=limit, reserve=CLEANUP_RESERVE)
     session.stash[_BUDGET_KEY] = budget
     cli = LiveCli(
-        env=os.environ, state_home=state, budget=budget, config=live.config, site=live.site
+        env=os.environ,
+        state_home=state,
+        budget=budget,
+        config=live.config,
+        site=live.site,
+        pass_env=live.child_env_names(),
+        read_only=read_only,
     )
-    redactor = Redactor([*live.literals(), *masked_env_values(os.environ)])
+    redactor = Redactor([*live.literals(), *masked_env_values(os.environ, live.child_env_names())])
     recorder = Recorder(suite, default_findings_dir(os.environ), redactor)
     return live, cli, recorder, budget
 
@@ -84,7 +102,10 @@ def _build(
 def read_world(
     request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[tuple[LiveEnv, LiveCli, Recorder]]:
-    live, cli, recorder, budget = _build(tmp_path_factory, "read", READ_LIMIT, request.session)
+    _gate(write=False)
+    live, cli, recorder, budget = _build(
+        tmp_path_factory, "read", READ_LIMIT, request.session, read_only=True
+    )
     yield live, cli, recorder
     recorder.requests = budget.used()
     path = recorder.write()
@@ -97,7 +118,10 @@ def write_world(
 ) -> Iterator[tuple[LiveEnv, LiveCli, Recorder, object]]:
     from tests.live.support import Ledger, run_marker
 
-    live, cli, recorder, budget = _build(tmp_path_factory, "write", WRITE_LIMIT, request.session)
+    _gate(write=True)
+    live, cli, recorder, budget = _build(
+        tmp_path_factory, "write", WRITE_LIMIT, request.session, read_only=False
+    )
     ledger = Ledger(cli, live, run_marker())
     try:
         yield live, cli, recorder, ledger
@@ -111,5 +135,5 @@ def write_world(
         left = ledger.still_open()
         if left:
             sys.stderr.write(
-                "TEST TICKETS LEFT OPEN, close them by hand: " + ", ".join(left) + "\n"
+                "TEST TICKETS LEFT OPEN OR UNSETTLED, close them by hand: " + "; ".join(left) + "\n"
             )

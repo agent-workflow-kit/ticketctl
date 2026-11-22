@@ -40,7 +40,8 @@ ENV_CONFIG = "TICKETCTL_LIVE_CONFIG"
 ENV_TYPE = "TICKETCTL_LIVE_TYPE"
 ENV_RESOLUTION = "TICKETCTL_LIVE_RESOLUTION"
 ENV_DONE_STATUS = "TICKETCTL_LIVE_DONE_STATUS"
-ENV_TOKEN_ENV = "TICKETCTL_LIVE_TOKEN_ENV"
+ENV_KEY_VAR = "TICKETCTL_LIVE_TOKEN_ENV"  # names the variable that holds the site key
+ENV_PASS = "TICKETCTL_LIVE_PASS_ENV"  # more variable names the child may see (comma separated)
 ENV_FINDINGS = "TICKETCTL_LIVE_FINDINGS_DIR"
 
 PROJECT_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
@@ -54,6 +55,30 @@ DEFAULT_DONE_STATUS = "Done"
 DEFAULT_TYPE = "Task"
 MAX_TEST_TICKETS = 3
 MAX_COMMENTS_PER_TICKET = 1
+
+# Names the child may never be told to read through the key or pass variables: they would change
+# where the child keeps its state or finds its programs.
+RESERVED_ENV = frozenset(
+    {
+        "HOME",
+        "PATH",
+        "PYTHONPATH",
+        "XDG_STATE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+    }
+)
+
+
+def reserved_env_name(name: str) -> bool:
+    return name in RESERVED_ENV or name.startswith(("TICKETCTL_", "XDG_"))
+
+
+def _checked_env_name(name: str) -> bool:
+    if not ENV_NAME_RE.fullmatch(name) or reserved_env_name(name):
+        raise ValueError(f"{ENV_PASS} holds a name that is not allowed")
+    return True
 
 
 def skip_reason(env: Mapping[str, str], *, write: bool) -> str | None:
@@ -91,7 +116,8 @@ class LiveEnv:
     issue_type: str = DEFAULT_TYPE
     resolution: str = DEFAULT_RESOLUTION
     done_status: str = DEFAULT_DONE_STATUS
-    token_env: str = ""
+    key_env: str = ""
+    pass_env: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> LiveEnv:
@@ -101,6 +127,17 @@ class LiveEnv:
                 raise ValueError(f"{name} is not a valid value")
             return value
 
+        def env_name(name: str) -> str:
+            value = get(name, ENV_NAME_RE)
+            if value and reserved_env_name(value):
+                raise ValueError(f"{name} names a reserved variable")
+            return value
+
+        passed = tuple(
+            n
+            for n in (part.strip() for part in env.get(ENV_PASS, "").split(","))
+            if n and _checked_env_name(n)
+        )
         return cls(
             site=get(ENV_SITE, SITE_RE),
             config=get(ENV_CONFIG),
@@ -114,8 +151,13 @@ class LiveEnv:
             issue_type=get(ENV_TYPE) or DEFAULT_TYPE,
             resolution=get(ENV_RESOLUTION) or DEFAULT_RESOLUTION,
             done_status=get(ENV_DONE_STATUS) or DEFAULT_DONE_STATUS,
-            token_env=get(ENV_TOKEN_ENV, ENV_NAME_RE),
+            key_env=env_name(ENV_KEY_VAR),
+            pass_env=passed,
         )
+
+    def child_env_names(self) -> tuple[str, ...]:
+        """The variables, besides the fixed ones, whose values the child process may see."""
+        return tuple(n for n in (self.key_env, *self.pass_env) if n)
 
     def project_key(self) -> str:
         """The project to probe: the named one, else the one the named ticket belongs to."""
@@ -134,7 +176,19 @@ class LiveEnv:
             self.missing_ticket,
             self.project_key(),
             self.config,
+            self.board,
+            self.kanban_board,
+            self.key_env,
+            *self.child_env_names(),
         ]
+        # a value left at its generic default says nothing about the site: only a chosen one is masked
+        for given, default in (
+            (self.issue_type, DEFAULT_TYPE),
+            (self.resolution, DEFAULT_RESOLUTION),
+            (self.done_status, DEFAULT_DONE_STATUS),
+        ):
+            if given != default:
+                values.append(given)
         return [v for v in values if v]
 
 
@@ -151,18 +205,23 @@ _HOST = re.compile(
 _TICKET = re.compile(r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]+-\d{1,9}(?![A-Za-z0-9_-])")
 _ACCOUNT = re.compile(
     r"(?<![0-9A-Fa-f])(?=[0-9a-f]*[a-f])[0-9a-f]{24}(?![0-9A-Fa-f])"
+    r"|(?<![0-9A-Za-z])\d{24}(?![0-9A-Za-z])"
     r"|\b\d{4,8}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.I,
 )
+_FIELD_ID = re.compile(r"customfield_\d+|cf\[\d+\]", re.I)
 _AUTH = re.compile(r"\b(?:Basic|Bearer)\s+[A-Za-z0-9._~+/=-]{6,}", re.I)
 _OPAQUE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_+/=-]{32,}(?![A-Za-z0-9_-])")
 _MASK_NAME_RE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|CREDENTIAL", re.I)
 MASK = "<redacted>"
 
 
-def masked_env_values(env: Mapping[str, str]) -> list[str]:
-    """Values of the environment variables whose names look like credentials (never printed)."""
-    return [v for k, v in env.items() if _MASK_NAME_RE.search(k) and len(v) >= 8]
+def masked_env_values(env: Mapping[str, str], names: Iterable[str] = ()) -> list[str]:
+    """Values to mask: variables named like credentials, and every variable in ``names``."""
+    named = set(names)
+    return [
+        v for k, v in env.items() if v and ((_MASK_NAME_RE.search(k) and len(v) >= 8) or k in named)
+    ]
 
 
 class Redactor:
@@ -175,6 +234,7 @@ class Redactor:
         for literal in self._literals:
             value = value.replace(literal, MASK)
         value = _AUTH.sub(MASK, value)
+        value = _FIELD_ID.sub("<field>", value)
         value = _URL.sub("<url>", value)
         value = _EMAIL.sub("<email>", value)
         value = _HOST.sub("<host>", value)
@@ -193,6 +253,11 @@ class Redactor:
         if value is None or isinstance(value, bool | int | float):
             return value
         return self.text(str(value))
+
+
+def explain(redactor: Redactor, *values: Any) -> str:
+    """An assertion message: the values, masked (a failure message may reach a terminal or a log)."""
+    return redactor.text(repr(values))
 
 
 def shape(value: Any, *, depth: int = 4) -> Any:
@@ -406,6 +471,32 @@ class Result:
         return [r.get("status") for r in self.calls]
 
 
+# The child sees only what it needs; everything else in the caller's environment stays out of it.
+CHILD_ENV_NAMES = frozenset(
+    {
+        "PATH", "HOME", "LANG", "TZ", "PYTHONPATH", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    }
+)  # fmt: skip
+CHILD_ENV_PREFIXES = ("XDG_", "TICKETCTL_", "LC_")
+
+
+def child_env(env: Mapping[str, str], extra_names: Iterable[str] = ()) -> dict[str, str]:
+    """The minimal environment of the ``ticketctl`` child: fixed names, prefixes and ``extra_names``."""
+    keep = CHILD_ENV_NAMES | set(extra_names)
+    return {k: v for k, v in env.items() if k in keep or k.startswith(CHILD_ENV_PREFIXES)}
+
+
+def command_name(argv: Iterable[str]) -> tuple[str, list[str]]:
+    """The subcommand of an argument list and the arguments after it (global flags skipped)."""
+    items = list(argv)
+    i = 0
+    while i < len(items) and items[i].startswith("--"):
+        i += 2 if items[i] in ("--expect-plan", "--actor") else 1
+    return (items[i], items[i + 1 :]) if i < len(items) else ("", [])
+
+
 class LiveCli:
     """Runs ``python -m ticketctl`` with a private state directory and counts every request."""
 
@@ -419,8 +510,12 @@ class LiveCli:
         site: str = "",
         timeout: float = 180.0,
         python: str | None = None,
+        pass_env: Iterable[str] = (),
+        read_only: bool = False,
     ) -> None:
-        self.base_env = dict(env)
+        self.base_env = child_env(env, pass_env)
+        self.read_only = read_only
+        self.guard: Callable[[tuple[str, ...]], None] | None = None
         self.state_home = state_home
         self.budget = budget
         self.config = config
@@ -444,9 +539,14 @@ class LiveCli:
         extra_env: Mapping[str, str] | None = None,
         stdin: str | None = None,
     ) -> Result:
+        if self.read_only and "--yes" in argv:
+            raise AssertionError("the read suite never applies a plan: --yes is refused")
+        if self.guard is not None:
+            self.guard(tuple(argv))  # raises before any request when a cap would be crossed
         self.budget.check_before(cleanup=cleanup)
         before = len(self.budget.records())
-        env = {**self.base_env, "XDG_STATE_HOME": str(self.state_home), **(extra_env or {})}
+        # the private state directory comes last: nothing may redirect where the log is kept
+        env = {**self.base_env, **(extra_env or {}), "XDG_STATE_HOME": str(self.state_home)}
         started = time.monotonic()
         done = subprocess.run(  # noqa: S603 - the interpreter running the tests, fixed module
             self.command(argv),
@@ -472,8 +572,13 @@ class LiveCli:
             self.budget.records()[before:],
         )
         self.history.append(result)
+        self.check_read_only(result)
         self.budget.check_after(cleanup=cleanup)
         return result
+
+    def check_read_only(self, result: Result) -> None:
+        if self.read_only and result.writes:
+            raise AssertionError(f"a read-suite command sent {result.writes} write request(s)")
 
     def apply(
         self, *argv: str, pre: tuple[str, ...] = (), cleanup: bool = False
@@ -525,6 +630,8 @@ def run_marker(rng: Callable[[int], str] = secrets.token_hex) -> str:
 
 
 TITLE_PREFIX = "ticketctl live test"
+SWEEP_RETRIES = 2
+SWEEP_WAIT_SECONDS = 3.0
 
 
 @dataclass
@@ -543,8 +650,41 @@ class Ledger:
     names: dict[str, str] = field(default_factory=dict)  # a test's name for a ticket -> its key
     comments: dict[str, int] = field(default_factory=dict)
     unknown_create: bool = False
+    sleep: Callable[[float], None] = time.sleep
+    create_launches: int = 0
+    comment_launches: dict[str, int] = field(default_factory=dict)
+    swept: list[str] = field(default_factory=list)
     closed: dict[str, str] = field(default_factory=dict)  # key -> "closed" | "already" | error
     left_open: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.cli.guard = self.guard
+
+    def guard(self, argv: tuple[str, ...]) -> None:
+        """Called by the runner before each command: the caps hold whatever the test does."""
+        name, rest = command_name(argv)
+        applied = "--yes" in argv
+        if name == "create" and applied:
+            if self.create_launches >= MAX_TEST_TICKETS:
+                raise TooManyTickets(
+                    f"a create beyond the {MAX_TEST_TICKETS}-ticket cap is refused"
+                )
+            self.create_launches += 1
+            # until a key is recorded the outcome is unknown: a timeout or an abort after the POST
+            # must still make the closer search for the ticket by its title
+            self.unknown_create = True
+        elif name == "comment":
+            key = next((a for a in rest if KEY_RE.fullmatch(a)), "")
+            if key not in self.created or self.comments.get(key, 0) < 1:
+                raise TooManyComments("a comment the ledger did not approve is refused")
+            if applied:
+                self.comment_launches[key] = self.comment_launches.get(key, 0) + 1
+                if self.comment_launches[key] > MAX_COMMENTS_PER_TICKET:
+                    raise TooManyComments("a second comment on one test ticket is refused")
+
+    def create_resolved(self) -> None:
+        """A create ended with a known outcome (a key recorded, or a definite refusal)."""
+        self.unknown_create = False
 
     @property
     def title_stem(self) -> str:
@@ -574,24 +714,34 @@ class Ledger:
         return self.comments.get(key, 0) < MAX_COMMENTS_PER_TICKET
 
     def _sweep(self) -> None:
-        """After an unknown create: find this run's tickets by title (the only fallback search)."""
+        """After an unknown create: find this run's tickets by title (the only fallback search).
+
+        The text index lags a create, so an empty answer is retried twice after a short wait.
+        """
         project = self.env.project_key()
         if not project:
             return
-        found = self.cli.run(
-            "search", "--project", project, "--text", self.title_stem, "--fields", "title",
-            "--limit", "20", cleanup=True,
-        )  # fmt: skip
-        tickets = found.doc.get("tickets") if isinstance(found.doc, dict) else None
-        for t in tickets or []:
-            if (
-                isinstance(t, dict)
+        for attempt in range(1 + SWEEP_RETRIES):
+            if attempt:
+                self.sleep(SWEEP_WAIT_SECONDS)
+            found = self.cli.run(
+                "search", "--project", project, "--text", self.title_stem, "--fields", "title",
+                "--limit", "20", cleanup=True,
+            )  # fmt: skip
+            tickets = found.doc.get("tickets") if isinstance(found.doc, dict) else None
+            new = [
+                t["key"]
+                for t in tickets or []
+                if isinstance(t, dict)
                 and isinstance(t.get("key"), str)
                 and str(t.get("title", "")).startswith(self.title_stem)
                 and t["key"] not in self.created
                 and KEY_RE.fullmatch(t["key"])
-            ):
-                self.created.append(t["key"])
+            ]
+            if new:
+                self.created.extend(new)
+                self.swept.extend(new)
+                return
 
     def close_one(self, key: str) -> str:
         """Close one ticket as done with the won't-do resolution; the outcome as a short word."""
@@ -616,8 +766,8 @@ class Ledger:
             except Exception as exc:  # noqa: BLE001 - cleanup must go on
                 self.left_open.append(f"sweep failed: {type(exc).__name__}")
         for key in list(self.created):
-            if key in self.closed:
-                continue
+            if self.closed.get(key) in ("closed", "already"):
+                continue  # a "failed" entry is tried again
             try:
                 self.closed[key] = self.close_one(key)
             except Exception as exc:  # noqa: BLE001 - one failure must not stop the others
@@ -625,6 +775,13 @@ class Ledger:
         return dict(self.closed)
 
     def still_open(self) -> list[str]:
-        return [k for k, v in self.closed.items() if v.startswith("failed")] + [
-            k for k in self.created if k not in self.closed
-        ]
+        """Keys still open, and notes about what could not be settled (each a line to show)."""
+        out = [k for k, v in self.closed.items() if v.startswith("failed")]
+        out += [k for k in self.created if k not in self.closed]
+        out += self.left_open
+        if self.unknown_create and not self.swept:
+            out.append(
+                "a create outcome was unknown and the sweep found nothing: search the test "
+                f"project for titles starting with '{self.title_stem}'"
+            )
+        return out

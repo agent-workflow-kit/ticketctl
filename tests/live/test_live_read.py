@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime
 from typing import Any
 
 import pytest
 
-from tests.live.support import LiveCli, LiveEnv, Recorder, Result, shape
+from tests.live.support import LiveCli, LiveEnv, Recorder, Result, explain, shape
 
 World = tuple[LiveEnv, LiveCli, Recorder]
 DONE_AT_MOST = 6  # a bound on how many tickets a probe prints back, to keep findings small
@@ -48,9 +49,12 @@ def error_facts(res: Result) -> dict[str, Any]:
     }
 
 
-def ok(res: Result) -> dict[str, Any]:
-    assert res.code == 0, (res.argv[:2], res.code, res.error.get("code"), res.stderr[-300:])
-    assert isinstance(res.doc, dict), res.stdout[:200]
+def ok(res: Result, rec: Recorder) -> dict[str, Any]:
+    """The document of a command that must succeed; a failure message is masked like a finding."""
+    assert res.code == 0, explain(
+        rec.redactor, res.argv[:2], res.code, res.error.get("code"), res.stderr[-300:]
+    )
+    assert isinstance(res.doc, dict), explain(rec.redactor, res.stdout[:200])
     return res.doc
 
 
@@ -66,7 +70,7 @@ def tickets_of(doc: dict[str, Any]) -> list[dict[str, Any]]:
 def test_whoami_shape(read_world: World) -> None:
     live, cli, rec = read_world
     res = cli.run("whoami", "--refresh")
-    doc = ok(res)
+    doc = ok(res, rec)
     assert isinstance(doc.get("account_id"), str) and isinstance(doc.get("display_name"), str)
     assert doc.get("source") == "provider"
     rec.record("L17", "whoami: GET /myself answered 200 with usable identity fields",
@@ -75,12 +79,17 @@ def test_whoami_shape(read_world: World) -> None:
 
 def test_wrong_token_is_a_401(read_world: World) -> None:
     live, cli, rec = read_world
-    name = need(live.token_env, "TICKETCTL_LIVE_TOKEN_ENV", "the name of the token variable")
-    res = cli.run("whoami", "--refresh", extra_env={name: "not-a-real-token-0000"})
-    assert res.code == 12 and res.error.get("code") == "bad_credentials", res.error
+    name = need(live.key_env, "TICKETCTL_LIVE_TOKEN_ENV", "the name of the key variable")
+    res = cli.run("whoami", "--refresh", extra_env={name: "not-a-real-key-0000"})
     facts = error_facts(res)
-    status = "observed" if facts["http_statuses"] == [401] else "differs"
-    rec.record("L18", "a wrong token", facts, status=status, expected="HTTP 401, bad_credentials")
+    expected_shape = (
+        facts["http_statuses"] == [401]
+        and res.code == 12
+        and res.error.get("code") == "bad_credentials"
+    )
+    # recorded first: what a site answers to a wrong key is its own behavior, never a test failure
+    rec.record("L18", "a wrong key", facts, status="observed" if expected_shape else "differs",
+               expected="HTTP 401, exit 12 bad_credentials")  # fmt: skip
 
 
 # ---- get ---------------------------------------------------------------------------------------
@@ -90,7 +99,7 @@ def test_get_default_shape(read_world: World) -> None:
     live, cli, rec = read_world
     key = need(live.ticket, "TICKETCTL_LIVE_TICKET")
     res = cli.run("get", key, "--comments", "5")
-    doc = ok(res)
+    doc = ok(res, rec)
     (ticket,) = tickets_of(doc)
     sprints = ticket.get("sprints") or []
     status = ticket.get("status") or {}
@@ -117,7 +126,7 @@ def test_get_fields_summary_only(read_world: World) -> None:
     live, cli, rec = read_world
     key = need(live.ticket, "TICKETCTL_LIVE_TICKET")
     res = cli.run("get", key, "--fields", "title")
-    doc = ok(res)
+    doc = ok(res, rec)
     (ticket,) = tickets_of(doc)
     assert "title" in ticket
     rec.record("L26", "get --fields title: a title-only read is valid",
@@ -129,12 +138,11 @@ def test_get_missing_and_hidden_status(read_world: World) -> None:
     project = project_of(live)
     missing = live.missing_ticket or f"{project}-999999999"
     miss = cli.run("get", missing)
-    assert miss.code != 0 and miss.error, miss.stdout[:200]
     rec.record("L01", "a key that does not exist", {"key_given": bool(live.missing_ticket),
                                                     **error_facts(miss)})  # fmt: skip
+    assert miss.code != 0 and miss.error, explain(rec.redactor, miss.stdout[:200])
     hidden = need(live.hidden_ticket, "TICKETCTL_LIVE_HIDDEN_TICKET", "a key you cannot see")
     hid = cli.run("get", hidden)
-    assert hid.code != 0 and hid.error, hid.stdout[:200]
     same = (miss.code, miss.error.get("code"), miss.statuses) == (
         hid.code, hid.error.get("code"), hid.statuses)  # fmt: skip
     rec.record(
@@ -144,13 +152,14 @@ def test_get_missing_and_hidden_status(read_world: World) -> None:
         status="observed" if same and hid.error.get("code") == "not_found" else "differs",
         expected="both answer 404 and not_found, so a consumer treats a hidden ticket as gone",
     )
+    assert hid.code != 0 and hid.error, explain(rec.redactor, hid.stdout[:200])
 
 
 def test_get_moved_ticket(read_world: World) -> None:
     live, cli, rec = read_world
     old = need(live.moved_ticket, "TICKETCTL_LIVE_MOVED_TICKET", "an old key of a moved ticket")
     res = cli.run("get", old, "--fields", "title")
-    doc = ok(res)
+    doc = ok(res, rec)
     (ticket,) = tickets_of(doc)
     rec.record(
         "L02", "a moved ticket's old key",
@@ -189,7 +198,7 @@ def big_search(read_world: World) -> dict[str, Any]:
     project = project_of(live)
     res = cli.run("search", "--project", project, "--order-by", "updated:desc", "--limit", "150",
                   "--fields", "title,priority,status,updated")  # fmt: skip
-    doc = ok(res)
+    doc = ok(res, rec)
     return {"doc": doc, "requests": res.requests, "tickets": tickets_of(doc)}
 
 
@@ -213,7 +222,7 @@ def test_search_multi_page_cursor(read_world: World, big_search: dict[str, Any])
         pytest.skip("the project has no ticket beyond the first 150: no cursor to resume")
     res = cli.run("search", "--project", project, "--order-by", "updated:desc", "--limit", "5",
                   "--fields", "title", "--cursor", nxt)  # fmt: skip
-    more = ok(res)
+    more = ok(res, rec)
     again = {t["key"] for t in tickets_of(more)}
     assert not (again & set(keys)), "a resumed page repeated a ticket"
     rec.record("L10", "the cursor resumes after the first run (the token stays valid)",
@@ -238,9 +247,10 @@ def test_search_rejected_cursor(read_world: World, big_search: dict[str, Any]) -
     res = cli.run("search", "--project", project, "--order-by", "updated:desc", "--limit", "5",
                   "--fields", "title", "--cursor", _tamper(nxt))  # fmt: skip
     facts = error_facts(res)
-    assert res.code == 22, facts
+    # recorded, never asserted: whether a site rejects a foreign page token is its behavior
     rec.record("L11", "a page token the provider did not issue", facts,
-               status="observed" if res.error.get("code") == "cursor_expired" else "differs",
+               status="observed" if (res.code, res.error.get("code")) == (22, "cursor_expired")
+               else "differs",
                expected="HTTP 400 on the page, mapped to exit 22 cursor_expired")  # fmt: skip
 
 
@@ -249,10 +259,18 @@ def test_search_count_with_order_by(read_world: World) -> None:
     project = project_of(live)
     res = cli.run("search", "--project", project, "--order-by", "updated:desc", "--count",
                   "--limit", "0")  # fmt: skip
-    doc = ok(res)
+    doc = ok(res, rec)
     assert isinstance(doc.get("count"), int)
     rec.record("L13", "approximate-count with an ORDER BY tail",
                {"count_is_int": True, "requests": res.requests, "http_statuses": res.statuses})  # fmt: skip
+
+
+def _instant(value: Any) -> datetime | None:
+    """A printed ``updated`` as a point in time (compared as instants, never as text)."""
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 def test_incremental_refresh_combination(read_world: World) -> None:
@@ -260,15 +278,19 @@ def test_incremental_refresh_combination(read_world: World) -> None:
     project = project_of(live)
     base = ("search", "--project", project, "--updated-since", "3650d", "--order-by",
             "updated:asc", "--limit", "3", "--fields", "title,updated")  # fmt: skip
-    first = ok(cli.run(*base))
+    first = ok(cli.run(*base), rec)
     got = tickets_of(first)
-    stamps = [str(t.get("updated")) for t in got]
+    parsed = [_instant(t.get("updated")) for t in got]
+    stamps = [x for x in parsed if x is not None]
     nxt = first.get("next")
-    facts: dict[str, Any] = {"first_count": len(got), "ascending": stamps == sorted(stamps),
-                             "next_present": nxt is not None}  # fmt: skip
+    comparable = len(stamps) == len(parsed)
+    facts: dict[str, Any] = {"first_count": len(got), "next_present": nxt is not None,
+                             "stamps_parsed": comparable,
+                             "ascending": comparable and stamps == sorted(stamps)}  # fmt: skip
+    assert comparable, "a search printed an updated value that is not a timestamp"
     assert facts["ascending"], "an updated:asc search was not ascending"
     if nxt is not None:
-        second = ok(cli.run(*base, "--cursor", nxt))
+        second = ok(cli.run(*base, "--cursor", nxt), rec)
         facts["second_count"] = len(tickets_of(second))
         facts["no_repeat"] = not ({t["key"] for t in got} & {t["key"] for t in tickets_of(second)})
         assert facts["no_repeat"]
@@ -316,8 +338,9 @@ def test_status_category_names(read_world: World) -> None:
                 {t["status"].get("category") for t in got if isinstance(t.get("status"), dict)}
             ),
         }
-        assert res.code == 0, (category, seen[category])
+    # recorded, never asserted: a site that names its categories otherwise answers a parse error
     rec.record("L04", "--status-category compiles to names Jira accepts (no parse error)", seen,
+               status="observed" if all(v["exit"] == 0 for v in seen.values()) else "differs",
                expected="new=To Do, indeterminate=In Progress, done=Done are valid category names")  # fmt: skip
 
 
@@ -347,7 +370,7 @@ def test_comments_shape(read_world: World) -> None:
     live, cli, rec = read_world
     key = need(live.ticket, "TICKETCTL_LIVE_TICKET")
     res = cli.run("comments", key, "--limit", "20", "--newest-first")
-    doc = ok(res)
+    doc = ok(res, rec)
     items = doc.get("items")
     assert isinstance(items, list) and isinstance(doc.get("total"), int)
     created = [str(c.get("created")) for c in items if isinstance(c, dict)]
@@ -369,7 +392,7 @@ def test_transitions_shape(read_world: World) -> None:
     live, cli, rec = read_world
     key = need(live.ticket, "TICKETCTL_LIVE_TICKET")
     res = cli.run("transitions", key)
-    doc = ok(res)
+    doc = ok(res, rec)
     items = doc.get("transitions")
     assert isinstance(items, list)
     rec.record(
@@ -388,7 +411,7 @@ def test_sprints_list_and_show(read_world: World) -> None:
     live, cli, rec = read_world
     board = need(live.board, "TICKETCTL_LIVE_BOARD", "a scrum board id")
     res = cli.run("sprints", "list", "--board", board, "--limit", "20")
-    doc = ok(res)
+    doc = ok(res, rec)
     sprints = doc.get("sprints")
     assert isinstance(sprints, list)
     facts: dict[str, Any] = {
@@ -403,11 +426,11 @@ def test_sprints_list_and_show(read_world: World) -> None:
             "exit": one.code,
             "count": len((one.doc or {}).get("sprints", [])),
         }
-        assert one.code == 0, (state, one.error)
+        assert one.code == 0, explain(rec.redactor, state, one.error)
     if sprints:
         show = cli.run("sprints", "show", str(sprints[0]["id"]))
         facts["show_exit"] = show.code
-        assert show.code == 0, show.error
+        assert show.code == 0, explain(rec.redactor, show.error)
     rec.record("L29", "sprints: shapes, one state per request, show by id", facts)
 
 
@@ -415,21 +438,23 @@ def test_board_errors(read_world: World) -> None:
     live, cli, rec = read_world
     missing = cli.run("sprints", "list", "--board", "999999999")
     facts: dict[str, Any] = {"missing_board": error_facts(missing)}
-    assert missing.code in (10, 22), facts
+    as_documented = missing.code == 10
     if live.kanban_board:
         kanban = cli.run("sprints", "list", "--board", live.kanban_board)
         facts["board_without_sprints"] = error_facts(kanban)
-        assert kanban.code in (0, 22), facts
+        as_documented = as_documented and kanban.code == 22
+    # recorded, never asserted: which status a site gives a missing board is its behavior
     rec.record("L30", "a missing board and (when named) a board without sprints", facts,
+               status="observed" if as_documented else "differs",
                expected="404 means a missing board (exit 10); 400 a board without sprints (exit 22)")  # fmt: skip
 
 
 def test_fields_check_and_list(read_world: World) -> None:
     live, cli, rec = read_world
     check = cli.run("fields", "check")
-    doc = ok(check)
+    doc = ok(check, rec)
     problems = doc.get("problems") or []
-    listing = ok(cli.run("fields", "list"))
+    listing = ok(cli.run("fields", "list"), rec)
     fields = listing.get("fields") or []
     rec.record(
         "L25", "fields check and list: the mapping problems by kind and the list shape",
@@ -445,7 +470,7 @@ def test_fields_check_and_list(read_world: World) -> None:
 def test_validate_probe(read_world: World) -> None:
     live, cli, rec = read_world
     res = cli.run("validate", "--probe")
-    doc = ok(res)
+    doc = ok(res, rec)
     sites = doc.get("sites") or []
     rec.record(
         "L16", "validate --probe: authenticates, checks fields and parses every named query",
