@@ -678,6 +678,7 @@ def check_environment(r: Repo) -> None:
 
 # --- flags --------------------------------------------------------------------------------------
 
+MIN_README_EXAMPLES = 3
 _FLAG_NAME = re.compile(r"--[a-z][a-z0-9-]*")
 _CHOICES = re.compile(r"[A-Za-z]\w*(?:\|[A-Za-z]\w*)+")
 _README_DEFAULT = re.compile(
@@ -719,6 +720,15 @@ def _fence_split(md: str) -> tuple[list[str], list[str]]:
 
 
 def _example_command(tokens: list[str], line: str) -> tuple[str, ...]:
+    glob = global_flags()
+    i = 0
+    while i < len(tokens) and tokens[i].startswith("-"):
+        action = glob.get(tokens[i])
+        takes_value = action is not None and action.nargs != 0 and "=" not in tokens[i]
+        i += 2 if takes_value else 1
+    tokens = tokens[i:]
+    if not tokens:
+        return ()  # only global flags (`--version`, `--help`)
     for size in (2, 1):
         if tuple(tokens[:size]) in REGISTRY:
             return tuple(tokens[:size])
@@ -743,10 +753,12 @@ def check_readme_flags(r: Repo) -> None:
         every |= set(command_flags(path))
     inside, outside = _fence_split(r.readme)
     problems: list[str] = []
+    checked = 0
     for line in inside:
-        text = line.strip()
+        text = line.strip().removeprefix("$ ").strip()
         if not text.startswith("ticketctl "):
             continue
+        checked += 1
         for part in text.removeprefix("ticketctl ").split(" | "):
             tokens = part.split()
             if not tokens:
@@ -774,6 +786,11 @@ def check_readme_flags(r: Repo) -> None:
                             f"{text!r}: {name} shows {sorted(shown)}, "
                             f"the parser has {sorted(known)}"
                         )
+    if checked < MIN_README_EXAMPLES:
+        raise dp.ParityError(
+            f"README: checked {checked} fenced `ticketctl` example lines, expected at least "
+            f"{MIN_README_EXAMPLES}"
+        )
     prose = "\n".join(outside)
     for span in dp.spans(prose):
         name = _flag_name(span)
@@ -1211,6 +1228,37 @@ def test_a_changed_readme_fails_its_check(
     changed = replace(repo, readme=mutate_text(repo.readme, old, new))
     with pytest.raises(AssertionError, match=re.escape(expected)):
         CHECKS[name](changed)
+
+
+def _fenced(*lines: str) -> str:
+    return "```\n" + "\n".join(lines) + "\n```\n"
+
+
+def test_a_readme_with_too_few_fenced_examples_fails_the_flag_check(repo: Repo) -> None:
+    changed = replace(repo, readme=_fenced("ticketctl whoami", "ticketctl fields"))
+    with pytest.raises(AssertionError, match="at least 3"):
+        check_readme_flags(changed)
+
+
+def test_prompt_prefixed_examples_are_still_checked(repo: Repo) -> None:
+    lines = ["$ ticketctl whoami", "  $ ticketctl fields", "$ ticketctl sites --nope"]
+    with pytest.raises(AssertionError, match="--nope"):
+        check_readme_flags(replace(repo, readme=_fenced(*lines)))
+
+
+def test_global_flags_before_the_command_are_skipped(repo: Repo) -> None:
+    lines = [
+        "ticketctl --json search --query my_open",
+        "ticketctl --site main --timeout 5s whoami",
+        "ticketctl --version",
+    ]
+    check_readme_flags(replace(repo, readme=_fenced(*lines)))
+
+
+def test_a_global_only_example_is_checked_against_global_flags_only(repo: Repo) -> None:
+    lines = ["ticketctl whoami", "ticketctl fields", "ticketctl sites", "ticketctl --versionx"]
+    with pytest.raises(AssertionError, match="--versionx"):
+        check_readme_flags(replace(repo, readme=_fenced(*lines)))
 
 
 WORDING_VARIANTS = [
