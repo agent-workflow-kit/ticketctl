@@ -298,9 +298,9 @@ def test_a_timeout_kills_the_whole_process_group_not_only_the_child(tmp_path: Pa
     pids = tmp_path / "pids.txt"
     stub = _stub(
         tmp_path,
-        "import subprocess, sys, time\n"
+        "import os, subprocess, sys, time\n"
         "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-        f"open({str(pids)!r}, 'a').write(str(g.pid) + '\\n')\n"
+        f"open({str(pids)!r}, 'a').write(str(g.pid) + '\\n' + str(os.getpid()) + '\\n')\n"
         "time.sleep(30)\n",
     )
     try:
@@ -312,6 +312,29 @@ def test_a_timeout_kills_the_whole_process_group_not_only_the_child(tmp_path: Pa
         while any(_alive(p) for p in grandchildren) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not [p for p in grandchildren if _alive(p)]
+    finally:
+        for text in pids.read_text().split() if pids.exists() else []:
+            if _alive(int(text)):  # cleanup of only the exact pid the stub recorded
+                os.kill(int(text), signal.SIGKILL)
+
+
+def test_a_descendant_that_left_the_group_and_holds_the_pipes_does_not_hang_the_harness(
+    tmp_path: Path,
+) -> None:
+    pids = tmp_path / "escaped.txt"
+    stub = _stub(
+        tmp_path,
+        "import os, subprocess, sys, time\n"
+        "code = 'import os, time; os.setsid(); time.sleep(60)'\n"
+        "g = subprocess.Popen([sys.executable, '-c', code])\n"
+        f"open({str(pids)!r}, 'a').write(str(g.pid) + '\\n')\n"
+        "time.sleep(60)\n",
+    )
+    try:
+        started = time.monotonic()
+        report = cron.run_checks(stub, key=KEY, to=TO, env={"PATH": CRON_PATH}, timeout=0.5)
+        assert time.monotonic() - started < 40  # 4 steps x (timeout + 5 s)
+        assert any(s.name.startswith("bounded") and not s.ok for s in report.steps)
     finally:
         for text in pids.read_text().split() if pids.exists() else []:
             if _alive(int(text)):  # cleanup of only the exact pid the stub recorded

@@ -169,7 +169,15 @@ def run_checks(
                 os.killpg(proc.pid, signal.SIGKILL)  # the group this run started, never a pattern
             except ProcessLookupError:
                 pass
-            proc.communicate()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                # A descendant left the group and still holds the pipes: stop waiting for them.
+                proc.kill()
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+                proc.wait()
             report.add("bounded: " + " ".join(args[:3]), False, f"no answer in {timeout} s")
             return None, ""
         outputs.extend([stdout, stderr])
