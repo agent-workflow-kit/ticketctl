@@ -5,7 +5,9 @@ The same code serves two runs.
 
 * The test suite (``tests/test_cron_env.py``) runs it against the fake provider with a scrubbed
   environment: only a configured ``PATH``, the state and config directories and the token
-  variable, no ``TERM``, stdin from ``/dev/null``, a new session (so no controlling terminal).
+  variable, no ``TERM``, stdin from ``/dev/null``, a new session. The tests prove the harness
+  gives each child ``stdin=DEVNULL`` and ``start_new_session=True`` and that a child sees a null
+  stdin and leads its own session; they do not run the child under a real pty.
 * A human runs this file from a real crontab: every step then runs in whatever environment cron
   really hands over, and the report shows what that was (names only).
 
@@ -34,6 +36,7 @@ import errno
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -149,22 +152,28 @@ def run_checks(
     prefix = [*ticketctl, *(["--config", config] if config else []), "--json"]
 
     def run(*args: str) -> tuple[int | None, str]:
+        # A new session makes the child a group leader, so a timeout can kill the whole group.
+        proc = subprocess.Popen(
+            [*prefix, *args],
+            env=None if env is None else dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
         try:
-            p = subprocess.run(
-                [*prefix, *args],
-                env=None if env is None else dict(env),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                start_new_session=True,
-                check=False,
-            )
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # the group this run started, never a pattern
+            except ProcessLookupError:
+                pass
+            proc.communicate()
             report.add("bounded: " + " ".join(args[:3]), False, f"no answer in {timeout} s")
             return None, ""
-        outputs.extend([p.stdout, p.stderr])
-        return p.returncode, p.stdout
+        outputs.extend([stdout, stderr])
+        return proc.returncode, stdout
 
     report.notes.append("environment variable names: " + (", ".join(sorted(effective)) or "(none)"))
     report.notes.append("PATH entries: " + str(len(effective.get("PATH", "").split(os.pathsep))))
@@ -177,7 +186,12 @@ def run_checks(
     before = len(_audit(effective))
 
     code, out = run("get", key)
-    report.add("read", code == 0 and bool(_doc(out)), f"exit {code}")
+    read_code = (_doc(out).get("error") or {}).get("code")
+    report.add(
+        "read",
+        code == 0 and bool(_doc(out)),
+        f"exit {code}" + (f", code {read_code!r}" if read_code else ""),
+    )
 
     code, out = run("--dry-run", "transition", key, *target)
     plan = _doc(out)
@@ -193,10 +207,11 @@ def run_checks(
     error = _doc(out).get("error") or {}
     details = error.get("details") or {}
     carried = (details.get("plan") or {}).get("plan_sha256")
+    same = isinstance(held, str) and carried == held
     report.add(
         "write without --yes is exit 13, no prompt",
-        code == 13 and error.get("code") == "confirmation_required" and carried == held,
-        f"exit {code}, code {error.get('code')!r}, same hash as dry run: {carried == held}",
+        code == 13 and error.get("code") == "confirmation_required" and same,
+        f"exit {code}, code {error.get('code')!r}, same hash as dry run: {same}",
     )
     report.add("unconfirmed write writes no audit", len(_audit(effective)) == before)
 
