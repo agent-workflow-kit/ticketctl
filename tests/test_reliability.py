@@ -18,8 +18,10 @@ import pytest
 
 from tests.fake_provider import OTHER_ACCOUNT, SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault, Out
 from tests.scripted_server import closed_port
-from ticketctl import runtime
+from tests.test_dedupe_flow import Virtual
+from ticketctl import createcmd, runtime
 from ticketctl.cli import main
+from ticketctl.writeflow import Seams
 
 ENV_VAR = "TICKETCTL_TEST_RELIABILITY_ENV"
 OTHER = OTHER_ACCOUNT
@@ -31,6 +33,7 @@ class Cli:
         self.capsys = capsys
         self.root = root
         self.sleeps: list[float] = []
+        self.virtual = Virtual(fake)
         self.config = root / "config.yaml"
         self.config.write_text(
             f"sites:\n  main:\n    url: {fake.url}\n    email: {SITE_EMAIL}\n"
@@ -77,6 +80,8 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: Fake
         return real(*args, sleep=out.sleeps.append, rng=lambda: 1.0, **kw)
 
     monkeypatch.setattr(runtime, "Gateway", gateway)
+    # The create lag guard waits on a virtual clock (it also moves the fake's clock), never for real.
+    monkeypatch.setattr(createcmd, "make_clock", out.virtual.clock)
     return out
 
 
@@ -276,9 +281,6 @@ def test_a_well_formed_nonexistent_key_answers_like_a_hidden_one(
 
 # --- writes: every command, every row ------------------------------------------------------------
 
-# todo(#31): add the create rows (WRITES, LOST, the cut-JSON 2xx write, the keyless/keyed
-# outcome_unknown retryable flags, the 404 on a collection write path, createmeta 404/410) once
-# create lands
 WRITES = [
     pytest.param(
         ("comment", "DEMO-2", "--body", "hello", "--dedupe-key", "k1"),
@@ -300,6 +302,12 @@ WRITES = [
         "POST",
         r"/sprint/2/issue$",
         id="sprint-add",
+    ),
+    pytest.param(
+        ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel", "--dedupe-key", "k-new"),
+        "POST",
+        r"/issue$",
+        id="create",
     ),
 ]
 
@@ -364,7 +372,7 @@ def test_401_and_403_on_a_write_are_final_with_nothing_unknown(
     assert sent(cli, method, path) == 1
 
 
-@pytest.mark.parametrize("argv, method, path", WRITES)
+@pytest.mark.parametrize("argv, method, path", [w for w in WRITES if w.id != "create"])
 def test_404_on_a_write_to_an_object_path_is_not_found(
     cli: Cli, argv: tuple[str, ...], method: str, path: str
 ) -> None:
@@ -509,6 +517,171 @@ def test_a_keyed_comment_unknown_is_retryable_and_its_rerun_finds_the_landed_com
     code, again = cli.apply(*argv)
     assert (code, again["already_posted"], again["result"]) == (0, True, "unchanged")
     assert sent(cli, "POST", r"/comment$") == 1
+
+
+# --- create: what its single POST and its dedupe lookup add to the rules above -------------------
+
+CREATE = ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel")
+KEYED = (*CREATE, "--dedupe-key", "k-rel")
+ISSUE_POST = r"/issue$"
+SEARCH = r"/search/jql$"
+
+
+def test_404_on_the_create_post_is_provider_changed_not_not_found(cli: Cli) -> None:
+    # Pinned current behaviour: POST /issue names no object, so it is a collection write and
+    # CreateAction maps it with object_path=False. interface.md's status table does not list it.
+    code, plan = cli.error("--dry-run", *KEYED)
+    fail(cli.fake, "POST", ISSUE_POST, 404)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
+        12,
+        "provider_changed",
+        False,
+        False,
+    )
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert cli.sleeps == []
+
+
+def test_410_on_the_create_post_is_rejected_like_any_other_4xx_on_a_write(cli: Cli) -> None:
+    # Pinned current behaviour: raise_for_write maps only 404 specially, so a 410 is "rejected"
+    # although the table says any 410 on a collection endpoint is provider_changed (a read rule).
+    code, plan = cli.error("--dry-run", *KEYED)
+    fail(cli.fake, "POST", ISSUE_POST, 410)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "rejected", False)
+    assert sent(cli, "POST", ISSUE_POST) == 1
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_a_missing_createmeta_is_not_found_only_on_404(cli: Cli, status: int) -> None:
+    # The createmeta reads name a project and a type, so 404 is "project or type missing" (exit 10).
+    # A 410 is not mapped there: it is an unusable answer, 12 provider_changed.
+    fail(cli.fake, "GET", r"/issue/createmeta/DEMO/issuetypes$", status)
+    code, err = cli.error("--dry-run", *CREATE)
+    assert (code, err["code"]) == ((10, "not_found") if status == 404 else (12, "provider_changed"))
+    assert sent(cli, "POST", ISSUE_POST) == 0
+
+
+def test_a_keyless_create_with_a_lost_answer_is_unknown_and_not_retryable(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --yes needs a key, so the keyless run goes through the (substituted) confirmation dialog.
+    monkeypatch.setattr(
+        createcmd, "make_seams", lambda: Seams(interactive=lambda: True, confirm=lambda p: True)
+    )
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--actor", "human:tester", *CREATE)  # an auto actor is never asked
+    assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
+        12,
+        "outcome_unknown",
+        False,
+        True,
+    )
+    assert re.search(r"--dedupe-key", err["message"])
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert len(cli.fake.tickets) == 4  # the three seeded and the landed one
+
+
+def test_a_framed_but_cut_json_create_answer_is_unknown_and_not_retryable(cli: Cli) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    override(cli.fake, "POST", "/issue", Out(201, CUT_JSON))
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "provider_changed", True)
+    assert err["retryable"] is False
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert [r["result"] for r in cli.audit()] == ["attempted", "unknown"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [Fault("close", after_apply=True), Fault("reset"), Fault("status", status=503)],
+    ids=["close-after-apply", "reset", "503"],
+)
+def test_create_is_one_step_so_a_failure_is_never_partial(cli: Cli, fault: Fault) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, fault, "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    assert "result" not in (err["details"] or {})  # a partial result lists its steps
+    assert [r["step"] for r in cli.audit()] == [1, 1]  # attempted, unknown: one step only
+
+
+def test_the_rerun_after_a_lost_create_waits_on_the_virtual_clock_and_finds_the_ticket(
+    cli: Cli,
+) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    assert cli.virtual.waits == []
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"], again["result"]) == (0, True, "unchanged")
+    assert sent(cli, "POST", ISSUE_POST) == 1  # one search found it; no second POST
+    # The guard waited on the virtual clock (2 s quick re-run, 5 s polls), never for real.
+    assert cli.virtual.waits and set(cli.virtual.waits) <= {2.0, 5.0}
+    assert cli.sleeps == []
+
+
+def test_a_quick_rerun_of_a_landed_create_repeats_the_lookup_once_after_two_seconds(
+    cli: Cli,
+) -> None:
+    code, first = cli.apply(*KEYED)
+    assert (code, first["result"]) == (0, "ok")
+    cli.virtual.waits.clear()
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"]) == (0, True)
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert set(cli.virtual.waits) <= {2.0}
+
+
+def test_a_reused_label_rerun_costs_one_search_and_no_post(cli: Cli) -> None:
+    code, first = cli.apply(*KEYED)
+    assert code == 0
+    searches = sent(cli, "POST", SEARCH)
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"]) == (0, True)
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert sent(cli, "POST", SEARCH) > searches
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"issues": [], "nextPageToken": "more"},
+        {"issues": [{"id": str(n), "key": f"DEMO-{n}"} for n in range(101, 202)]},
+    ],
+    ids=["next-page-token", "over-100-results"],
+)
+def test_a_label_lookup_that_cannot_prove_absence_is_lookup_incomplete(
+    cli: Cli, answer: dict[str, Any]
+) -> None:
+    override(cli.fake, "POST", "search/jql", Out(200, json.dumps(answer)))
+    code, err = cli.error("--dry-run", *KEYED)
+    assert (code, err["code"], err["retryable"]) == (12, "lookup_incomplete", False)
+    assert sent(cli, "POST", ISSUE_POST) == 0
+
+
+def test_a_label_lookup_with_an_unusable_answer_is_provider_changed(cli: Cli) -> None:
+    override(cli.fake, "POST", "search/jql", Out(200, json.dumps({"unexpected": True})))
+    code, err = cli.error("--dry-run", *KEYED)
+    assert (code, err["code"]) == (12, "provider_changed")
+    assert sent(cli, "POST", ISSUE_POST) == 0
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+def test_the_label_lookup_follows_the_search_rows(cli: Cli, status: int) -> None:
+    expected = {
+        401: "bad_credentials",
+        403: "forbidden",
+        404: "provider_changed",
+        429: "rate_limited",
+        503: "unavailable",
+    }[status]
+    fail(cli.fake, "POST", SEARCH, status)
+    code, err = cli.error("--dry-run", *KEYED)
+    assert (code, err["code"]) == (12, expected)
+    assert sent(cli, "POST", ISSUE_POST) == 0
 
 
 @pytest.mark.parametrize("argv, method, path", WRITES)
@@ -804,6 +977,7 @@ def test_a_retry_after_above_the_cap_but_within_the_time_ends_a_write_at_once(
 
 LONG_BODY = "x" * 64
 SAMPLES = {
+    "create": "/rest/api/3/issue",  # first: its path pattern also matches the sprint sample
     "comment": "/rest/api/3/issue/DEMO-2/comment",
     "transition": "/rest/api/3/issue/DEMO-2/transitions",
     "update": "/rest/api/3/issue/DEMO-2/assignee",
