@@ -215,7 +215,17 @@ The user-facing list is [Residual risks](interface.md#residual-risks); the desig
 
 ## Platforms
 
-Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. `jsonschema` is a development-only dependency: a test generates documents from `schemas/adf.json` and checks that the code allowlist and the schema accept the same documents. Linux, WSL and macOS behave the same. A macOS checklist covers a real read and a path check. CI runs Python 3.12 and 3.13 on Linux.
+Pure Python: the standard library for HTTP and process-free work, with `pyyaml` and `pydantic` as the only runtime dependencies. `jsonschema` is a development-only dependency: a test generates documents from `schemas/adf.json` and checks that the code allowlist and the schema accept the same documents. Linux, WSL and macOS behave the same by design. CI runs Python 3.12 and 3.13 on Linux only.
+
+What Linux CI verifies: the whole suite against the fake provider; the input file reader on its `/proc/self/fd` branch; `export --to` with `O_EXCL|O_NOFOLLOW` and mode 0600; the hook runner on its `waitid` path and signal restoration; the confirmation dialog through a pseudo-terminal child; the state and lock rules; and a cron-style run (`tests/test_cron_env.py`, driving `scripts/cron_check.py`): ticketctl as a process with only a configured `PATH`, the XDG directories and the token variable (no `TERM`, stdin from `/dev/null`, a new session; the tests prove the harness passes `stdin=DEVNULL` and `start_new_session=True` and that a child sees a null stdin and leads its own session, but do not run the child under a real pty, so "no `/dev/tty`" is claimed only for the real cron run in the checklist) does a read, a `--dry-run` write and a `--yes --expect-plan` write, exits 13 without `--yes`, and writes an audit whose `actor` is `auto:unknown` with `actor_source` `default` and `stdin_tty` false.
+
+What [the platform checklist](platform-checklist.md) covers, by hand: everything the Linux tests only simulate or cannot reach, namely the `F_GETPATH` lookup, the hook runner's `Popen.poll` fallback (macOS has no `os.waitid`), `/dev/tty` behavior (type-ahead, a different terminal, SIGHUP, the 600 s wait), `export --to` on APFS and network file systems, a real full disk and a multi-GB audit, `os.utime` and `os.ftruncate` on a lock descriptor, `flock` on a network file system (unsupported; same host only), and a real `cron` or `launchd` run of the same script.
+
+macOS findings (a person fills this table in from a checklist run; a row is a result, never a guess, and a failure links the issue that tracks it):
+
+| Date (UTC) | System | Python | Checklist IDs | Finding | Issue |
+|---|---|---|---|---|---|
+| | | | | | |
 
 ## Architecture constraints this design adds
 
