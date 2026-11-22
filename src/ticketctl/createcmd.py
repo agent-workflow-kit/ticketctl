@@ -66,6 +66,7 @@ MAX_PAGES = 25
 MAX_TYPES = 1000
 MAX_META_FIELDS = 10_000
 MAX_CANDIDATES = 50
+MAX_KEY_DIGITS = 18  # a longer ticket number is not a key a provider hands out
 MAX_FOUND = 100  # tickets read for one dedupe label (more is lookup_incomplete)
 # Required fields the provider or ticketctl fills in: never reported missing. ``parent`` is not
 # listed: whether a parent is needed, and which parents fit, is the provider's call (a 400 that
@@ -155,23 +156,44 @@ def _get(ctx: Context, path: str, template: str, **params: object) -> dict[str, 
     return data
 
 
-def _paged(ctx: Context, path: str, template: str, names: tuple[str, ...], limit: int) -> list[Any]:
-    """Every entry of a paged createmeta list (the first of ``names`` that is a list)."""
+def _paged(
+    ctx: Context,
+    path: str,
+    template: str,
+    names: tuple[str, ...],
+    limit: int,
+    first: dict[str, Any] | None = None,
+) -> list[Any]:
+    """Every entry of a paged createmeta list (the first of ``names`` that is a list).
+
+    ``first`` is an answer for ``startAt=0`` that was already fetched. The list ends at
+    ``isLast: true``, at an int ``total``, at an empty page, or (when the provider says neither)
+    at a page shorter than its page size; a full page that says nothing usable keeps paging up
+    to ``MAX_PAGES`` and then is ``provider_changed``.
+    """
     out: list[Any] = []
     start = 0
     for _ in range(MAX_PAGES):
-        data = _get(ctx, path, template, startAt=start, maxResults=PAGE)
+        data = first if first is not None and start == 0 else None
+        if data is None:
+            data = _get(ctx, path, template, startAt=start, maxResults=PAGE)
         page = next((data[n] for n in names if isinstance(data.get(n), list)), None)
         if page is None:
             raise TicketctlError("provider_changed", "the createmeta answer has no list")
         out.extend(page)
         if len(out) > limit:
             raise TicketctlError("provider_changed", "the createmeta list is too long")
-        total = data.get("total")
-        if not page or not isinstance(total, int) or isinstance(total, bool):
+        if not page or data.get("isLast") is True:
             return out
         start += len(page)
-        if start >= total:
+        total = data.get("total")
+        if isinstance(total, int) and not isinstance(total, bool):
+            if start >= total:
+                return out
+            continue
+        size = data.get("maxResults")
+        size = size if isinstance(size, int) and not isinstance(size, bool) and size > 0 else PAGE
+        if data.get("isLast") is not False and len(page) < size:
             return out
     raise TicketctlError("provider_changed", "the createmeta list has too many pages")
 
@@ -223,7 +245,7 @@ def _meta_fields(ctx: Context, project: str, issue_type: _Type) -> dict[str, dic
     raw_fields = data.get("fields", data.get("values"))
     if isinstance(raw_fields, dict):
         return {k: v for k, v in raw_fields.items() if isinstance(k, str) and isinstance(v, dict)}
-    items = _paged(ctx, path, FIELDS_TEMPLATE, ("fields", "values"), MAX_META_FIELDS)
+    items = _paged(ctx, path, FIELDS_TEMPLATE, ("fields", "values"), MAX_META_FIELDS, first=data)
     out: dict[str, dict[str, Any]] = {}
     for raw in items:
         ident = raw.get("fieldId", raw.get("key")) if isinstance(raw, dict) else None
@@ -433,10 +455,19 @@ class CreateAction:
                 "more tickets carry the dedupe label than can be read; nothing was created",
             )
         found: list[tuple[str, str | None, str | None]] = []
+        seen: set[str] = set()
         for issue in issues:
             key = issue.get("key") if isinstance(issue, dict) else None
-            if not isinstance(key, str) or not TICKET_KEY.fullmatch(key):
+            if (
+                not isinstance(key, str)
+                or not TICKET_KEY.fullmatch(key)
+                or key.rsplit("-", 1)[0] != self.project
+                or len(key.rsplit("-", 1)[1]) > MAX_KEY_DIGITS
+            ):
                 raise TicketctlError("provider_changed", "the dedupe lookup found an unusable key")
+            if key in seen:  # one ticket listed twice is one match
+                continue
+            seen.add(key)
             fields = issue.get("fields")
             fields = fields if isinstance(fields, dict) else {}
             kind = fields.get("issuetype")

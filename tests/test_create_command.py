@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -404,21 +406,43 @@ def test_without_yes_a_non_interactive_run_needs_confirmation(cli: Cli) -> None:
     assert cli.posts() == []
 
 
+def _state_text(root: Path) -> str:
+    """Every file under the state directory, as text (audit, log and lock files)."""
+    state = root / "state"
+    return "\n".join(
+        path.read_text(errors="replace") for path in sorted(state.rglob("*")) if path.is_file()
+    )
+
+
+@pytest.mark.parametrize(
+    ("where", "reason"),
+    [
+        ("title", "secret_in_body"),
+        ("label", "secret_in_body"),
+        ("description", "secret_in_body"),
+        ("dedupe_key", "secret_in_body"),
+        ("set_value", None),
+    ],
+)
 def test_a_secret_in_a_title_label_or_body_is_refused_and_never_echoed(
-    cli: Cli, tmp_path: Path
+    cli: Cli, tmp_path: Path, where: str, reason: str | None
 ) -> None:
     secret = SITE_TOKEN
     f = tmp_path / "s.md"
     f.write_text(f"leak {secret}")
-    for argv in (
-        [*BASE, f"x {secret}"],
-        [*BASE, "t", "--label", secret],
-        [*BASE, "t", "--body-file", str(f)],
-        [*BASE, "t", "--dedupe-key", secret],
-    ):
-        code, out, err = cli.run("--json", "--dry-run", "create", *argv)
-        assert SITE_TOKEN not in out + err
-        assert code in (2, 22), argv
+    argv = {
+        "title": [*BASE, f"x {secret}"],
+        "label": [*BASE, "t", "--label", secret],
+        "description": [*BASE, "t", "--body-file", str(f)],
+        "dedupe_key": [*BASE, "t", "--dedupe-key", secret],
+        "set_value": [*BASE, "t", "--set", f"priority={secret}"],
+    }[where]
+    code, out, err = cli.run("--json", "--dry-run", "create", *argv)
+    assert SITE_TOKEN not in out + err + _state_text(tmp_path)
+    env = json.loads(out)
+    assert code == 22, (where, env)
+    if reason is not None:
+        assert env["error"]["reason"] == reason, (where, env)
     assert cli.posts() == []
 
 
@@ -508,7 +532,7 @@ def test_the_audit_record_has_the_key_and_no_title(cli: Cli, tmp_path: Path) -> 
     code, result = cli.create(*BASE, f"secret title {BODY_MARK}", "--dedupe-key", "au")
     assert code == 0
     audit_text = (tmp_path / "state" / "ticketctl" / "audit.jsonl").read_text()
-    assert BODY_MARK not in audit_text
+    assert BODY_MARK not in audit_text + _state_text(tmp_path)
     records = [json.loads(line) for line in audit_text.splitlines()]
     assert [r["result"] for r in records] == ["attempted", "ok"]
     assert (
@@ -531,3 +555,295 @@ def test_a_landed_create_with_an_unusable_answer_prints_a_null_key(
     code, result = cli.create(*BASE, "t", "--dedupe-key", "nk")
     assert code == 0 and result["key"] is None and result["url"] is None
     assert result["changed"] is True
+
+
+# ---- createmeta shapes, paging and error mapping -----------------------------------------------
+
+
+def swap(cli: Cli, **handlers: Any) -> None:
+    """Replace fake handlers (by attribute name) and rebuild its routes."""
+    for name, handler in handlers.items():
+        setattr(cli.fake, name, handler)
+    cli.fake._routes = []
+    cli.fake._build_routes()
+
+
+def type_entry(ident: str, name: str) -> dict[str, Any]:
+    return {"id": ident, "name": name, "subtask": False}
+
+
+def dry(cli: Cli, type_name: str, *extra: str) -> tuple[int, dict[str, Any]]:
+    return cli.doc(
+        "--dry-run", "create", "--project", "DEMO", "--type", type_name, "--title", "t", *extra
+    )
+
+
+def meta_gets(cli: Cli, suffix: str) -> list[Any]:
+    return [c for c in cli.fake.calls if c.method == "GET" and c.path.endswith(suffix)]
+
+
+def test_the_values_shape_of_the_type_list_is_accepted(cli: Cli) -> None:
+    swap(
+        cli,
+        _createmeta_types=lambda call, project: Out(
+            200, {"isLast": True, "values": [type_entry("4", "Epic")]}
+        ),
+    )
+    code, plan = dry(cli, "Epic")
+    assert code == 0 and plan["steps"][0]["type"] == "Epic"
+
+
+def test_the_object_keyed_fields_shape_is_accepted(cli: Cli) -> None:
+    fields = {
+        "summary": {"name": "Summary", "required": True, "schema": {"type": "string"}},
+        F_POINTS: {"name": "Story Points", "required": True, "schema": {"type": "number"}},
+    }
+    swap(cli, _createmeta_fields=lambda call, project, type_id: Out(200, {"fields": fields}))
+    code, env = dry(cli, "Task")
+    assert (code, env["error"]["reason"]) == (22, "missing_required_fields")
+    assert [r["name"] for r in env["error"]["details"]["required_fields"]] == ["Story Points"]
+
+
+def test_a_list_shaped_field_answer_costs_one_request(cli: Cli) -> None:
+    code, plan = dry(cli, "Task")
+    assert code == 0, plan
+    assert len(meta_gets(cli, "/issuetypes/1")) == 1
+    assert len(meta_gets(cli, "/issuetypes")) == 1
+
+
+def test_the_type_list_is_read_at_200_per_page(cli: Cli) -> None:
+    pages: list[tuple[str | None, str | None]] = []
+
+    def types(call: Any, project: str) -> Out:
+        start, size = int(call.one("startAt", "0") or 0), int(call.one("maxResults", "0") or 0)
+        pages.append((call.one("startAt"), call.one("maxResults")))
+        everything = [type_entry(str(1000 + i), f"T{i}") for i in range(449)]
+        everything.append(type_entry("4", "Last"))
+        return Out(
+            200,
+            {
+                "startAt": start,
+                "maxResults": size,
+                "total": 450,
+                "issueTypes": everything[start : start + size],
+            },
+        )
+
+    swap(cli, _createmeta_types=types)
+    code, plan = dry(cli, "Last")
+    assert code == 0 and plan["steps"][0]["type"] == "Last"
+    assert pages == [("0", "200"), ("200", "200"), ("400", "200")]
+
+
+@pytest.mark.parametrize("shape", [{"total": 10**6}, {"isLast": False}])
+def test_a_never_ending_type_list_stops_after_25_pages(cli: Cli, shape: dict[str, Any]) -> None:
+    def types(call: Any, project: str) -> Out:
+        return Out(200, {"issueTypes": [type_entry(str(1000 + len(cli.fake.calls)), "X")], **shape})
+
+    swap(cli, _createmeta_types=types)
+    code, env = dry(cli, "Task")
+    assert (code, env["error"]["code"]) == (12, "provider_changed")
+    assert len(meta_gets(cli, "/issuetypes")) == createcmd.MAX_PAGES == 25
+
+
+def test_a_type_on_a_later_page_is_found_without_a_total(cli: Cli) -> None:
+    names = [("1", "Task"), ("2", "Bug"), ("3", "Sub-task"), ("4", "Epic")]
+
+    def types(call: Any, project: str) -> Out:
+        start = int(call.one("startAt", "0") or 0)
+        page = [type_entry(*names[start])] if start < len(names) else []
+        return Out(200, {"startAt": start, "maxResults": 1, "isLast": False, "issueTypes": page})
+
+    swap(cli, _createmeta_types=types)
+    code, plan = dry(cli, "Epic")
+    assert code == 0 and plan["steps"][0]["type"] == "Epic"
+
+
+def test_a_404_on_the_fields_call_is_not_found(cli: Cli) -> None:
+    def gone(call: Any, project: str, type_id: str) -> Out:
+        raise ProviderError(404, ["No issue type could be found."])
+
+    swap(cli, _createmeta_fields=gone)
+    code, env = dry(cli, "Task")
+    assert (code, env["error"]["code"]) == (10, "not_found")
+
+
+def test_a_404_on_the_type_call_is_not_found(cli: Cli) -> None:
+    code, env = cli.doc(
+        "--dry-run", "create", "--project", "NOPE", "--type", "Task", "--title", "t"
+    )
+    assert (code, env["error"]["code"]) == (10, "not_found")
+
+
+def test_two_types_differing_only_in_case_the_exact_name_wins(cli: Cli) -> None:
+    swap(
+        cli,
+        _createmeta_types=lambda call, project: Out(
+            200, {"total": 2, "issueTypes": [type_entry("1", "Task"), type_entry("4", "task")]}
+        ),
+    )
+    code, plan = dry(cli, "task")
+    assert code == 0 and plan["steps"][0]["type"] == "task"
+    code, env = dry(cli, "TASK")
+    assert (code, env["error"]["reason"]) == (22, "invalid_value")
+    assert env["error"]["details"]["candidates"] == ["Task", "task"]
+
+
+def with_required(cli: Cli, **required: dict[str, Any]) -> None:
+    """Make createmeta list extra fields, each ``name -> extra entry keys``."""
+    original = cli.fake._createmeta_fields
+
+    def fields(call: Any, project: str, type_id: str) -> Out:
+        out = original(call, project, type_id)
+        for fid, extra in required.items():
+            entry = next((f for f in out.body["fields"] if f["fieldId"] == fid), None)
+            if entry is None:
+                entry = {"fieldId": fid, "name": fid.title(), "schema": {"type": "string"}}
+                out.body["fields"].append(entry)
+            entry["required"] = True
+            entry.update(extra)
+        return out
+
+    swap(cli, _createmeta_fields=fields)
+
+
+def test_a_required_field_with_a_default_is_not_missing(cli: Cli) -> None:
+    with_required(cli, **{F_POINTS: {"hasDefaultValue": True}})
+    code, plan = dry(cli, "Task")
+    assert code == 0, plan
+
+
+def test_a_required_reporter_is_never_missing(cli: Cli) -> None:
+    with_required(cli, reporter={"schema": {"type": "user", "system": "reporter"}})
+    code, plan = dry(cli, "Task")
+    assert code == 0, plan
+
+
+def test_a_required_description_is_supplied_by_the_attribution_or_a_body(
+    cli: Cli, tmp_path: Path
+) -> None:
+    with_required(cli, description={"name": "Description"})
+    code, plan = dry(cli, "Task")  # the default actor writes the attribution paragraph
+    assert code == 0, plan
+    code, env = cli.doc("--actor", "human:tester", "--dry-run", "create", *BASE, "t")
+    assert (code, env["error"]["reason"]) == (22, "missing_required_fields")
+    assert [r["name"] for r in env["error"]["details"]["required_fields"]] == ["Description"]
+    f = tmp_path / "d.md"
+    f.write_text("some words\n")
+    code, plan = cli.doc(
+        "--actor", "human:tester", "--dry-run", "create", *BASE, "t", "--body-file", str(f)
+    )
+    assert code == 0, plan
+
+
+def test_assign_and_label_satisfy_required_fields(cli: Cli) -> None:
+    with_required(cli, assignee={"name": "Assignee"}, labels={"name": "Labels"})
+    code, env = dry(cli, "Task")
+    assert (code, env["error"]["reason"]) == (22, "missing_required_fields")
+    assert [r["name"] for r in env["error"]["details"]["required_fields"]] == [
+        "Assignee",
+        "Labels",
+    ]
+    code, env = dry(cli, "Task", "--assign", "me")
+    assert [r["name"] for r in env["error"]["details"]["required_fields"]] == ["Labels"]
+    code, env = dry(cli, "Task", "--label", "x")
+    assert [r["name"] for r in env["error"]["details"]["required_fields"]] == ["Assignee"]
+    code, plan = dry(cli, "Task", "--assign", "me", "--label", "x")
+    assert code == 0, plan
+
+
+def test_an_expect_plan_mismatch_is_stale_ticket(cli: Cli) -> None:
+    code, env = cli.doc(
+        "--yes", "--expect-plan", "0" * 64, "create", *BASE, "t", "--dedupe-key", "sp1"
+    )
+    assert (code, env["error"]["code"]) == (20, "stale_ticket")
+    assert cli.posts() == []
+
+
+# ---- stdin through a real process --------------------------------------------------------------
+
+
+def _real(cli: Cli, tmp_path: Path, *argv: str, stdin: str) -> tuple[int, dict[str, Any]]:
+    import subprocess
+
+    home = tmp_path / "real-home"
+    home.mkdir(exist_ok=True)
+    env = {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(tmp_path / "real-xdg"),
+        "XDG_CACHE_HOME": str(tmp_path / "real-cache"),
+        "XDG_STATE_HOME": str(tmp_path / "real-state"),
+        "PATH": "",
+        "PYTHONPATH": os.pathsep.join(sys.path),
+        SITE_ENV_VAR: SITE_TOKEN,
+    }
+    done = subprocess.run(  # noqa: S603 - the interpreter running the tests
+        [sys.executable, "-m", "ticketctl", "--config", str(cli.config), "--json", *argv],
+        env=env,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    return done.returncode, json.loads(done.stdout)
+
+
+def test_the_title_can_come_from_stdin(cli: Cli, tmp_path: Path) -> None:
+    code, plan = _real(
+        cli, tmp_path, "--dry-run", "create", "--project", "DEMO", "--type", "Task",
+        "--title-file", "-", stdin="from stdin\n",
+    )  # fmt: skip
+    assert code == 0, plan
+    (title,) = [c for c in plan["changes"] if c["name"] == "title"]
+    assert title["to"] == "from stdin"
+
+
+def test_the_body_can_come_from_stdin(cli: Cli, tmp_path: Path) -> None:
+    code, plan = _real(
+        cli, tmp_path, "--dry-run", "create", *BASE, "t", "--body-file", "-",
+        stdin=f"hello {BODY_MARK}\n",
+    )  # fmt: skip
+    assert code == 0, plan
+    (desc,) = [c for c in plan["changes"] if c["name"] == "description"]
+    assert BODY_MARK in desc["to"]
+
+
+# ---- the lookup's reading of the answer --------------------------------------------------------
+
+
+def answer_with(cli: Cli, *keys: str, summary: str = "t") -> None:
+    issues = [
+        {"id": str(i), "key": key, "fields": {"summary": summary, "issuetype": {"name": "Task"}}}
+        for i, key in enumerate(keys)
+    ]
+    swap(cli, _search=lambda call: Out(200, {"issues": issues}))
+
+
+def test_a_5000_digit_key_in_the_answer_is_provider_changed(cli: Cli) -> None:
+    answer_with(cli, "DEMO-" + "9" * 5000)
+    code, env = cli.doc("--dry-run", "create", *BASE, "t", "--dedupe-key", "big")
+    assert (code, env["error"]["code"]) == (12, "provider_changed")
+
+
+def test_a_key_of_another_project_in_the_answer_is_provider_changed(cli: Cli) -> None:
+    answer_with(cli, "ABC-1", "DEMO-2")
+    code, env = cli.doc("--dry-run", "create", *BASE, "t", "--dedupe-key", "other")
+    assert (code, env["error"]["code"]) == (12, "provider_changed")
+
+
+def test_one_ticket_listed_twice_is_not_a_duplicate(cli: Cli) -> None:
+    answer_with(cli, "DEMO-1", "DEMO-1")
+    code, result = cli.doc("create", *BASE, "t", "--dedupe-key", "twice")
+    assert code == 0 and result["key"] == "DEMO-1" and result["reused"] is True
+    assert "duplicate_dedupe_matches" not in result["warnings"]
+
+
+def test_the_found_summary_is_compared_without_surrounding_space(cli: Cli) -> None:
+    label = createcmd.CreateAction("DEMO", "Task", dedupe_key="trim").label("main")
+    t = cli.fake.add_ticket("DEMO-70", " Raced ", labels=[label])
+    t.reporter = ME_ACCOUNT
+    cli.fake.advance(5)
+    code, result = cli.doc("create", *BASE, "Raced", "--dedupe-key", "trim")
+    assert code == 0 and result["key"] == "DEMO-70" and result["reused"] is True
+    assert cli.posts() == []

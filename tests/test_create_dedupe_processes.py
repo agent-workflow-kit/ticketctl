@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from tests.fake_provider import ME_ACCOUNT, SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault
-from ticketctl import audit, createcmd
+from ticketctl import audit, createcmd, dedupe
 
 TOKEN_VAR = "TICKETCTL_TEST_SITE_ENV"
 ARGS = ["--project", "DEMO", "--type", "Task", "--title", "Raced", "--dedupe-key", "race1"]
@@ -31,6 +31,7 @@ ARGS = ["--project", "DEMO", "--type", "Task", "--title", "Raced", "--dedupe-key
 class World:
     def __init__(self, root: Path, fake: FakeProvider) -> None:
         self.root, self.fake = root, fake
+        self.procs: list[subprocess.Popen[str]] = []
         self.state = root / "state"
         (root / "home").mkdir()
         self.config = root / "config.yaml"
@@ -49,23 +50,42 @@ class World:
             TOKEN_VAR: SITE_TOKEN,
         }
 
-    def start(self, *argv: str) -> subprocess.Popen[str]:
-        return subprocess.Popen(  # noqa: S603 - the interpreter running the tests
+    def start(self, *argv: str, piped_stdin: bool = False) -> subprocess.Popen[str]:
+        proc = subprocess.Popen(  # noqa: S603 - the interpreter running the tests
             [sys.executable, "-m", "ticketctl", "--config", str(self.config), "--json", *argv],
             env=self.env,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if piped_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
+        self.procs.append(proc)
+        return proc
 
-    def finish(self, proc: subprocess.Popen[str]) -> tuple[int, dict[str, Any]]:
-        out, err = proc.communicate(timeout=120)
+    def stop_all(self) -> None:
+        """End every worker this world started (the exact Popen objects, nothing else)."""
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
+            for pipe in (proc.stdout, proc.stderr, proc.stdin):
+                if pipe is not None and not pipe.closed:
+                    pipe.close()
+
+    def finish(
+        self, proc: subprocess.Popen[str], stdin_text: str | None = None
+    ) -> tuple[int, dict[str, Any]]:
+        out, err = proc.communicate(stdin_text, timeout=120)
         assert SITE_TOKEN not in out + err
         return proc.returncode, json.loads(out)
 
-    def run(self, *argv: str) -> tuple[int, dict[str, Any]]:
-        return self.finish(self.start(*argv))
+    def run(self, *argv: str, stdin_text: str | None = None) -> tuple[int, dict[str, Any]]:
+        proc = self.start(*argv, piped_stdin=stdin_text is not None)
+        return self.finish(proc, stdin_text)
 
     def plan_hash(self, *args: str) -> str:
         code, plan = self.run("--dry-run", "create", *args)
@@ -83,8 +103,10 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path: Path, fake: FakeProvider) -> World:
-    return World(tmp_path, fake)
+def world(tmp_path: Path, fake: FakeProvider) -> Iterator[World]:
+    made = World(tmp_path, fake)
+    yield made
+    made.stop_all()
 
 
 def advance_at_search(fake: FakeProvider, n: int) -> None:
@@ -191,3 +213,48 @@ def test_an_unknown_create_then_a_real_rerun_finds_the_landed_ticket(world: Worl
     code, result = world.finish(world.create(held, *ARGS))
     assert code == 0 and result["reused"] is True and len(world.posts()) == 1
     assert sum(1 for t in world.fake.tickets.values() if t.summary == "Raced") == 1
+
+
+def test_the_lock_is_held_until_the_post_has_returned(world: World) -> None:
+    held = world.plan_hash(*ARGS)
+    world.fake.inject(Fault("slow", method="POST", path="/issue$", delay_s=6.0))
+    # Searches: 1 the dry run, 2-3 the first run; the second run, which must wait for the lock
+    # until the ticket has landed, searches lock-free (4), under the lock (5, the label is still
+    # hidden) and after the 2 s quick wait (6, where the clock moves on and the label shows). A
+    # second run that did not wait would search before the ticket exists and need a 7th search.
+    advance_at_search(world.fake, 6)
+    first = world.create(held, *ARGS)
+    deadline = time.monotonic() + 60
+    while not world.posts() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(world.posts()) == 1  # the POST is in flight (the fake sleeps before applying)
+    second = world.create(held, *ARGS)
+    results = [world.finish(first), world.finish(second)]
+    assert [code for code, _ in results] == [0, 0], results
+    assert [r["result"] for _, r in results] == ["ok", "unchanged"]
+    assert results[1][1]["reused"] is True and results[1][1]["key"] == results[0][1]["key"]
+    assert len(world.posts()) == 1 and world.searches() == 6
+
+
+def test_the_quick_rerun_waits_on_a_recent_lock_alone(world: World) -> None:
+    held = world.plan_hash(*ARGS)
+    label = createcmd.CreateAction("DEMO", "Task", dedupe_key="race1").label("main")
+    landed = world.fake.add_ticket("DEMO-71", "Raced", labels=[label])
+    landed.reporter = ME_ACCOUNT
+    landed.labels = {label: world.fake.now + timedelta(seconds=5)}  # hidden from search for now
+    # No audit record at all: only the lock file, released a moment ago, asks for the quick re-run.
+    locks = world.state / "ticketctl" / "locks"
+    for directory in (world.state, world.state / "ticketctl", locks):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        directory.chmod(0o700)
+    lock_file = locks / dedupe.bucket_name("main", "DEMO", "race1")
+    lock_file.write_bytes(b"x")
+    lock_file.chmod(0o600)
+    # Searches: 1 the dry run, 2 lock-free, 3 under the lock, 4 after the 2 s wait.
+    advance_at_search(world.fake, 4)
+    begun = time.monotonic()
+    code, result = world.finish(world.create(held, *ARGS))
+    took = time.monotonic() - begun
+    assert code == 0 and result["result"] == "unchanged" and result["key"] == "DEMO-71"
+    assert world.posts() == [] and world.searches() == 4
+    assert took >= 2.0
