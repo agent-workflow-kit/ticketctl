@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+
+# Findings files of the live suites (docs/live-verification.md): local, never committed
+live-findings/
