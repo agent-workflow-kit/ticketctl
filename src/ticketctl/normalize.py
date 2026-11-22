@@ -1,6 +1,6 @@
 """Normalize a provider issue into the ticket object (docs/interface.md, Ticket object).
 
-Pure logic, no I/O. The callers (``get`` TODO(#15), ``search`` TODO(#17)) load the field list
+Pure logic, no I/O. The callers (``getcmd`` and ``searchcmd``) load the field list
 (``fieldload.load_site_fields``) and the priority list (``fieldload.load_priorities``), fetch the
 issue with the explicit field list of :func:`plan_request`, and hand the payload to
 :func:`normalize_issue` or :func:`normalize_issues`.

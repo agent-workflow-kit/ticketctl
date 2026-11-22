@@ -48,9 +48,7 @@ KINDS = ("cli", "hooks")
 
 # Schemas whose command or hook is not implemented yet, with the owning issue. Remove an entry in
 # the PR that adds the first golden file for it.
-PENDING: dict[str, int] = {
-    f"hooks/{when}-{kind}.json": 25 for when in ("pre", "post") for kind in ("transition", "update")
-}
+PENDING: dict[str, int] = {}
 
 
 NAME = re.compile(r"[a-z0-9-]+")

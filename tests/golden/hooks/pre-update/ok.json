@@ -1,0 +1,39 @@
+{
+  "tool": "ticketctl",
+  "hook": "pre-update",
+  "object_type": "ticket",
+  "object_id": "DEMO-1",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "auto:unknown",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "update",
+    "steps": [
+      "set_fields",
+      "assign"
+    ],
+    "plan_sha256": "38c0c5517697965c644483e977ad2a9a16df0dde72c48541ccb8672d8160849b",
+    "current_status": {
+      "name": "Backlog",
+      "category": "new"
+    },
+    "fields_changed": [
+      "title",
+      "estimate",
+      "labels",
+      "assignee"
+    ],
+    "assign": "me"
+  },
+  "body": [],
+  "ticket": {
+    "type": "Task",
+    "subtask": false,
+    "status": "Backlog",
+    "priority": "Medium",
+    "assignee_account_id": null,
+    "assignee_is_me": false
+  }
+}
