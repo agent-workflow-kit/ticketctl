@@ -1,0 +1,57 @@
+{
+  "tool": "ticketctl",
+  "hook": "post-transition",
+  "object_type": "ticket",
+  "object_id": "DEMO-1",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "human:tester",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "transition",
+    "steps": [
+      "assign",
+      "transition"
+    ],
+    "plan_sha256": "c5a09074caf0d995d780eba2a37fc3180e70c3862f1c1a6135133da3007ae695",
+    "current_status": {
+      "name": "Backlog",
+      "category": "new"
+    },
+    "target_status": {
+      "name": "Done",
+      "category": "done"
+    },
+    "fields_changed": [
+      "status",
+      "resolution",
+      "assignee"
+    ],
+    "resolution": "Done",
+    "assign": "me"
+  },
+  "body": [],
+  "ticket": {
+    "type": "Task",
+    "subtask": false,
+    "status": "Backlog",
+    "priority": "Medium",
+    "assignee_account_id": null,
+    "assignee_is_me": false
+  },
+  "result": "ok",
+  "error": null,
+  "steps": [
+    {
+      "kind": "assign",
+      "status": "done"
+    },
+    {
+      "kind": "transition",
+      "status": "done"
+    }
+  ],
+  "provider_ids": [],
+  "changed": true
+}

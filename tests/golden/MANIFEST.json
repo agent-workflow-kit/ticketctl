@@ -25,7 +25,11 @@
   "hooks/post-comment.json": "1d7a130add0edcdfb614daf1ed7c569f6c99f417c0464641843853ffb26ae70f",
   "hooks/post-create.json": "c26d956015a7987ef7e1b8770a99cd9dd7bfd87eebd83180b7423b59aba05427",
   "hooks/post-sprint.json": "69f53f32b64435398469a1fa0cd4393a7105eb3255305ebd3b7500c6da78c258",
+  "hooks/post-transition.json": "52116ad3ccaee4e0c88ec41dff55357d42048618206e48f484bd1071735ac771",
+  "hooks/post-update.json": "1036589a58d35b2678fd85b45da5506466d8326e5f01ccbb431a7c495af40241",
   "hooks/pre-comment.json": "55bf26c1310ed6125260a66183328d93568287da8c92e9a119a347df94e3da62",
   "hooks/pre-create.json": "0e275b80dc12af0d34e9f153d4adbe000fd63d41a4d497959c90c1aa6776f467",
-  "hooks/pre-sprint.json": "f0a4ebab5f6e8b5ba26b8ff03db7a4fe6875ee1398ead8ef515ac08edfe5df33"
+  "hooks/pre-sprint.json": "f0a4ebab5f6e8b5ba26b8ff03db7a4fe6875ee1398ead8ef515ac08edfe5df33",
+  "hooks/pre-transition.json": "4ba4c6f3d693f826e32fe266c97504ecc4867fc0551084fdca4deb98a9215204",
+  "hooks/pre-update.json": "fd6b5ee88965f104976034adc07e1c4b7aba0a1910b493fb8fda82da5b2c428a"
 }

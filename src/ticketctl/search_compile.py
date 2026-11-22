@@ -2,7 +2,7 @@
 
 The rules live in docs/interface.md under "search" and "Search compilation"; this module is the
 only place JQL text is built from caller input. Nothing here talks to the provider: the result is
-always validated by the parse endpoint afterwards (TODO(#17)).
+always validated by the parse endpoint afterwards (by ``searchcmd``).
 
 Public API:
     SearchFlags                                the structured flag values of one ``search``

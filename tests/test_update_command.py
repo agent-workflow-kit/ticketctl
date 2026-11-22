@@ -657,6 +657,9 @@ def test_the_hook_payload_is_built_from_the_plan_and_matches_its_schema(
     assert pre["ticket"]["assignee_account_id"] is None and pre["ticket"]["assignee_is_me"] is False
     assert post["result"] == "ok" and post["changed"] is True
     assert "Renamed task" not in json.dumps(pre)  # no ticket text in a payload
+    fixed = {"attempt_id": "0123456789abcdef"}  # the attempt id is random per run
+    assert_golden("hooks", "pre-update", "ok", env.norm({**pre, **fixed}))
+    assert_golden("hooks", "post-update", "ok", env.norm({**post, **fixed}))
 
 
 def test_a_veto_by_the_pre_hook_sends_nothing(env: Env) -> None:
