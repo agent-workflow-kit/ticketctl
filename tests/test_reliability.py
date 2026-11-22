@@ -520,6 +520,7 @@ def test_a_keyed_comment_unknown_is_retryable_and_its_rerun_finds_the_landed_com
 
 
 # --- create: what its single POST and its dedupe lookup add to the rules above -------------------
+# (the labels-400 row and the other create field rules live in tests/test_create_command.py)
 
 CREATE = ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel")
 KEYED = (*CREATE, "--dedupe-key", "k-rel")
@@ -528,8 +529,8 @@ SEARCH = r"/search/jql$"
 
 
 def test_404_on_the_create_post_is_provider_changed_not_not_found(cli: Cli) -> None:
-    # Pinned current behaviour: POST /issue names no object, so it is a collection write and
-    # CreateAction maps it with object_path=False. interface.md's status table does not list it.
+    # interface.md, HTTP status mapping: POST /issue names no object, so a 404 on it is a collection
+    # write answer (12 provider_changed), not an object lookup (10 not_found).
     code, plan = cli.error("--dry-run", *KEYED)
     fail(cli.fake, "POST", ISSUE_POST, 404)
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
@@ -544,8 +545,8 @@ def test_404_on_the_create_post_is_provider_changed_not_not_found(cli: Cli) -> N
 
 
 def test_410_on_the_create_post_is_rejected_like_any_other_4xx_on_a_write(cli: Cli) -> None:
-    # Pinned current behaviour: raise_for_write maps only 404 specially, so a 410 is "rejected"
-    # although the table says any 410 on a collection endpoint is provider_changed (a read rule).
+    # interface.md, HTTP status mapping: the 410 rule of the collection row is for reads, so a 410
+    # on a write is "any other 4xx on a write" (rejected, nothing applied).
     code, plan = cli.error("--dry-run", *KEYED)
     fail(cli.fake, "POST", ISSUE_POST, 410)
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
@@ -563,22 +564,28 @@ def test_a_missing_createmeta_is_not_found_only_on_404(cli: Cli, status: int) ->
     assert sent(cli, "POST", ISSUE_POST) == 0
 
 
+@pytest.mark.parametrize(
+    "fault",
+    [
+        Fault("close", after_apply=True),
+        Fault("reset", after_apply=True),
+        Fault("truncated"),
+        Fault("status", status=502, after_apply=True),
+    ],
+    ids=["close-after-apply", "reset-after-apply", "truncated", "502"],
+)
 def test_a_keyless_create_with_a_lost_answer_is_unknown_and_not_retryable(
-    cli: Cli, monkeypatch: pytest.MonkeyPatch
+    cli: Cli, monkeypatch: pytest.MonkeyPatch, fault: Fault
 ) -> None:
     # --yes needs a key, so the keyless run goes through the (substituted) confirmation dialog.
     monkeypatch.setattr(
         createcmd, "make_seams", lambda: Seams(interactive=lambda: True, confirm=lambda p: True)
     )
-    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    arm_once(cli, fault, "POST", ISSUE_POST)
     code, err = cli.error("--actor", "human:tester", *CREATE)  # an auto actor is never asked
-    assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
-        12,
-        "outcome_unknown",
-        False,
-        True,
-    )
-    assert re.search(r"--dedupe-key", err["message"])
+    assert (code, err["outcome_unknown"], err["retryable"]) == (12, True, False)
+    if err["code"] == "outcome_unknown":  # a cut answer is reported as provider_changed instead
+        assert re.search(r"--dedupe-key", err["message"])
     assert sent(cli, "POST", ISSUE_POST) == 1
     assert len(cli.fake.tickets) == 4  # the three seeded and the landed one
 
@@ -618,9 +625,45 @@ def test_the_rerun_after_a_lost_create_waits_on_the_virtual_clock_and_finds_the_
     code, again = cli.apply(*KEYED)
     assert (code, again["reused"], again["result"]) == (0, True, "unchanged")
     assert sent(cli, "POST", ISSUE_POST) == 1  # one search found it; no second POST
-    # The guard waited on the virtual clock (2 s quick re-run, 5 s polls), never for real.
+    # The guard waited on the virtual clock, never for real (the 5 s poll loop has its own test).
     assert cli.virtual.waits and set(cli.virtual.waits) <= {2.0, 5.0}
     assert cli.sleeps == []
+
+
+def test_the_rerun_polls_every_five_seconds_while_the_label_index_lags(cli: Cli) -> None:
+    # The lost answer leaves a pending `unknown` record, which starts the 5 s poll after the quick
+    # re-run; a label index that lags 12 s needs several polls before the landed ticket shows.
+    cli.fake.quirks.label_lag_s = 12.0
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"], again["result"]) == (0, True, "unchanged")
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert 5.0 in cli.virtual.waits
+    assert cli.virtual.waits.count(5.0) >= 2
+    assert cli.sleeps == []
+
+
+def test_a_rerun_whose_lag_wait_exceeds_the_timeout_is_timeout_and_sends_nothing(cli: Cli) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    code, plan = cli.error("--timeout", "1s", "--dry-run", *KEYED)
+    assert code == 0, plan
+    code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
+    assert sent(cli, "POST", ISSUE_POST) == 1  # no second POST
+    assert cli.virtual.waits == []  # the 2 s wait did not fit in the 1 s budget, so none was made
+
+
+def test_a_malformed_parent_is_rejected_before_any_request(cli: Cli) -> None:
+    for parent in ("DEMO-0x", "../DEMO-1"):
+        code, err = cli.error(*CREATE, "--parent", parent)
+        assert (code, err["reason"]) == (22, "invalid_key"), parent
+    assert cli.fake.calls == []
 
 
 def test_a_quick_rerun_of_a_landed_create_repeats_the_lookup_once_after_two_seconds(
@@ -632,7 +675,7 @@ def test_a_quick_rerun_of_a_landed_create_repeats_the_lookup_once_after_two_seco
     code, again = cli.apply(*KEYED)
     assert (code, again["reused"]) == (0, True)
     assert sent(cli, "POST", ISSUE_POST) == 1
-    assert set(cli.virtual.waits) <= {2.0}
+    assert cli.virtual.waits == [2.0]  # the quick re-run repeats the lookup once, found at once
 
 
 def test_a_reused_label_rerun_costs_one_search_and_no_post(cli: Cli) -> None:
@@ -976,14 +1019,15 @@ def test_a_retry_after_above_the_cap_but_within_the_time_ends_a_write_at_once(
 # --- a status that decides beats an unreadable body ---------------------------------------------
 
 LONG_BODY = "x" * 64
-SAMPLES = {
-    "create": "/rest/api/3/issue",  # first: its path pattern also matches the sprint sample
-    "comment": "/rest/api/3/issue/DEMO-2/comment",
-    "transition": "/rest/api/3/issue/DEMO-2/transitions",
-    "update": "/rest/api/3/issue/DEMO-2/assignee",
-    "sprint-add": "/rest/agile/1.0/sprint/2/issue",
-    "read": "/rest/api/3/issue/DEMO-1/comment",
+# the concrete request path of each WRITES row, keyed by the row's own path pattern
+WRITE_SAMPLES = {
+    r"/issue/DEMO-2/comment$": "/rest/api/3/issue/DEMO-2/comment",
+    r"/issue/DEMO-2/transitions$": "/rest/api/3/issue/DEMO-2/transitions",
+    r"/issue/DEMO-2/assignee$": "/rest/api/3/issue/DEMO-2/assignee",
+    r"/sprint/2/issue$": "/rest/agile/1.0/sprint/2/issue",
+    r"/issue$": "/rest/api/3/issue",
 }
+READ_SAMPLE = "/rest/api/3/issue/DEMO-1/comment"
 
 
 def answer_cut(fake: FakeProvider, method: str, sample: str, status: int, path: str) -> None:
@@ -1007,7 +1051,7 @@ CUT_READ_ROWS = {
 
 @pytest.mark.parametrize("status", sorted(CUT_READ_ROWS))
 def test_a_read_status_beats_a_body_cut_short(cli: Cli, status: int) -> None:
-    answer_cut(cli.fake, "GET", SAMPLES["read"], status, COMMENTS)
+    answer_cut(cli.fake, "GET", READ_SAMPLE, status, COMMENTS)
     code, err = cli.error("comments", "DEMO-1")
     expected, retryable, requests = CUT_READ_ROWS[status]
     assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
@@ -1026,7 +1070,7 @@ def test_a_write_status_beats_a_body_cut_short(
     cli: Cli, argv: tuple[str, ...], method: str, path: str, status: int
 ) -> None:
     code, plan = cli.error("--dry-run", *argv)
-    sample = SAMPLES[next(k for k, v in SAMPLES.items() if re.search(path, v))]
+    sample = WRITE_SAMPLES[path]
     answer_cut(cli.fake, method, sample, status, path)
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
     expected = {401: "bad_credentials", 403: "forbidden", 429: "rate_limited"}[status]
