@@ -80,7 +80,7 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: Fake
         return real(*args, sleep=out.sleeps.append, rng=lambda: 1.0, **kw)
 
     monkeypatch.setattr(runtime, "Gateway", gateway)
-    # The create lag guard waits on a virtual clock (it also moves the fake's clock), never for real.
+    # The create lag guard waits on a virtual clock (it moves the fake's clock too), never for real.
     monkeypatch.setattr(createcmd, "make_clock", out.virtual.clock)
     return out
 
@@ -304,7 +304,7 @@ WRITES = [
         id="sprint-add",
     ),
     pytest.param(
-        ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel", "--dedupe-key", "k-new"),
+        ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel", "--dedupe-key", "k1"),
         "POST",
         r"/issue$",
         id="create",
