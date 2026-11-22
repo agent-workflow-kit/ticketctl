@@ -643,6 +643,8 @@ def test_the_hook_payloads_validate_through_the_real_builder(world: World) -> No
     }
     assert set(pre["plan"]["fields_changed"]) == {"status", "resolution", "assignee"}
     assert (post["result"], post["changed"]) == ("ok", True)
+    assert_golden("hooks", "pre-transition", "ok", pre)
+    assert_golden("hooks", "post-transition", "ok", post)
 
 
 def test_a_veto_stops_before_any_write(world: World) -> None:

@@ -18,8 +18,10 @@ import pytest
 
 from tests.fake_provider import OTHER_ACCOUNT, SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault, Out
 from tests.scripted_server import closed_port
-from ticketctl import runtime
+from tests.test_dedupe_flow import Virtual
+from ticketctl import createcmd, runtime
 from ticketctl.cli import main
+from ticketctl.writeflow import Seams
 
 ENV_VAR = "TICKETCTL_TEST_RELIABILITY_ENV"
 OTHER = OTHER_ACCOUNT
@@ -31,6 +33,7 @@ class Cli:
         self.capsys = capsys
         self.root = root
         self.sleeps: list[float] = []
+        self.virtual = Virtual(fake)
         self.config = root / "config.yaml"
         self.config.write_text(
             f"sites:\n  main:\n    url: {fake.url}\n    email: {SITE_EMAIL}\n"
@@ -77,6 +80,8 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: Fake
         return real(*args, sleep=out.sleeps.append, rng=lambda: 1.0, **kw)
 
     monkeypatch.setattr(runtime, "Gateway", gateway)
+    # The create lag guard waits on a virtual clock (it moves the fake's clock too), never for real.
+    monkeypatch.setattr(createcmd, "make_clock", out.virtual.clock)
     return out
 
 
@@ -276,9 +281,6 @@ def test_a_well_formed_nonexistent_key_answers_like_a_hidden_one(
 
 # --- writes: every command, every row ------------------------------------------------------------
 
-# todo(#31): add the create rows (WRITES, LOST, the cut-JSON 2xx write, the keyless/keyed
-# outcome_unknown retryable flags, the 404 on a collection write path, createmeta 404/410) once
-# create lands
 WRITES = [
     pytest.param(
         ("comment", "DEMO-2", "--body", "hello", "--dedupe-key", "k1"),
@@ -300,6 +302,12 @@ WRITES = [
         "POST",
         r"/sprint/2/issue$",
         id="sprint-add",
+    ),
+    pytest.param(
+        ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel", "--dedupe-key", "k1"),
+        "POST",
+        r"/issue$",
+        id="create",
     ),
 ]
 
@@ -364,7 +372,7 @@ def test_401_and_403_on_a_write_are_final_with_nothing_unknown(
     assert sent(cli, method, path) == 1
 
 
-@pytest.mark.parametrize("argv, method, path", WRITES)
+@pytest.mark.parametrize("argv, method, path", [w for w in WRITES if w.id != "create"])
 def test_404_on_a_write_to_an_object_path_is_not_found(
     cli: Cli, argv: tuple[str, ...], method: str, path: str
 ) -> None:
@@ -509,6 +517,214 @@ def test_a_keyed_comment_unknown_is_retryable_and_its_rerun_finds_the_landed_com
     code, again = cli.apply(*argv)
     assert (code, again["already_posted"], again["result"]) == (0, True, "unchanged")
     assert sent(cli, "POST", r"/comment$") == 1
+
+
+# --- create: what its single POST and its dedupe lookup add to the rules above -------------------
+# (the labels-400 row and the other create field rules live in tests/test_create_command.py)
+
+CREATE = ("create", "--project", "DEMO", "--type", "Task", "--title", "Rel")
+KEYED = (*CREATE, "--dedupe-key", "k-rel")
+ISSUE_POST = r"/issue$"
+SEARCH = r"/search/jql$"
+
+
+def test_404_on_the_create_post_is_provider_changed_not_not_found(cli: Cli) -> None:
+    # interface.md, HTTP status mapping: POST /issue names no object, so a 404 on it is a collection
+    # write answer (12 provider_changed), not an object lookup (10 not_found).
+    code, plan = cli.error("--dry-run", *KEYED)
+    fail(cli.fake, "POST", ISSUE_POST, 404)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
+        12,
+        "provider_changed",
+        False,
+        False,
+    )
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert cli.sleeps == []
+
+
+def test_410_on_the_create_post_is_rejected_like_any_other_4xx_on_a_write(cli: Cli) -> None:
+    # interface.md, HTTP status mapping: the 410 rule of the collection row is for reads, so a 410
+    # on a write is "any other 4xx on a write" (rejected, nothing applied).
+    code, plan = cli.error("--dry-run", *KEYED)
+    fail(cli.fake, "POST", ISSUE_POST, 410)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "rejected", False)
+    assert sent(cli, "POST", ISSUE_POST) == 1
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_a_missing_createmeta_is_not_found_only_on_404(cli: Cli, status: int) -> None:
+    # The createmeta reads name a project and a type, so 404 is "project or type missing" (exit 10).
+    # A 410 is not mapped there: it is an unusable answer, 12 provider_changed.
+    fail(cli.fake, "GET", r"/issue/createmeta/DEMO/issuetypes$", status)
+    code, err = cli.error("--dry-run", *CREATE)
+    assert (code, err["code"]) == ((10, "not_found") if status == 404 else (12, "provider_changed"))
+    assert sent(cli, "POST", ISSUE_POST) == 0
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        Fault("close", after_apply=True),
+        Fault("reset", after_apply=True),
+        Fault("truncated"),
+        Fault("status", status=502, after_apply=True),
+    ],
+    ids=["close-after-apply", "reset-after-apply", "truncated", "502"],
+)
+def test_a_keyless_create_with_a_lost_answer_is_unknown_and_not_retryable(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch, fault: Fault
+) -> None:
+    # --yes needs a key, so the keyless run goes through the (substituted) confirmation dialog.
+    monkeypatch.setattr(
+        createcmd, "make_seams", lambda: Seams(interactive=lambda: True, confirm=lambda p: True)
+    )
+    arm_once(cli, fault, "POST", ISSUE_POST)
+    code, err = cli.error("--actor", "human:tester", *CREATE)  # an auto actor is never asked
+    assert (code, err["outcome_unknown"], err["retryable"]) == (12, True, False)
+    if err["code"] == "outcome_unknown":  # a cut answer is reported as provider_changed instead
+        assert re.search(r"--dedupe-key", err["message"])
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert len(cli.fake.tickets) == 4  # the three seeded and the landed one
+
+
+def test_a_framed_but_cut_json_create_answer_is_unknown_and_not_retryable(cli: Cli) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    override(cli.fake, "POST", "/issue", Out(201, CUT_JSON))
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "provider_changed", True)
+    assert err["retryable"] is False
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert [r["result"] for r in cli.audit()] == ["attempted", "unknown"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [Fault("close", after_apply=True), Fault("reset"), Fault("status", status=503)],
+    ids=["close-after-apply", "reset", "503"],
+)
+def test_create_is_one_step_so_a_failure_is_never_partial(cli: Cli, fault: Fault) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, fault, "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    assert "result" not in (err["details"] or {})  # a partial result lists its steps
+    assert [r["step"] for r in cli.audit()] == [1, 1]  # attempted, unknown: one step only
+
+
+def test_the_rerun_after_a_lost_create_waits_on_the_virtual_clock_and_finds_the_ticket(
+    cli: Cli,
+) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    assert cli.virtual.waits == []
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"], again["result"]) == (0, True, "unchanged")
+    assert sent(cli, "POST", ISSUE_POST) == 1  # one search found it; no second POST
+    # The guard waited on the virtual clock, never for real (the 5 s poll loop has its own test).
+    assert cli.virtual.waits and set(cli.virtual.waits) <= {2.0, 5.0}
+    assert cli.sleeps == []
+
+
+def test_the_rerun_polls_every_five_seconds_while_the_label_index_lags(cli: Cli) -> None:
+    # The lost answer leaves a pending `unknown` record, which starts the 5 s poll after the quick
+    # re-run; a label index that lags 12 s needs several polls before the landed ticket shows.
+    cli.fake.quirks.label_lag_s = 12.0
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"], again["result"]) == (0, True, "unchanged")
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert 5.0 in cli.virtual.waits
+    assert cli.virtual.waits.count(5.0) >= 2
+    assert cli.sleeps == []
+
+
+def test_a_rerun_whose_lag_wait_exceeds_the_timeout_is_timeout_and_sends_nothing(cli: Cli) -> None:
+    code, plan = cli.error("--dry-run", *KEYED)
+    arm_once(cli, Fault("close", after_apply=True), "POST", ISSUE_POST)
+    code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert err["code"] == "outcome_unknown"
+    code, plan = cli.error("--timeout", "1s", "--dry-run", *KEYED)
+    assert code == 0, plan
+    code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *KEYED)
+    assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
+    assert sent(cli, "POST", ISSUE_POST) == 1  # no second POST
+    assert cli.virtual.waits == []  # the 2 s wait did not fit in the 1 s budget, so none was made
+
+
+def test_a_malformed_parent_is_rejected_before_any_request(cli: Cli) -> None:
+    for parent in ("DEMO-0x", "../DEMO-1"):
+        code, err = cli.error(*CREATE, "--parent", parent)
+        assert (code, err["reason"]) == (22, "invalid_key"), parent
+    assert cli.fake.calls == []
+
+
+def test_a_quick_rerun_of_a_landed_create_repeats_the_lookup_once_after_two_seconds(
+    cli: Cli,
+) -> None:
+    code, first = cli.apply(*KEYED)
+    assert (code, first["result"]) == (0, "ok")
+    cli.virtual.waits.clear()
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"]) == (0, True)
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert cli.virtual.waits == [2.0]  # the quick re-run repeats the lookup once, found at once
+
+
+def test_a_reused_label_rerun_costs_one_search_and_no_post(cli: Cli) -> None:
+    code, first = cli.apply(*KEYED)
+    assert code == 0
+    searches = sent(cli, "POST", SEARCH)
+    code, again = cli.apply(*KEYED)
+    assert (code, again["reused"]) == (0, True)
+    assert sent(cli, "POST", ISSUE_POST) == 1
+    assert sent(cli, "POST", SEARCH) > searches
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"issues": [], "nextPageToken": "more"},
+        {"issues": [{"id": str(n), "key": f"DEMO-{n}"} for n in range(101, 202)]},
+    ],
+    ids=["next-page-token", "over-100-results"],
+)
+def test_a_label_lookup_that_cannot_prove_absence_is_lookup_incomplete(
+    cli: Cli, answer: dict[str, Any]
+) -> None:
+    override(cli.fake, "POST", "search/jql", Out(200, json.dumps(answer)))
+    code, err = cli.error("--dry-run", *KEYED)
+    assert (code, err["code"], err["retryable"]) == (12, "lookup_incomplete", False)
+    assert sent(cli, "POST", ISSUE_POST) == 0
+
+
+def test_a_label_lookup_with_an_unusable_answer_is_provider_changed(cli: Cli) -> None:
+    override(cli.fake, "POST", "search/jql", Out(200, json.dumps({"unexpected": True})))
+    code, err = cli.error("--dry-run", *KEYED)
+    assert (code, err["code"]) == (12, "provider_changed")
+    assert sent(cli, "POST", ISSUE_POST) == 0
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+def test_the_label_lookup_follows_the_search_rows(cli: Cli, status: int) -> None:
+    expected = {
+        401: "bad_credentials",
+        403: "forbidden",
+        404: "provider_changed",
+        429: "rate_limited",
+        503: "unavailable",
+    }[status]
+    fail(cli.fake, "POST", SEARCH, status)
+    code, err = cli.error("--dry-run", *KEYED)
+    assert (code, err["code"]) == (12, expected)
+    assert sent(cli, "POST", ISSUE_POST) == 0
 
 
 @pytest.mark.parametrize("argv, method, path", WRITES)
@@ -803,13 +1019,15 @@ def test_a_retry_after_above_the_cap_but_within_the_time_ends_a_write_at_once(
 # --- a status that decides beats an unreadable body ---------------------------------------------
 
 LONG_BODY = "x" * 64
-SAMPLES = {
-    "comment": "/rest/api/3/issue/DEMO-2/comment",
-    "transition": "/rest/api/3/issue/DEMO-2/transitions",
-    "update": "/rest/api/3/issue/DEMO-2/assignee",
-    "sprint-add": "/rest/agile/1.0/sprint/2/issue",
-    "read": "/rest/api/3/issue/DEMO-1/comment",
+# the concrete request path of each WRITES row, keyed by the row's own path pattern
+WRITE_SAMPLES = {
+    r"/issue/DEMO-2/comment$": "/rest/api/3/issue/DEMO-2/comment",
+    r"/issue/DEMO-2/transitions$": "/rest/api/3/issue/DEMO-2/transitions",
+    r"/issue/DEMO-2/assignee$": "/rest/api/3/issue/DEMO-2/assignee",
+    r"/sprint/2/issue$": "/rest/agile/1.0/sprint/2/issue",
+    r"/issue$": "/rest/api/3/issue",
 }
+READ_SAMPLE = "/rest/api/3/issue/DEMO-1/comment"
 
 
 def answer_cut(fake: FakeProvider, method: str, sample: str, status: int, path: str) -> None:
@@ -833,7 +1051,7 @@ CUT_READ_ROWS = {
 
 @pytest.mark.parametrize("status", sorted(CUT_READ_ROWS))
 def test_a_read_status_beats_a_body_cut_short(cli: Cli, status: int) -> None:
-    answer_cut(cli.fake, "GET", SAMPLES["read"], status, COMMENTS)
+    answer_cut(cli.fake, "GET", READ_SAMPLE, status, COMMENTS)
     code, err = cli.error("comments", "DEMO-1")
     expected, retryable, requests = CUT_READ_ROWS[status]
     assert (code, err["code"], err["retryable"], err["outcome_unknown"]) == (
@@ -852,7 +1070,7 @@ def test_a_write_status_beats_a_body_cut_short(
     cli: Cli, argv: tuple[str, ...], method: str, path: str, status: int
 ) -> None:
     code, plan = cli.error("--dry-run", *argv)
-    sample = SAMPLES[next(k for k, v in SAMPLES.items() if re.search(path, v))]
+    sample = WRITE_SAMPLES[path]
     answer_cut(cli.fake, method, sample, status, path)
     code, err = cli.error("--yes", "--expect-plan", plan["plan_sha256"], *argv)
     expected = {401: "bad_credentials", 403: "forbidden", 429: "rate_limited"}[status]

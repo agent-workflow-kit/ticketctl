@@ -1,6 +1,6 @@
 # ticketctl: interface
 
-Status: 0.1.0-design. Written before implementation (architecture §18.1). This document is the single normative source for ticketctl's rules; `docs/design.md`, the README and the architecture link to its headings and never restate its tables. The `--json` shapes, hook payloads, config, audit and log records are specified in [schemas/](../schemas/).
+Status: 0.1.0-design. The commands, including the write commands, are implemented; live verification (the live suites against a real site and the macOS checklist) remains. This document is the single normative source for ticketctl's rules; `docs/design.md`, the README and the architecture link to its headings and never restate its tables. The `--json` shapes, hook payloads, config, audit and log records are specified in [schemas/](../schemas/).
 
 ticketctl is normalized ticket access for one ticket provider at a time. Jira Cloud is the only provider in 0.x. It reads tickets, searches them, lists transitions, comments, and performs writes (`transition`, `comment`, `create`, `update`, sprint add and remove) through one confirm-by-default write flow. It is stateless: it keeps a small cache and its audit and request logs, and no database.
 
@@ -246,6 +246,8 @@ The old `POST /rest/api/3/search` is not used (it returns 410 on current Jira Cl
 | 400 on `board/{id}/sprint` (a board without sprints) | 22 `invalid_value` with `details.option: board` |
 | any other 4xx on a read, and 400 on a read other than `search/jql` and `board/{id}/sprint` | 12 `provider_changed` |
 | a write whose connection never opened, after retries | 12 `unavailable` (retryable, nothing sent) |
+
+The 410 rule of the collection row is for reads. On a write a 410 is "any other 4xx on a write": 12 `rejected`, nothing applied. A 404 on a write to a collection endpoint (`POST /issue`) is 12 `provider_changed`; a 404 on a write to an object path is 10 `not_found`, and the two sprint writes (`sprint/{id}/issue`, `backlog/issue`) map their 404 to 10 `not_found` as the sprint section says.
 
 ## Write flow
 

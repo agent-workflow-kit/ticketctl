@@ -123,6 +123,22 @@ Sprint-write assumptions (issue #34, unverified against a real site; the code ta
 
 Read-command assumptions (issue #18, unverified against a real site; the code takes the conservative reading): that `orderBy=created` and `-created` are honored (the scan sorts the window itself, so a provider that ignores them still returns the right comments); that `startAt` and `maxResults=100` page the comment list; that `total` counts every comment; that `expand=properties` embeds a property list on each comment; that `expand=transitions.fields` embeds `fields` with `required`, `name`, `schema.type` and `allowedValues` entries carrying `name` or `value`; that `hasScreen` is present on every transition; the agile shapes (`values`, `isLast`, `originBoardId`, `startDate`, `endDate`, the board `type` and `name`); that `GET /board` honors `projectKeyOrId` and `type=scrum` and pages by 50; that the sprint endpoint accepts a single `state`; that a 404 on `/board/{id}/sprint` means a missing or hidden board and a 400 a board without sprints; and that the fake provider does not page boards or sprints, so the paging code is exercised only by tests that override its routes.
 
+### Live findings log
+
+The `live` suites (`tests/live/`, run by hand as described in [live-verification.md](live-verification.md)) only observe: each run writes a findings file under the git-ignored `live-findings/` directory and a human reads it. A finding becomes a fact here only when the human has read it and entered it below as a dated line. Entries are never made from a fake or from reasoning, and an entry that settles an unverified fact above also removes it from the "Still to verify" list.
+
+How an entry is made, in this order:
+
+1. Read the findings file of the run (the checklist id in each finding names the item of the table in [live-verification.md](live-verification.md) and of issue #3).
+2. Write one dated line per settled fact below, in the form `<date> <checklist id>: <what was observed>, by <live test name>`. Use no site name, project key, ticket key, field id or account: say what the shape or status was, not where.
+3. When the observation differs from what the code or the fake provider assumes, change `docs/interface.md` first, then the code, and update the `UNVERIFIED` constant at the end of `tests/fake_provider.py` (delete the line the finding settles; change the fake's default to the observed behavior, with a test).
+4. When a write finding changes a bound (the label index lag of D-36 above all), change the bound in the same change and cite the entry.
+
+Entries (none yet; nothing in this log has been observed live by the suites):
+
+| Date | Id | Observation | Test | Changed |
+|---|---|---|---|---|
+
 ## Modules
 
 | Module | Responsibility |

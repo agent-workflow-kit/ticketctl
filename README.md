@@ -4,7 +4,7 @@ Normalized ticket access (Jira Cloud first; other providers later). Read, search
 
 ## Status
 
-Designed; not yet implemented. The normative contract is [docs/interface.md](docs/interface.md) (version 0.1.0-design); the decisions and live verification are in [docs/design.md](docs/design.md).
+Every command below is implemented. The live suites against a real site, the macOS checklist and a cron-style minimal-environment run are the remaining release-readiness work (Stage 6 of [docs/plan.md](docs/plan.md)). The normative contract is [docs/interface.md](docs/interface.md); the decisions and live verification are in [docs/design.md](docs/design.md).
 
 ## Layer
 
@@ -75,13 +75,13 @@ One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the 
 
 ## Exit codes
 
-Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `invalid_request`. The full table is in [docs/interface.md](docs/interface.md#exit-codes). Reasons: exit 2 `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument`, `config_invalid`, `no_sites`, `account_mismatch`; exit 20 equal to the code (`stale_ticket`, `precondition_failed`, `no_such_transition`, `sprint_closed`, `already_exists`, `declined`); exit 22 `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_invalid`, `cursor_expired`. A failure after an earlier step landed is exit 12 `partial` with the applied steps in `details.result`.
+Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `invalid_request`. The full table is in [docs/interface.md](docs/interface.md#exit-codes). Reasons: exit 2 `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument`, `config_invalid`, `no_sites`, `account_mismatch`; exit 20 equal to the code (`stale_ticket`, `precondition_failed`, `no_such_transition`, `sprint_closed`, `already_exists`, `declined`); exit 12 `unavailable` with `locked`; exit 1 `internal` with `audit_failed` or `hooks_unavailable`; exit 22 `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_invalid`, `cursor_expired`. A failure after an earlier step landed is exit 12 `partial` with the applied steps in `details.result`.
 
 ## Documentation
 
 - [awkit architecture](../awkit-docs/architecture.md) ([published](https://github.com/agent-workflow-kit/awkit-docs/blob/main/architecture.md))
 - [awkit tool design guide](../awkit-docs/design-guide.md) ([published](https://github.com/agent-workflow-kit/awkit-docs/blob/main/design-guide.md))
-- [interface](docs/interface.md), [design](docs/design.md)
+- [interface](docs/interface.md), [design](docs/design.md), [live verification runbook](docs/live-verification.md)
 
 ## License
 

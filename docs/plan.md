@@ -86,7 +86,7 @@ Implements [interface.md](interface.md) and [design.md](design.md). The plan is 
 **Goal**: Everything verified against a real site and on macOS; docs complete.
 **Success Criteria**: the `live` read suite passes against a real site; the `live` write suite creates at most three titled test tickets in a project the user's config names and closes each as done with a "won't do" resolution in a `finally` (about 60 requests); the macOS checklist is done; README, config example and schemas match the code; a cron-style run from a minimal environment works with a configured `PATH`.
 **Tests**: the live suites described above (`TICKETCTL_LIVE=1`); the facts still to verify (per-user transition filtering, 429 behavior, scoped tokens, moved or archived tickets, hidden-ticket 404 versus 403) become live checks or recorded findings; a macOS manual checklist (real read, XDG paths, `/dev/tty` prompt).
-**Status**: Not Started
+**Status**: In progress: the live suites and their runbook are written (`tests/live/`, [live-verification.md](live-verification.md)) and their harness is tested in CI; a human has not run them against a real site yet. The write suite's request count is about 110, not 60: every write is a `--dry-run` then an applied plan, each re-reading the ticket, the account and the transitions (see the runbook's request budget).
 
 ## Version roadmap
 

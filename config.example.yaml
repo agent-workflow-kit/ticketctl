@@ -45,7 +45,14 @@ sites:
       #   name: Acceptance Criteria
       # sprint:
       #   schema: com.pyxis.greenhopper.jira:gh-sprint
-      # Extra fields added to the output under fields.<name>.
+      # epic: {name: Epic Link}
+      # parent: {id: parent}
+      # labels: {id: labels}
+      # priority: {id: priority}
+      # assignee: {id: assignee}
+      # resolution: {id: resolution}
+      # due_date: {id: duedate}
+      # Extra fields added to the output under fields.<name>. Default: {}.
       extra:
         team:
           name: Team

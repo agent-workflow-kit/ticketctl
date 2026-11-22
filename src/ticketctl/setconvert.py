@@ -40,7 +40,7 @@ a ``textarea`` field and a transition ``comment`` field, and that ``textarea`` m
 
 The write flow (``writeflow``) supplies ``me`` and the actor; an action fetches the metadata and
 compares each payload with the current value (``writeflow.rich_changed`` for rich text).
-TODO(#30): ``update`` and ``transition`` call ``resolve_assignments`` and ``convert_all``.
+``update`` and ``transition`` call ``resolve_assignments`` and ``convert_all``.
 ``create`` does the same with ``createmeta``.
 """
 
