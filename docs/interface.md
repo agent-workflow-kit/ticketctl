@@ -247,6 +247,8 @@ The old `POST /rest/api/3/search` is not used (it returns 410 on current Jira Cl
 | any other 4xx on a read, and 400 on a read other than `search/jql` and `board/{id}/sprint` | 12 `provider_changed` |
 | a write whose connection never opened, after retries | 12 `unavailable` (retryable, nothing sent) |
 
+The 410 rule of the collection row is for reads. On a write a 410 is "any other 4xx on a write": 12 `rejected`, nothing applied. A 404 on a write to a collection endpoint (`POST /issue`) is 12 `provider_changed`; a 404 on a write to an object path is 10 `not_found`, and the two sprint writes (`sprint/{id}/issue`, `backlog/issue`) map their 404 to 10 `not_found` as the sprint section says.
+
 ## Write flow
 
 Every write (`transition`, `comment`, `create`, `update`, `sprint add|remove`) follows one order.
