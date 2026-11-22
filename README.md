@@ -81,7 +81,7 @@ Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `in
 
 - [awkit architecture](../awkit-docs/architecture.md) ([published](https://github.com/agent-workflow-kit/awkit-docs/blob/main/architecture.md))
 - [awkit tool design guide](../awkit-docs/design-guide.md) ([published](https://github.com/agent-workflow-kit/awkit-docs/blob/main/design-guide.md))
-- [interface](docs/interface.md), [design](docs/design.md)
+- [interface](docs/interface.md), [design](docs/design.md), [live verification runbook](docs/live-verification.md)
 
 ## License
 
