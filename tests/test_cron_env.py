@@ -3,7 +3,7 @@
 ``scripts/cron_check.py`` runs ticketctl as a real process with only a configured ``PATH``, the
 XDG directories and the token variable: no ``TERM``, stdin from ``/dev/null``, a new session (no
 controlling terminal). These tests prove the CLI passes that check on Linux; the same script, run
-from a real crontab with ``--inherit-env`` semantics, is the human part (docs/platform-checklist.md).
+from a real crontab, is the human part (docs/platform-checklist.md).
 """
 
 from __future__ import annotations

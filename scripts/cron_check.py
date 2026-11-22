@@ -6,8 +6,8 @@ The same code serves two runs.
 * The test suite (``tests/test_cron_env.py``) runs it against the fake provider with a scrubbed
   environment: only a configured ``PATH``, the state and config directories and the token
   variable, no ``TERM``, stdin from ``/dev/null``, a new session (so no controlling terminal).
-* A human runs this file from a real crontab with ``--inherit-env``: every step then runs in
-  whatever environment cron really hands over, and the report shows what that was (names only).
+* A human runs this file from a real crontab: every step then runs in whatever environment cron
+  really hands over, and the report shows what that was (names only).
 
 Steps (each one is a ``ticketctl`` process, bounded by ``--timeout``):
 
@@ -196,7 +196,7 @@ def run_checks(
     report.add(
         "write without --yes is exit 13, no prompt",
         code == 13 and error.get("code") == "confirmation_required" and carried == held,
-        f"exit {code}, code {error.get('code')!r}, plan hash matches the dry run: {carried == held}",
+        f"exit {code}, code {error.get('code')!r}, same hash as dry run: {carried == held}",
     )
     report.add("unconfirmed write writes no audit", len(_audit(effective)) == before)
 
