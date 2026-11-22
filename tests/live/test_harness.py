@@ -44,6 +44,7 @@ from tests.live.support import (
     Recorder,
     Redactor,
     Result,
+    StdinWriteRefused,
     TooManyComments,
     TooManyTickets,
     child_env,
@@ -84,11 +85,45 @@ def test_the_suites_skip_without_their_flags(env: dict[str, str], write: bool, n
     assert reason is not None and needle in reason
 
 
+def _gated(**more: str) -> dict[str, str]:
+    """A gate environment with the key variable named and set (the fake value)."""
+    return {ENV_LIVE: "1", ENV_KEY_VAR: KEY_VAR_NAME, KEY_VAR_NAME: FAKE_SITE_KEY, **more}
+
+
 def test_the_suites_run_only_with_every_flag() -> None:
-    assert skip_reason({ENV_LIVE: "1"}, write=False) is None
-    assert skip_reason({ENV_LIVE: "1", ENV_WRITE: "1", ENV_PROJECT: "ABC"}, write=True) is None
+    assert skip_reason(_gated(), write=False) is None
+    assert skip_reason(_gated(**{ENV_WRITE: "1", ENV_PROJECT: "ABC"}), write=True) is None
     # the write flag alone never turns the read suite on
     assert skip_reason({ENV_WRITE: "1"}, write=False) is not None
+
+
+@pytest.mark.parametrize("write", [False, True])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {ENV_KEY_VAR: None},
+        {ENV_KEY_VAR: ""},
+        {ENV_KEY_VAR: "HOME"},
+        {ENV_KEY_VAR: "TICKETCTL_ANYTHING"},
+        {ENV_KEY_VAR: "has space"},
+        {KEY_VAR_NAME: None},
+        {KEY_VAR_NAME: ""},
+    ],
+)
+def test_both_suites_need_the_key_variable_named_and_set(
+    write: bool, change: dict[str, str | None]
+) -> None:
+    env = _gated(**{ENV_WRITE: "1", ENV_PROJECT: "ABC"})
+    for name, value in change.items():
+        if value is None:
+            del env[name]
+        else:
+            env[name] = value
+    reason = skip_reason(env, write=write)
+    assert reason is not None
+    assert re.search(ENV_KEY_VAR, reason) or re.search(KEY_VAR_NAME, reason)
+    assert not re.search(re.escape(FAKE_SITE_KEY), reason)
+    assert not re.search("has space", reason)
 
 
 def test_a_pytest_run_without_the_flag_skips_every_live_test(tmp_path: Path) -> None:
@@ -893,6 +928,110 @@ def test_the_runner_refuses_a_fourth_create_before_the_request(
     ledger.close_all()
 
 
+def _create_argv(ledger: Ledger) -> tuple[str, ...]:
+    return ("--yes", "--expect-plan", "0" * 64, "create", "--project", "DEMO", "--type", "Task",
+            "--title", ledger.title("X"), "--dedupe-key", "kx")  # fmt: skip
+
+
+def test_a_budget_refusal_before_any_request_is_not_an_unknown_create(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider
+) -> None:
+    cli, ledger = _wrapped(world)
+    cli.budget.limit = 0
+    before = len(fake.calls)
+    with pytest.raises(BudgetExceeded):
+        cli.run(*_create_argv(ledger))
+    assert not ledger.unknown_create and ledger.create_launches == 0
+    assert ledger.close_all() == {} and len(fake.calls) == before
+    assert ledger.still_open() == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("--yes", "--expect-plan", "0" * 64, "create", "--project", "DEMO", "--type", "Task"),
+        ("update", "DEMO-1", "--title", "t"),
+        ("transition", "DEMO-1", "--to", "Done"),
+        ("sprint", "add", "DEMO-1", "--sprint", "1"),
+    ],
+)
+def test_a_write_with_stdin_input_is_refused_before_any_request(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider, argv: tuple[str, ...]
+) -> None:
+    cli, ledger = _wrapped(world)
+    before = len(fake.calls)
+    with pytest.raises(StdinWriteRefused):
+        cli.run(*argv, stdin="y\n")
+    assert len(fake.calls) == before and ledger.create_launches == 0 and not ledger.unknown_create
+
+
+def test_stdin_is_fine_for_a_read_and_for_a_dry_run(
+    world: tuple[LiveCli, LiveEnv, Path],
+) -> None:
+    cli, _ = _wrapped(world)
+    assert cli.run("whoami", "--refresh", stdin="").code == 0
+    cli.run("--dry-run", "update", "DEMO-1", "--title", "t", stdin="")
+
+
+def test_a_refused_create_is_a_known_outcome_and_prints_no_unknown_note(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider
+) -> None:
+    cli, ledger = _wrapped(world)
+    seeded = set(fake.tickets)
+    res = cli.run(*_create_argv(ledger))  # a plan digest that matches nothing: refused
+    assert res.code != 0 and res.error and set(fake.tickets) == seeded
+    assert not ledger.unknown_create
+    ledger.close_all()
+    assert ledger.still_open() == []
+
+
+def test_a_refusal_keeps_an_earlier_unknown_create_unknown(
+    world: tuple[LiveCli, LiveEnv, Path],
+) -> None:
+    cli, ledger = _wrapped(world)
+    ledger.unknown_create = True  # an earlier create whose answer was lost
+    cli.run(*_create_argv(ledger))
+    assert ledger.unknown_create
+    unknown = Result(_create_argv(ledger), 12, {"error": {"code": "x", "outcome_unknown": True}},
+                     "", "", 0.0, [])  # fmt: skip
+    ledger.unknown_create = False
+    ledger.cli.guard(_create_argv(ledger))  # type: ignore[misc]
+    ledger.observe(unknown)
+    assert ledger.unknown_create  # an answer that says "unknown" never clears it
+
+
+def test_the_sweep_stops_at_once_when_every_hit_is_already_known(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider
+) -> None:
+    cli, live, _ = world
+    sleeps: list[float] = []
+    ledger = Ledger(cli, live, "ab12cd34", sleep=sleeps.append)
+    key = _create(cli, ledger, "A", "ka")
+    ledger.unknown_create = True
+    before = len(fake.calls)
+    ledger.close_all()
+    assert sleeps == [] and ledger.created == [key]
+    searches = [c for c in fake.calls[before:] if re.search(r"/search/jql$", c.path)]
+    assert len(searches) == 1
+
+
+def test_a_sweep_failure_note_is_listed_once_when_the_closer_runs_twice(
+    world: tuple[LiveCli, LiveEnv, Path],
+) -> None:
+    cli, live, _ = world
+    ledger = Ledger(cli, live, "ab12cd34", sleep=lambda seconds: None)
+    ledger.unknown_create = True
+
+    def broken() -> None:
+        raise OSError("x")
+
+    ledger._sweep = broken  # type: ignore[method-assign]
+    ledger.close_all()
+    ledger.close_all()
+    notes = [n for n in ledger.still_open() if re.search(r"sweep failed", n)]
+    assert notes == ["sweep failed: OSError"]
+
+
 def test_the_command_name_skips_the_global_flags() -> None:
     argv = ("--actor", "human:x", "--dry-run", "--yes", "--expect-plan", "a" * 64, "comment", "K-1")
     assert command_name(argv) == ("comment", ["K-1"])
@@ -1023,7 +1162,7 @@ def test_the_real_fixture_closes_every_ticket_after_a_failure_or_a_cap_abort(
     env = {
         ENV_LIVE: "1", ENV_WRITE: "1", ENV_PROJECT: "DEMO", "FORCED_MODE": mode,
         "TICKETCTL_LIVE_CONFIG": str(config), "TICKETCTL_LIVE_SITE": "main",
-        ENV_PASS: KEY_VAR_NAME, KEY_VAR_NAME: FAKE_SITE_KEY,
+        ENV_PASS: KEY_VAR_NAME, KEY_VAR_NAME: FAKE_SITE_KEY, ENV_KEY_VAR: KEY_VAR_NAME,
         ENV_FINDINGS: str(tmp_path / "findings"),
     }  # fmt: skip
     done = _child_pytest(tmp_path, ["-x", "-k", "write_world", "test_renamed.py"], env)

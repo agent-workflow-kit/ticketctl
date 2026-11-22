@@ -88,7 +88,7 @@ def skip_reason(env: Mapping[str, str], *, write: bool) -> str | None:
     if env.get("CI"):
         return "CI is set: the live suites never run in CI"
     if not write:
-        return None
+        return _key_reason(env)
     if env.get(ENV_WRITE) != "1":
         return (
             f"the write suite needs {ENV_WRITE}=1 as well: it creates tickets and posts "
@@ -97,6 +97,20 @@ def skip_reason(env: Mapping[str, str], *, write: bool) -> str | None:
     project = env.get(ENV_PROJECT, "")
     if not PROJECT_RE.fullmatch(project):
         return f"the write suite needs {ENV_PROJECT} naming a test project (a project key)"
+    return _key_reason(env)
+
+
+def _key_reason(env: Mapping[str, str]) -> str | None:
+    """Why the site key is not usable, else None. Names variables only, never a value."""
+    name = env.get(ENV_KEY_VAR, "").strip()
+    if not name or not ENV_NAME_RE.fullmatch(name) or reserved_env_name(name):
+        return (
+            f"both suites need {ENV_KEY_VAR} naming the variable that holds the site key "
+            "(a plain variable name, not HOME, PATH, XDG_* or TICKETCTL_*): "
+            "without it the child would send unauthenticated requests"
+        )
+    if not env.get(name):
+        return f"the variable named by {ENV_KEY_VAR} is not set or is empty: set {name}"
     return None
 
 
@@ -515,7 +529,8 @@ class LiveCli:
     ) -> None:
         self.base_env = child_env(env, pass_env)
         self.read_only = read_only
-        self.guard: Callable[[tuple[str, ...]], None] | None = None
+        self.guard: Callable[..., None] | None = None
+        self.observer: Callable[[Result], None] | None = None
         self.state_home = state_home
         self.budget = budget
         self.config = config
@@ -541,9 +556,11 @@ class LiveCli:
     ) -> Result:
         if self.read_only and "--yes" in argv:
             raise AssertionError("the read suite never applies a plan: --yes is refused")
-        if self.guard is not None:
-            self.guard(tuple(argv))  # raises before any request when a cap would be crossed
+        # the budget first: a refusal here must not count as a launch or as an unknown outcome
         self.budget.check_before(cleanup=cleanup)
+        if self.guard is not None:
+            # raises before any request when a cap would be crossed
+            self.guard(tuple(argv), stdin=stdin)
         before = len(self.budget.records())
         # the private state directory comes last: nothing may redirect where the log is kept
         env = {**self.base_env, **(extra_env or {}), "XDG_STATE_HOME": str(self.state_home)}
@@ -572,6 +589,8 @@ class LiveCli:
             self.budget.records()[before:],
         )
         self.history.append(result)
+        if self.observer is not None:
+            self.observer(result)
         self.check_read_only(result)
         self.budget.check_after(cleanup=cleanup)
         return result
@@ -620,6 +639,13 @@ class TooManyTickets(RuntimeError):
     """The write suite never creates more than three test tickets."""
 
 
+class StdinWriteRefused(RuntimeError):
+    """A write was given input on stdin: a confirmation that way would bypass the --yes caps."""
+
+
+WRITE_COMMANDS = frozenset({"create", "comment", "transition", "update", "sprint"})
+
+
 class TooManyComments(RuntimeError):
     """The write suite never posts more than one comment per test ticket."""
 
@@ -650,6 +676,7 @@ class Ledger:
     names: dict[str, str] = field(default_factory=dict)  # a test's name for a ticket -> its key
     comments: dict[str, int] = field(default_factory=dict)
     unknown_create: bool = False
+    _prior_unknown: bool = False
     sleep: Callable[[float], None] = time.sleep
     create_launches: int = 0
     comment_launches: dict[str, int] = field(default_factory=dict)
@@ -659,17 +686,30 @@ class Ledger:
 
     def __post_init__(self) -> None:
         self.cli.guard = self.guard
+        self.cli.observer = self.observe
 
-    def guard(self, argv: tuple[str, ...]) -> None:
+    def guard(self, argv: tuple[str, ...], stdin: str | None = None) -> None:
         """Called by the runner before each command: the caps hold whatever the test does."""
         name, rest = command_name(argv)
         applied = "--yes" in argv
+        if (
+            stdin is not None
+            and name in WRITE_COMMANDS
+            and "--dry-run" not in argv
+            and (name != "sprint" or (rest and rest[0] in ("add", "remove")))
+        ):
+            raise StdinWriteRefused(
+                "a write with input on stdin is refused: it would confirm outside the --yes caps"
+            )
         if name == "create" and applied:
             if self.create_launches >= MAX_TEST_TICKETS:
                 raise TooManyTickets(
                     f"a create beyond the {MAX_TEST_TICKETS}-ticket cap is refused"
                 )
+            # The cap counts applied create launches, so the retry of W02 after a refusal uses one
+            # more of the three. The runner calls this only after the budget check passed.
             self.create_launches += 1
+            self._prior_unknown = self.unknown_create
             # until a key is recorded the outcome is unknown: a timeout or an abort after the POST
             # must still make the closer search for the ticket by its title
             self.unknown_create = True
@@ -681,6 +721,15 @@ class Ledger:
                 self.comment_launches[key] = self.comment_launches.get(key, 0) + 1
                 if self.comment_launches[key] > MAX_COMMENTS_PER_TICKET:
                     raise TooManyComments("a second comment on one test ticket is refused")
+
+    def observe(self, result: Result) -> None:
+        """After each command: a create refused outright (an error, no outcome unknown) made nothing."""
+        name, _ = command_name(result.argv)
+        if name != "create" or "--yes" not in result.argv:
+            return
+        error = result.error
+        if result.code != 0 and error and not error.get("outcome_unknown"):
+            self.unknown_create = self._prior_unknown
 
     def create_resolved(self) -> None:
         """A create ended with a known outcome (a key recorded, or a definite refusal)."""
@@ -742,6 +791,9 @@ class Ledger:
                 self.created.extend(new)
                 self.swept.extend(new)
                 return
+            hits = [t for t in tickets or [] if isinstance(t, dict)]
+            if hits and all(t.get("key") in self.created for t in hits):
+                return  # everything the search shows is known: waiting would find nothing new
 
     def close_one(self, key: str) -> str:
         """Close one ticket as done with the won't-do resolution; the outcome as a short word."""
@@ -779,6 +831,7 @@ class Ledger:
         out = [k for k, v in self.closed.items() if v.startswith("failed")]
         out += [k for k in self.created if k not in self.closed]
         out += self.left_open
+        out = list(dict.fromkeys(out))
         if self.unknown_create and not self.swept:
             out.append(
                 "a create outcome was unknown and the sweep found nothing: search the test "

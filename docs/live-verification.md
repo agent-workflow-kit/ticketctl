@@ -45,14 +45,14 @@ Nothing here is read from the repository. Set the variables in your shell; the v
 | `TICKETCTL_LIVE_MISSING_TICKET` | read, optional | a key that does not exist (default: the probe project with number 999999999) |
 | `TICKETCTL_LIVE_BOARD` | both, optional | a scrum board id for the sprint probes |
 | `TICKETCTL_LIVE_KANBAN_BOARD` | read, optional | a board id without sprints (for the 400 probe) |
-| `TICKETCTL_LIVE_TOKEN_ENV` | both | the name (not the value) of the variable that holds your site token (the `token_env` of your config): the child process gets that variable and the wrong-token probe overrides it; a reserved name (`HOME`, `PATH`, `XDG_*`, `TICKETCTL_*`) is refused |
-| `TICKETCTL_LIVE_PASS_ENV` | optional | comma separated names of other variables the child needs (for example the `email_env` of your config); the values are masked in the findings |
+| `TICKETCTL_LIVE_TOKEN_ENV` | both, required | the name (not the value) of the variable that holds your site token (the `token_env` of your config); both suites skip when it is not set to a plain variable name or when that variable is missing or empty, so a run never sends unauthenticated requests. The child process gets that variable and the wrong-token probe overrides it; a reserved name (`HOME`, `PATH`, `XDG_*`, `TICKETCTL_*`) is refused |
+| `TICKETCTL_LIVE_PASS_ENV` | when your config uses one | comma separated names of other variables the child needs: if your config reads the account email from a variable (`email_env`), that variable name must be listed here or the child will not see it; the values are masked in the findings |
 | `TICKETCTL_LIVE_TYPE` | write, optional | issue type for the created tickets (default `Task`) |
 | `TICKETCTL_LIVE_RESOLUTION` | write, optional | the closing resolution (default `Won't Do`) |
 | `TICKETCTL_LIVE_DONE_STATUS` | write, optional | the done status name (default `Done`) |
 | `TICKETCTL_LIVE_FINDINGS_DIR` | optional | where findings go (default `live-findings/` in the checkout, git-ignored) |
 
-The suites give every run a private state directory (`XDG_STATE_HOME`), so a run starts with a cold cache, its request log holds exactly its own requests, and your real state, audit log and locks are untouched. Your configuration directory is used as it is. The `ticketctl` child process gets a minimal environment: `PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `XDG_*`, `TICKETCTL_*`, the proxy and CA bundle variables, and the variables named by `TICKETCTL_LIVE_TOKEN_ENV` and `TICKETCTL_LIVE_PASS_ENV`; nothing else of your environment reaches it. The read suite also refuses `--yes` and any command whose request log shows a write, and the write suite's runner refuses a create beyond three, or a comment the ledger did not approve (one per ticket), before any request is sent.
+The suites give every run a private state directory (`XDG_STATE_HOME`), so a run starts with a cold cache, its request log holds exactly its own requests, and your real state, audit log and locks are untouched. Your configuration directory is used as it is. The `ticketctl` child process gets a minimal environment: `PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `XDG_*`, `TICKETCTL_*`, the proxy and CA bundle variables, and the variables named by `TICKETCTL_LIVE_TOKEN_ENV` and `TICKETCTL_LIVE_PASS_ENV`; nothing else of your environment reaches it. The read suite also refuses `--yes` and any command whose request log shows a write, and the write suite's runner refuses a create beyond three, a comment the ledger did not approve (one per ticket) and any write given input on stdin (a confirmation that way would bypass the `--yes` caps), before any request is sent. The cap of three counts applied create launches, so the retry of W02 after a refusal uses one more of the three.
 
 ## Commands
 
@@ -164,7 +164,7 @@ The table maps every item of the checklist in issue #3 and of the review notes o
 
 A probe whose precondition is missing skips with the reason in the pytest report:
 
-- No `TICKETCTL_LIVE_TICKET`, `..._MOVED_TICKET`, `..._HIDDEN_TICKET`, `..._BOARD`, `..._KANBAN_BOARD` or `..._TOKEN_ENV`: the probes that need them skip.
+- No `TICKETCTL_LIVE_TICKET`, `..._MOVED_TICKET`, `..._HIDDEN_TICKET`, `..._BOARD` or `..._KANBAN_BOARD`: the probes that need them skip.
 - A project with fewer than 101 visible tickets: the multi-page search records the count and skips; with 150 or fewer, the cursor probes skip too.
 - A site with no board, or a board with no future sprint: the sprint writes skip; with one future sprint only the move-versus-append probe is recorded as skipped.
 - A create screen with required fields ticketctl cannot supply: the write suite skips its create probes (and then has nothing to probe on tickets); choose another type or project.
