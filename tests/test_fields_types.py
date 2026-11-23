@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from tests.fake_provider import (
 from tests.golden import assert_golden, validator
 from ticketctl import createcmd
 from ticketctl.cli import main
+from ticketctl.readutil import hide_field_ids
 
 SITE_ENV_VAR = "TICKETCTL_TEST_SITE_ENV"
 
@@ -228,10 +230,20 @@ def test_a_missing_project_is_not_found(cli: Cli) -> None:
     assert (code, env["error"]["code"]) == (10, "not_found")
 
 
-@pytest.mark.parametrize("flag", ["--yes", "--dry-run"])
-def test_write_only_flags_are_refused(cli: Cli, flag: str) -> None:
-    code, env = cli.doc(flag, "fields", "types", "--project", "DEMO")
-    assert (code, env["error"]["reason"]) == (2, "invalid_argument")
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--yes",),
+        ("--dry-run",),
+        ("--actor", "human:a"),
+        ("--decision-id", "d"),
+        ("--override-escalation",),
+    ],
+)
+def test_write_only_flags_are_refused(cli: Cli, flags: tuple[str, ...]) -> None:
+    code, env = cli.doc(*flags, "fields", "types", "--project", "DEMO")
+    assert code == 2, env
+    assert env["error"]["reason"] == "invalid_argument"
     assert not cli.fake.calls
 
 
@@ -344,7 +356,119 @@ def test_a_provider_outage_is_unavailable(cli: Cli) -> None:
         _createmeta_types=lambda call, project: (_ for _ in ()).throw(ProviderError(503, ["down"])),
     )
     code, env = cli.types("--project", "DEMO")
-    assert code == 12 and env["error"]["code"] in ("unavailable", "provider_changed")
+    assert (code, env["error"]["code"]) == (12, "unavailable")
+
+
+# ---- the same rules in both commands (create and fields types) ---------------------------------
+
+BOTH = pytest.mark.parametrize("cmd", ["create", "types"])
+
+
+def invoke(cli: Cli, cmd: str, type_name: str) -> tuple[int, dict[str, Any], str]:
+    """One run of ``create --dry-run`` or ``fields types`` for the type; its code, doc, stderr."""
+    if cmd == "create":
+        argv = ["--dry-run", "create", "--project", "DEMO", "--type", type_name, "--title", "t"]
+    else:
+        argv = ["fields", "types", "--project", "DEMO", "--type", type_name]
+    code, out, err = cli.run("--json", *argv)
+    return code, json.loads(out), err
+
+
+def required_names(cmd: str, code: int, doc: dict[str, Any]) -> list[str]:
+    """The required field names the command reported for the one type (none when it needs none)."""
+    if cmd == "create":
+        if code == 0:
+            return []
+        assert doc["error"]["reason"] == "missing_required_fields", doc
+        return [r["name"] for r in doc["error"]["details"]["required_fields"]]
+    assert code == 0, doc
+    return [r["name"] for r in doc["types"][0]["required_fields"]]
+
+
+@BOTH
+def test_more_types_than_the_limit_is_provider_changed_and_exactly_the_limit_is_fine(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch, cmd: str
+) -> None:
+    monkeypatch.setattr(createcmd, "MAX_TYPES", 5)
+
+    def types(count: int) -> Any:
+        entries = [type_entry("1", "Task")] + [
+            type_entry(str(10 + i), f"T{i}") for i in range(count)
+        ]
+        return lambda call, project: Out(200, {"isLast": True, "issueTypes": entries})
+
+    swap(cli, _createmeta_types=types(4))
+    code, doc, _ = invoke(cli, cmd, "Task")
+    assert code == 0, doc
+    swap(cli, _createmeta_types=types(5))
+    code, doc, _ = invoke(cli, cmd, "Task")
+    assert (code, doc["error"]["code"]) == (12, "provider_changed")
+
+
+@BOTH
+def test_more_fields_than_the_limit_is_provider_changed_and_exactly_the_limit_is_fine(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch, cmd: str
+) -> None:
+    monkeypatch.setattr(createcmd, "MAX_META_FIELDS", 5)
+
+    def fields(count: int) -> Any:
+        entries = [{"fieldId": "summary", "name": "Summary", "required": True}] + [
+            {"fieldId": f"f{i}", "name": f"F{i}", "required": False} for i in range(count)
+        ]
+        return lambda call, project, type_id: Out(200, {"isLast": True, "fields": entries})
+
+    swap(cli, _createmeta_fields=fields(4))
+    code, doc, _ = invoke(cli, cmd, "Task")
+    assert code == 0, doc
+    swap(cli, _createmeta_fields=fields(5))
+    code, doc, _ = invoke(cli, cmd, "Task")
+    assert (code, doc["error"]["code"]) == (12, "provider_changed")
+
+
+@BOTH
+def test_a_required_field_named_like_an_internal_id_is_shown_hidden(cli: Cli, cmd: str) -> None:
+    with_fields(cli, **{"customfield_90001": {"name": "customfield_90002", "required": True}})
+    code, doc, _ = invoke(cli, cmd, "Task")
+    (name,) = required_names(cmd, code, doc)
+    assert name == hide_field_ids("customfield_90002") and name != "customfield_90002"
+    assert "customfield_" not in json.dumps(doc)
+
+
+@BOTH
+def test_a_nameless_required_field_warns_that_the_list_is_incomplete(cli: Cli, cmd: str) -> None:
+    with_fields(cli, **{"customfield_90003": {"required": True}})
+    code, doc, err = invoke(cli, cmd, "Task")
+    assert required_names(cmd, code, doc)
+    assert re.search(r"the required fields could not be read completely \(required_fields\)", err)
+
+
+@BOTH
+def test_an_unknown_type_names_at_most_max_candidates_types(cli: Cli, cmd: str) -> None:
+    entries = [type_entry(str(100 + i), f"T{i:03}") for i in range(createcmd.MAX_CANDIDATES + 10)]
+    swap(
+        cli,
+        _createmeta_types=lambda call, project: Out(
+            200, {"total": len(entries), "issueTypes": entries}
+        ),
+    )
+    code, doc, _ = invoke(cli, cmd, "Nope")
+    assert (code, doc["error"]["reason"]) == (22, "invalid_value")
+    candidates = doc["error"]["details"]["candidates"]
+    assert candidates == sorted(candidates) and len(candidates) == createcmd.MAX_CANDIDATES
+
+
+@BOTH
+def test_a_padded_type_name_is_not_stripped(cli: Cli, cmd: str) -> None:
+    code, doc, _ = invoke(cli, cmd, " Bug")
+    assert (code, doc["error"]["reason"]) == (22, "invalid_value")
+
+
+@BOTH
+@pytest.mark.parametrize("flag", ["true", 1])
+def test_a_non_boolean_required_flag_is_not_required(cli: Cli, cmd: str, flag: object) -> None:
+    with_fields(cli, **{F_POINTS: {"name": "Story Points", "required": flag}})
+    code, doc, _ = invoke(cli, cmd, "Task")
+    assert required_names(cmd, code, doc) == []
 
 
 # ---- read-only ---------------------------------------------------------------------------------
