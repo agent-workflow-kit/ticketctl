@@ -104,6 +104,7 @@ SURFACE = [
     ["fields", "list"],
     ["fields", "check"],
     ["fields", "refresh"],
+    ["fields", "types", "--project", "AB"],
     ["sites"],
     ["sites", "resolve", "AB-1"],
     ["validate", "--probe"],

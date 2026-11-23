@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/fields-types.json",
+  "title": "fields types --json",
+  "description": "The issue types a project can create, sorted by name. required_fields is null for every type unless --type was given (then only that type is listed). It never lists parent (see interface.md, fields) and never lists the fields ticketctl fills in or that have a default.",
+  "type": "object",
+  "properties": {
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "project": {
+      "$ref": "../defs.json#/$defs/project_key"
+    },
+    "types": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "../defs.json#/$defs/numeric_id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "subtask": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider's flag; true means create needs --parent. null when the provider did not say."
+          },
+          "required_fields": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "kind": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "allowed_values": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 256
+                  }
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "kind"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "subtask",
+          "required_fields"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "site",
+    "project",
+    "types"
+  ]
+}
