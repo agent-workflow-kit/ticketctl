@@ -833,3 +833,33 @@ def test_a_dropped_dedupe_shaped_label_is_named(env: Env, site: FakeProvider) ->
     _, doc, _ = env.json("changelog", "DEMO-2")
     value = doc["items"][0]["items"][0]
     assert value["from"] == value["to"] == ["alpha"] and "changelog" in doc["incomplete"]
+
+
+def test_field_filter_ignores_marks_of_known_unrequested_fields(
+    env: Env, site: FakeProvider
+) -> None:
+    label = FakeProvider.history_item(
+        "labels", "alpha", "alpha tc-0123456789abcdef", field_id="labels"
+    )
+    values = [raw("1", 1, items=[label]), raw("2", 2, items=[status("a", "b")])]
+    reply(site, "GET", PATH_END, {"total": 2, "values": values})
+    _, doc, _ = env.json("changelog", "DEMO-2", "--field", "status")
+    assert doc["incomplete"] == [] and doc["truncated"] is False
+
+
+def test_a_dedupe_shaped_label_on_both_sides_names_nothing(env: Env, site: FakeProvider) -> None:
+    item = FakeProvider.history_item(
+        "labels", "a tc-0123456789abcdef", "a b tc-0123456789abcdef", field_id="labels"
+    )
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
+    _, doc, _ = env.json("changelog", "DEMO-2")
+    assert doc["items"][0]["items"][0]["to"] == ["a", "b"] and doc["incomplete"] == []
+
+
+def test_an_entry_older_than_since_contributes_no_truncation(env: Env, site: FakeProvider) -> None:
+    old = raw("1", 1, items=[status("a", "b") for _ in range(250)])
+    new = raw("2", 5, items=[status("a", "b")])
+    reply(site, "GET", PATH_END, {"total": 2, "values": [old, new]})
+    since = at(3).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _, doc, _ = env.json("changelog", "DEMO-2", "--field", "status", "--since", since)
+    assert ids(doc) == ["2"] and doc["truncated"] is False and doc["incomplete"] == []

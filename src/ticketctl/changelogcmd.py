@@ -202,8 +202,7 @@ def _labels(text: object, marks: set[str]) -> list[str]:
         words = words[:MAX_LIST]
     for word in words:
         if _DEDUPE_LABEL.fullmatch(word):
-            marks.add("changelog")  # a real label of this shape is dropped too: named
-            continue
+            continue  # the dedupe label is never listed (item_object names a one-sided one)
         shown = _text(word, marks, cap=CAPS["label"])
         if shown is not None:
             out.append(shown)
@@ -284,11 +283,24 @@ def item_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[str
     if found is None:
         return None
     printed, kind = found
+    if kind == LABELS and _one_sided_dedupe(raw.get("fromString"), raw.get("toString")):
+        marks.add("changelog")  # a real label of this shape may have been added or removed
     return {
         "field": printed,
         "from": _value(kind, raw.get("from"), raw.get("fromString"), marks),
         "to": _value(kind, raw.get("to"), raw.get("toString"), marks),
     }
+
+
+def _dedupe_words(text: object) -> set[str]:
+    if not isinstance(text, str):
+        return set()
+    return {w for w in text.split()[:MAX_LIST] if _DEDUPE_LABEL.fullmatch(w)}
+
+
+def _one_sided_dedupe(old: object, new: object) -> bool:
+    """True when a dedupe-shaped label is on one side of the pair only."""
+    return _dedupe_words(old) != _dedupe_words(new)
 
 
 def entry_object(
@@ -318,7 +330,10 @@ def entry_object(
         if not fields and len(raw_items) > MAX_ITEMS:
             marks.add("changelog.truncated")
         for entry in raw_items if fields else raw_items[:MAX_ITEMS]:
-            item = item_object(entry, names, marks)
+            item_marks: set[str] = set()
+            item = item_object(entry, names, item_marks)
+            if item is None or not fields or item["field"].lower() in fields:
+                marks |= item_marks  # an unreadable item might have matched
             if item is not None and (not fields or item["field"].lower() in fields):
                 items.append(item)
         if len(items) > MAX_ITEMS:
@@ -417,8 +432,6 @@ def scan_changelog(
             obj = entry_object(item, names, own_marks, fields)
             cut = ITEMS_CUT in own_marks
             own_marks.discard(ITEMS_CUT)
-            if cut:
-                dropped = True  # matching items beyond the cap are not shown
             if obj is None:
                 marks |= own_marks
                 dropped = True
@@ -429,6 +442,8 @@ def scan_changelog(
                 seen.add(obj["id"])
                 if since is not None and obj["created"] < since:
                     continue
+                if cut:
+                    dropped = True  # matching items beyond the cap are not shown
                 if fields and not obj["items"]:
                     if own_marks:  # the lost part might have matched
                         marks |= own_marks
