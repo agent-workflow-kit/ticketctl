@@ -101,6 +101,7 @@ SURFACE = [
     ["transitions", "AB-1"],
     ["sprints", "list", "--state", "active"],
     ["sprints", "show", "12"],
+    ["sprints", "resolve", "open"],
     ["fields", "list"],
     ["fields", "check"],
     ["fields", "refresh"],

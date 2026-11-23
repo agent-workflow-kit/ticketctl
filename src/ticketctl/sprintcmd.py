@@ -62,16 +62,7 @@ from .plan import Planned, Step
 from .readutil import hide_field_ids, object_error
 from .runtime import Runtime, load_runtime
 from .sanitize import CAPS, GRAMMARS, query, sanitize_field, segment
-from .sprintscmd import (
-    MAX_LIMIT,
-    STATES,
-    board_spec,
-    read_sprints,
-    resolve_board,
-)
-from .sprintscmd import (
-    SPRINTS_CUT as CUT,
-)
+from .sprintscmd import STATES, board_spec, pick_sprint
 from .writeflow import (
     Context,
     PrepareContext,
@@ -87,7 +78,6 @@ ADD_TEMPLATE = "/rest/agile/1.0/sprint/{id}/issue"
 BACKLOG_PATH = "/rest/agile/1.0/backlog/issue"
 OPEN_STATES = ("future", "active")
 CATEGORIES = ("new", "indeterminate", "done")
-CANDIDATES = 20
 
 
 def make_seams() -> Seams:
@@ -297,50 +287,7 @@ class SprintAction:
         if selector not in ("open", "next"):
             return self._sprint_by_id(ctx, selector)
         site = ctx.rt.config.sites[ctx.site]
-        board = resolve_board(gw, site, board=self.board, project=project)
-        marks: set[str] = set()
-        if selector == "open":
-            found = read_sprints(gw, board, "active", CANDIDATES, marks)
-            self._whole(marks)
-            if len(found) > 1:
-                raise TicketctlError(
-                    "ambiguous_sprint",
-                    "several sprints are active; name one with --sprint <id>",
-                    details={"candidates": [f"{s['id']} ({s['name']})" for s in found]},
-                )
-            if not found:
-                raise _no_sprint("the board has no active sprint")
-            return _from_object(found[0])
-        found = read_sprints(gw, board, "future", MAX_LIMIT, marks)
-        self._whole(marks)
-        if len(found) >= MAX_LIMIT:
-            raise TicketctlError(
-                "lookup_incomplete",
-                "the board has too many future sprints to pick the next one; "
-                "name the sprint with --sprint <id>",
-            )
-        if not found:
-            raise _no_sprint("the board has no future sprint")
-        dated = [s for s in found if s["start"] is not None]
-        pool = dated or found
-        best = min(pool, key=lambda s: (s["start"] or "", s["id"]))
-        return _from_object(best)
-
-    @staticmethod
-    def _whole(marks: set[str]) -> None:
-        """A sprint the listing dropped (or with an unreadable date) could be the right one."""
-        if CUT in marks:
-            raise TicketctlError(
-                "lookup_incomplete",
-                "the board's sprint list was cut off before its end; "
-                "name the sprint with --sprint <id>",
-            )
-        if marks - {"sprints.truncated"}:
-            raise TicketctlError(
-                "provider_changed",
-                "the board's sprint list holds a sprint that cannot be read; "
-                "name the sprint with --sprint <id>",
-            )
+        return _from_object(pick_sprint(gw, site, selector, board=self.board, project=project))
 
     def _sprint_by_id(self, ctx: Context, selector: str) -> Member:
         response = ctx.gw.request(
@@ -412,10 +359,6 @@ class SprintAction:
 def _plain(gw: WriteGateway) -> Gateway:
     """The guarded gateway as the read helpers want it (they only send GET requests)."""
     return cast("Gateway", gw)
-
-
-def _no_sprint(why: str) -> TicketctlError:
-    return TicketctlError("not_found", why, details={"option": "sprint"})
 
 
 def _from_object(obj: dict[str, Any]) -> Member:

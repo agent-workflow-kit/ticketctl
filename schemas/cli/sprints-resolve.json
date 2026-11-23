@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/sprints-resolve.json",
+  "title": "sprints resolve --json",
+  "description": "The one sprint that `sprint add --sprint open|next` would pick.",
+  "type": "object",
+  "properties": {
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "sprint": {
+      "$ref": "../defs.json#/$defs/sprint"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "site",
+    "sprint"
+  ]
+}
