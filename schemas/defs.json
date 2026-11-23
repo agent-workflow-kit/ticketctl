@@ -1745,6 +1745,120 @@
         "site"
       ],
       "description": "The ticket object. get and search print it; only the requested --fields (and key and site) are present, so every other property is optional."
+    },
+    "changelog_value": {
+      "description": "One side of a changed field: null (no value), text, a list of labels, an account (assignee, reporter) or a list of sprints. The kind follows the field, never the content.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 1000000,
+          "x-untrusted": true
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "x-untrusted": true
+          },
+          "maxItems": 1000
+        },
+        {
+          "$ref": "#/$defs/account"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 256,
+                    "x-untrusted": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "maxItems": 1000
+        }
+      ]
+    },
+    "changelog_item": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "x-untrusted": true,
+          "description": "The logical or extra field name when the site maps the field, else the provider's display name; never a custom field id."
+        },
+        "from": {
+          "$ref": "#/$defs/changelog_value"
+        },
+        "to": {
+          "$ref": "#/$defs/changelog_value"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "from",
+        "to"
+      ]
+    },
+    "changelog_entry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/provider_id"
+        },
+        "author": {
+          "$ref": "#/$defs/account"
+        },
+        "created": {
+          "$ref": "#/$defs/ts"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/changelog_item"
+          },
+          "maxItems": 200
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "author",
+        "created",
+        "items"
+      ]
     }
   }
 }
