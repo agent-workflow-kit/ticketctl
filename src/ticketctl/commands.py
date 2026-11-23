@@ -139,7 +139,8 @@ def _sprints_show(p: argparse.ArgumentParser) -> None:
 
 
 def _sites_resolve(p: argparse.ArgumentParser) -> None:
-    _add(p, "key", metavar="KEY_OR_URL")
+    _add(p, "key", metavar="KEY_OR_URL", nargs="?")
+    _add(p, "--project", help="resolve a project key instead; the result's key is null")
 
 
 def _validate(p: argparse.ArgumentParser) -> None:

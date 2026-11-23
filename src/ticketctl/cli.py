@@ -91,6 +91,13 @@ def _exactly_one(ns: argparse.Namespace, a: str, b: str, label: str) -> None:
         raise usage_error("invalid_combination", f"exactly one of {label} is required")
 
 
+def _one_of_key_or_project(ns: argparse.Namespace) -> None:
+    if ns.key is None and ns.project is None:
+        raise usage_error("missing_option", "sites resolve needs KEY_OR_URL or --project")
+    if ns.key is not None and ns.project is not None:
+        raise usage_error("invalid_combination", "sites resolve takes KEY_OR_URL or --project")
+
+
 def _me_name(g: Globals) -> str | None:
     """`me.name` from the configuration; read only when the default actor needs it."""
     return load_runtime(g, show_warnings=False).config.me.name
@@ -108,6 +115,8 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         _exactly_one(ns, "body", "body_file", "--body and --body-file")
         if ns.format == "adf" and ns.body_file is None:
             raise usage_error("invalid_combination", "--format adf needs --body-file")
+    elif spec.path == ("sites", "resolve"):
+        _one_of_key_or_project(ns)
     elif spec.path == ("search",):
         searchcmd.check_offline(ns)
     elif spec.path == ("update",):

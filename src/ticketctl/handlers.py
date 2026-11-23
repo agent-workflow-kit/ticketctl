@@ -67,13 +67,17 @@ def human_sites(r: dict[str, Any]) -> str:
 
 def sites_resolve(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     rt = load_runtime(g)
+    if a.project is not None:  # no ticket is named: the key is null
+        chosen = selection.select_site(rt.config, site_flag=g.site, projects=[a.project])
+        return {"key": None, "site": chosen.site, "rule": chosen.rule}
     chosen = selection.select_site(rt.config, site_flag=g.site, refs=[a.key])
     assert chosen.key is not None
     return {"key": chosen.key, "site": chosen.site, "rule": chosen.rule}
 
 
 def human_sites_resolve(r: dict[str, Any]) -> str:
-    return f"{r['key']}: {r['site']} (rule {r['rule']})"
+    who = r["key"] if r["key"] is not None else "project"
+    return f"{who}: {r['site']} (rule {r['rule']})"
 
 
 def validate(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
