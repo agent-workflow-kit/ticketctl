@@ -195,13 +195,27 @@ def test_spawn_detached_hands_over_the_payload_without_waiting(
     tmp_path: Path, pids: PidRegistry
 ) -> None:
     out = tmp_path / "got"
-    body = f"import sys\nopen({str(out)!r}, 'w').write(sys.stdin.read())\n"
+    release = tmp_path / "release"
+    # The sink reads nothing and writes nothing until the test releases it (bounded at 30 s, so a
+    # spawn that waited for it would return with the sink gone and the output file absent).
+    body = (
+        "import os, sys, time\n"
+        "end = time.monotonic() + 30\n"
+        f"while not os.path.exists({str(release)!r}) and time.monotonic() < end:\n"
+        "    time.sleep(0.02)\n"
+        f"if os.path.exists({str(release)!r}):\n"
+        f"    open({str(out)!r}, 'w').write(sys.stdin.read())\n"
+    )
     pid = spawn_detached(
         script(tmp_path, "sink.py", body), stdin=b"payload" * 100_000, env=ENV, on_start=pids.add
     )
+    # It returned while the sink is still blocked: it did not wait for the child.
+    assert pid > 0 and alive(pid)
+    assert not out.exists()
+    release.write_text("go")
     # The sink writes the file while it reads; a loaded machine can show it half written. Read it
-    # only after the sink has exited (and been reaped by its watcher, not left a zombie).
-    assert pid > 0 and wait_dead(pid, 60)
+    # only after the sink has exited (alive() counts a not-yet-reaped zombie as dead).
+    assert wait_dead(pid, 60)
     assert len(out.read_text()) == 700_000
 
 

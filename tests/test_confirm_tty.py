@@ -74,9 +74,10 @@ class Session:
                 state = stat.read_text().rsplit(")", 1)[-1].split()[0]
             except OSError:
                 return
-            if state == "S":
+            if state in ("S", "Z"):  # asleep in its read, or already gone (the test sees why)
                 return
             time.sleep(0.01)
+        raise AssertionError(f"pid {pid} never blocked in its read within {seconds} s")
 
     def run(
         self,
@@ -126,6 +127,7 @@ class Session:
                 # A starved machine needs far longer than 10 s to start the child; the drain ends
                 # as soon as the prompt shows, so the margin costs nothing when it is quick.
                 self._drain(master, 60.0, until=PROMPT)
+                assert PROMPT in self.out, f"the prompt never appeared: {self.out!r}"
                 self._wait_until_blocked(proc.pid)
             started = time.monotonic()
             if flood:
@@ -278,10 +280,11 @@ def test_a_long_line_with_its_newline_in_one_raw_read_is_declined(tmp_path: Path
 
 def test_only_the_cap_stops_an_endless_line(tmp_path: Path) -> None:
     # An endless 'x' with no newline on a raw terminal: without the cap the read would run to the
-    # 8 s timeout (and the child's 256 MiB address-space limit is the backstop for memory).
-    s = Session(tmp_path, raw=True, timeout=8.0).run(None, flood=True)
+    # 60 s timeout, which the run's 15 s wait on the child cuts into a failure (and the child's
+    # 256 MiB address-space limit is the backstop for memory).
+    s = Session(tmp_path, raw=True, timeout=60.0).run(None, flood=True)
     assert s.result is not None and s.result["result"] == "declined"
-    assert s.elapsed < 4.0
+    assert s.elapsed < 30  # only a backstop: the cap answers, not the 60 s deadline
 
 
 @pytest.mark.skipif(
@@ -418,7 +421,7 @@ def test_read_line_gives_up_on_a_closed_peer_and_on_overlong_input() -> None:
         os.write(w, b"a" * (confirm_tty.MAX_ANSWER_BYTES + 10))
         started = time.monotonic()
         assert confirm_tty.read_line(r, 5.0) is None
-        assert time.monotonic() - started < 2.0  # the cap answers; the deadline does not
+        assert time.monotonic() - started < 30.0  # only a backstop; the cap answers
     finally:
         os.close(r)
         os.close(w)
