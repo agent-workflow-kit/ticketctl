@@ -2,6 +2,6 @@
   "probe": false,
   "valid": true,
   "warnings": [
-    "TICKETCTL_SITES__MAIN__URL: ignored; only TICKETCTL_TIMEOUT and TICKETCTL_DEFAULT_SITE are read from the environment"
+    "TICKETCTL_SITES__MAIN__URL: ignored; only TICKETCTL_TIMEOUT, TICKETCTL_DEFAULT_SITE and TICKETCTL_READ_ONLY are read from the environment"
   ]
 }

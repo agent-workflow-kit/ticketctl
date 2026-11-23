@@ -99,6 +99,7 @@ def open_gateway(rt: Runtime, site_name: str, *, deadline: Deadline | None = Non
         log_sink=log_sink,
         verbose=verbose if rt.g.verbose else None,
         config_sha256=rt.config_sha256(),
+        read_only=rt.config.read_only,
     )
 
 

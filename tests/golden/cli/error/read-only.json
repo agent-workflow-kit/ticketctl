@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "read_only",
+    "details": null,
+    "key": null,
+    "message": "read-only mode is on (config read_only or TICKETCTL_READ_ONLY): write commands are refused; --dry-run still prints the plan",
+    "outcome_unknown": false,
+    "reason": "read_only",
+    "retry_after_s": null,
+    "retryable": false,
+    "site": null
+  }
+}
