@@ -172,9 +172,7 @@ def story(site: FakeProvider) -> FakeProvider:
     hist(
         site,
         40,
-        FakeProvider.history_item(
-            "Flavor", "mild", "hot", field_id="customfield_12345", custom=True
-        ),
+        FakeProvider.history_item("Flavor", "mild", "hot", field_id="customfield_1", custom=True),
         entry_id="9005",
         author=None,
     )
@@ -334,7 +332,7 @@ def test_since_across_time_zones(
 
 
 def test_a_since_on_an_offset_changelog_stamp(env: Env, site: FakeProvider) -> None:
-    """The fake stamps in UTC-6: the filter compares instants, not strings."""
+    """The fake stamps with a west-of-UTC offset: the filter compares instants, not strings."""
     hist(site, 0, status("a", "b"), entry_id="1")
     hist(site, 60, status("b", "c"), entry_id="2")
     _, doc, _ = env.json("changelog", "DEMO-2", "--since", "2026-03-01T16:00:00Z")
@@ -602,7 +600,7 @@ def test_a_description_keeps_its_line_breaks_other_values_do_not(
 ) -> None:
     items = [
         FakeProvider.history_item("description", "a\nb", "c\r\nd", field_id="description"),
-        FakeProvider.history_item("Notes", "a\nb", "c\td", field_id="customfield_123"),
+        FakeProvider.history_item("Notes", "a\nb", "c\td", field_id="customfield_1"),
     ]
     reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=items)]})
     _, doc, _ = env.json("changelog", "DEMO-2")
@@ -620,9 +618,9 @@ def test_unicode_values_pass_through(env: Env, site: FakeProvider) -> None:
 
 def test_a_huge_value_is_cut_with_the_marker_and_named(env: Env, site: FakeProvider) -> None:
     items = [
-        FakeProvider.history_item("Notes", "x" * 10_000, "ok", field_id="customfield_5"),
+        FakeProvider.history_item("Notes", "x" * 10_000, "ok", field_id="customfield_1"),
         FakeProvider.history_item("description", "y", "z" * 1_200_000, field_id="description"),
-        FakeProvider.history_item("F" * 600, "a", "b", field_id="customfield_6"),
+        FakeProvider.history_item("F" * 600, "a", "b", field_id="customfield_1"),
     ]
     reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=items)]})
     _, doc, _ = env.json("changelog", "DEMO-2")
@@ -686,7 +684,7 @@ def test_sprint_pairing_is_conservative(
 
 def test_a_secret_in_a_value_is_scrubbed(env: Env, site: FakeProvider) -> None:
     item = FakeProvider.history_item(
-        "Notes", f"key {SITE_TOKEN}", f"{SITE_TOKEN}", field_id="customfield_9"
+        "Notes", f"key {SITE_TOKEN}", f"{SITE_TOKEN}", field_id="customfield_1"
     )
     entry = raw(
         "1", 1, items=[item], author={"accountId": OTHER_ACCOUNT, "displayName": SITE_TOKEN}
@@ -698,9 +696,7 @@ def test_a_secret_in_a_value_is_scrubbed(env: Env, site: FakeProvider) -> None:
 
 
 def test_a_custom_field_id_in_a_display_name_is_hidden(env: Env, site: FakeProvider) -> None:
-    item = FakeProvider.history_item(
-        "Copy of customfield_424242", "a", "b", field_id="customfield_1"
-    )
+    item = FakeProvider.history_item("Copy of customfield_1", "a", "b")
     reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
     code, out, _ = env.run("--json", "changelog", "DEMO-2")
     assert code == 0 and CUSTOM_ID.search(out) is None and "<id>" in out
