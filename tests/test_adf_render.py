@@ -403,13 +403,27 @@ def test_cut_never_splits_a_marker() -> None:
     assert sanitize_body(body) == body
 
 
-def test_prefix_amplification_is_charged() -> None:
+def test_prefix_amplification_is_charged(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The guard is that every emitted line charges its container prefix, so the renderer stops
+    # after about OUTPUT_LIMIT / prefix-length lines instead of emitting all 200 000. That is
+    # asserted on the number of lines kept (deterministic), not on elapsed time.
+    contexts: list[Any] = []
+    real_init = adf_render._Ctx.__init__
+
+    def remember(self: Any) -> None:
+        real_init(self)
+        contexts.append(self)
+
+    monkeypatch.setattr(adf_render._Ctx, "__init__", remember)
     node: Any = {"type": "paragraph", "content": [txt("x\n" * 200_000)]}
     for _ in range(40):
         node = {"type": "blockquote", "content": [node]}
     started = time.monotonic()
     result = render_adf(doc(node))
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 60  # only a backstop; the bound is the line count
+    (ctx,) = contexts
+    prefix = len("> " * 40)
+    assert len(ctx.lines) <= adf_render.OUTPUT_LIMIT // prefix + 1  # about 13 000, not 200 000
     assert len(result.text) <= adf_render.OUTPUT_LIMIT
     assert result.text.endswith("[too large]")
 

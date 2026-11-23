@@ -199,9 +199,10 @@ def test_spawn_detached_hands_over_the_payload_without_waiting(
     pid = spawn_detached(
         script(tmp_path, "sink.py", body), stdin=b"payload" * 100_000, env=ENV, on_start=pids.add
     )
-    assert pid > 0 and wait_file(out, 10)
+    # The sink writes the file while it reads; a loaded machine can show it half written. Read it
+    # only after the sink has exited (and been reaped by its watcher, not left a zombie).
+    assert pid > 0 and wait_dead(pid, 60)
     assert len(out.read_text()) == 700_000
-    assert wait_dead(pid)  # reaped by its watcher, not a zombie
 
 
 # ---------------------------------------------------------------------------------------------

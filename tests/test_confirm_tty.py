@@ -59,6 +59,25 @@ class Session:
                     return
                 self.out += chunk
 
+    @staticmethod
+    def _wait_until_blocked(pid: int, seconds: float = 30.0) -> None:
+        """Wait until the child sleeps in its read, so a signal or answer cannot land in the gap
+        between the prompt being written and the read starting (a loaded machine widens it).
+        Without /proc (macOS) a short pause stands in."""
+        stat = Path(f"/proc/{pid}/stat")
+        if not stat.exists():
+            time.sleep(0.3)
+            return
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                state = stat.read_text().rsplit(")", 1)[-1].split()[0]
+            except OSError:
+                return
+            if state == "S":
+                return
+            time.sleep(0.01)
+
     def run(
         self,
         answer: bytes | None = None,
@@ -104,7 +123,10 @@ class Session:
                 proc.stdin.write(stdin)
                 proc.stdin.close()
             if wait_prompt:
-                self._drain(master, 10.0, until=PROMPT)
+                # A starved machine needs far longer than 10 s to start the child; the drain ends
+                # as soon as the prompt shows, so the margin costs nothing when it is quick.
+                self._drain(master, 60.0, until=PROMPT)
+                self._wait_until_blocked(proc.pid)
             started = time.monotonic()
             if flood:
                 os.set_blocking(master, False)

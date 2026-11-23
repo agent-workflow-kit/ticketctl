@@ -210,12 +210,24 @@ def test_node_bomb_stops_early_and_is_fast() -> None:
     assert time.monotonic() - start < 2
 
 
-def test_a_million_valid_children_are_refused_after_bounded_work() -> None:
+def test_a_million_valid_children_are_refused_after_bounded_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bound is the number of nodes ever queued (work done), not elapsed time: the unbounded
+    # queue held a million entries, the bounded one never more than about the node limit.
+    deepest = [0]
+    real_queue = adf_validate._queue
+
+    def watching(parent: Any, path: Any, depth: int, kind: str, stack: Any, room: int) -> None:
+        real_queue(parent, path, depth, kind, stack, room)
+        deepest[0] = max(deepest[0], len(stack))
+
+    monkeypatch.setattr(adf_validate, "_queue", watching)
     wide = doc(*[para() for _ in range(1_000_000)])
     start = time.monotonic()
     refused(wide, "body_too_large")
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.5, elapsed  # about 5 ms locally; the unbounded queue took about 1.7 s
+    assert time.monotonic() - start < 30  # only a backstop
+    assert 0 < deepest[0] <= adf_validate.MAX_NODES + 1
 
 
 def test_a_wide_container_of_exactly_the_limit_is_accepted() -> None:

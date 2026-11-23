@@ -861,8 +861,27 @@ def test_many_images_before_links_is_not_quadratic() -> None:
     assert time.monotonic() - start < 2
 
 
-def test_emphasis_token_soup_is_not_superlinear() -> None:
-    # A bound, not a regression proof: the superlinear case from review was not reproduced.
+def test_emphasis_token_soup_is_not_superlinear(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The work is the number of links followed along the delimiter list (``prev`` reads), which
+    # is deterministic for a seeded input; the bound is linear in the token count. A quadratic
+    # scan reads it on the order of tokens squared, and stops at the cap instead of running on.
+    from ticketctl import adf_from_markdown as mod
+
+    reads = [0]
+    cap = 10 * 65000  # about 108 000 reads happen today
+    stored = mod._Delim.prev  # the slot descriptor of the real class
+
+    def get_prev(self: Any) -> Any:
+        reads[0] += 1
+        if reads[0] > cap:
+            raise AssertionError(f"more than {cap} delimiter links followed: superlinear")
+        return stored.__get__(self)
+
+    class Counting(mod._Delim):
+        __slots__ = ()
+        prev = property(get_prev, lambda self, value: stored.__set__(self, value))
+
+    monkeypatch.setattr(mod, "_Delim", Counting)
     rng = random.Random(7)
     md = "".join(rng.choice(["***", "[", "_a", "](", "*"]) for _ in range(65000))
     start = time.monotonic()
@@ -870,7 +889,8 @@ def test_emphasis_token_soup_is_not_superlinear() -> None:
         check(markdown_to_adf(md, body_chars=32767))
     except sanitize.InputError as exc:
         assert exc.reason == "body_too_large"
-    assert time.monotonic() - start < 2
+    assert time.monotonic() - start < 60  # only a backstop; the bound is the read count
+    assert reads[0] > 0
 
 
 def test_converter_patterns_match_the_validators() -> None:
