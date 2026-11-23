@@ -2048,7 +2048,7 @@ class FakeProvider:
         new_id: str | None = None,
         custom: bool = False,
     ) -> dict[str, Any]:
-        """A raw item in the real shape: ``from``/``to`` hold ids, ``fromString``/``toString`` text."""
+        """A raw item in the real shape: ``from``/``to`` hold ids, ``*String`` keys hold text."""
         item: dict[str, Any] = {
             "field": field_name,
             "fieldtype": "custom" if custom else "jira",

@@ -97,6 +97,7 @@ SURFACE = [
     ["get", "AB-1", "AB-2", "--fields", "a,b", "--comments", "3", "--include-adf"],
     ["search", "--project", "AB", "--status", "Open", "--limit", "5", "--count"],
     ["comments", "AB-1", "--limit", "5", "--newest-first"],
+    ["changelog", "AB-1", "--limit", "5", "--since", "1d", "--field", "status", "--newest-first"],
     ["transitions", "AB-1"],
     ["sprints", "list", "--state", "active"],
     ["sprints", "show", "12"],

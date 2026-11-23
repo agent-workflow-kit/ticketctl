@@ -1,4 +1,4 @@
-"""Handler of ``changelog KEY`` (docs/interface.md, ``changelog KEY``; ``schemas/cli/changelog.json``).
+"""Handler of ``changelog KEY`` (docs/interface.md, ``changelog KEY``; schemas/cli/changelog.json).
 
 One run reads ``GET /issue/{key}/changelog?startAt=...&maxResults=100`` page after page and turns
 every raw history entry into the entry object of ``schemas/defs.json#changelog_entry``:
@@ -157,7 +157,7 @@ def _author(raw: object, marks: set[str]) -> dict[str, Any]:
 
 
 def _text(raw: object, marks: set[str], *, cap: int, body: bool = False) -> str | None:
-    """One text side: null for none or empty, the sanitized text, null and a mark for a non-string."""
+    """One text side: null for none or empty, else sanitized text (a non-string is null, marked)."""
     if raw is None or raw == "":
         return None
     if not isinstance(raw, str):
@@ -266,9 +266,7 @@ def _field(raw: dict[str, Any], names: dict[str, str], marks: set[str]) -> tuple
     return shown, TEXT
 
 
-def item_object(
-    raw: object, names: dict[str, str], marks: set[str]
-) -> dict[str, Any] | None:
+def item_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         marks.add("changelog")
         return None
@@ -283,9 +281,7 @@ def item_object(
     }
 
 
-def entry_object(
-    raw: object, names: dict[str, str], marks: set[str]
-) -> dict[str, Any] | None:
+def entry_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[str, Any] | None:
     """One changelog entry, or None for an entry that cannot be kept (named in ``marks``)."""
     if not isinstance(raw, dict):
         marks.add("changelog")
@@ -373,9 +369,7 @@ def scan_changelog(
         page = response.data
         if not isinstance(page, dict):
             if requests == 1:
-                raise TicketctlError(
-                    "provider_changed", "the provider answered no changelog page"
-                )
+                raise TicketctlError("provider_changed", "the provider answered no changelog page")
             marks.add("changelog")
             more = True
             break
@@ -490,9 +484,7 @@ def _show(value: Any) -> str:
 
 
 def human_changelog(r: dict[str, Any]) -> str:
-    lines = [
-        f"{r['key']}: {len(r['items'])} of {r['total']} entries" + (", more" * r["truncated"])
-    ]
+    lines = [f"{r['key']}: {len(r['items'])} of {r['total']} entries" + (", more" * r["truncated"])]
     for e in r["items"]:
         lines.append(f"{e['id']} {e['created']} {e['author']['display_name']}:")
         for i in e["items"]:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,19 +24,25 @@ from tests.fake_provider import (
     Out,
 )
 from tests.golden import assert_golden
-from tests.test_read_commands import (  # noqa: F401  (fixtures)
-    Env,
-    _scrubber_reset,
-    env,
-    override,
-    reply,
-)
-from ticketctl import changelogcmd
+from tests.test_read_commands import Env, override, reply
+from ticketctl import changelogcmd, sanitize
 
 BASE = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
 CUSTOM_ID = re.compile(r"customfield_[0-9]+", re.IGNORECASE)
 NASTY = "a‮b\x07c\x1b[31m"
 PATH_END = "/changelog"
+
+
+@pytest.fixture(autouse=True)
+def _scrubber_reset() -> Any:
+    sanitize.configure_scrubber([])
+    yield
+    sanitize.configure_scrubber([])
+
+
+@pytest.fixture
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> Env:
+    return Env(tmp_path, monkeypatch, capsys)
 
 
 @pytest.fixture
@@ -133,7 +140,9 @@ def story(site: FakeProvider) -> FakeProvider:
             old_id=OTHER_ACCOUNT,
             new_id=ME_ACCOUNT,
         ),
-        FakeProvider.history_item("labels", "alpha", "alpha beta tc-0123456789abcdef", field_id="labels"),
+        FakeProvider.history_item(
+            "labels", "alpha", "alpha beta tc-0123456789abcdef", field_id="labels"
+        ),
         author=OTHER_ACCOUNT,
         entry_id="9002",
     )
@@ -149,9 +158,7 @@ def story(site: FakeProvider) -> FakeProvider:
             new_id="1, 2",
             custom=True,
         ),
-        FakeProvider.history_item(
-            "Business value", "1", "3", field_id=F_VALUE, custom=True
-        ),
+        FakeProvider.history_item("Business value", "1", "3", field_id=F_VALUE, custom=True),
         entry_id="9003",
     )
     hist(
@@ -265,7 +272,9 @@ def test_a_moved_ticket_is_read_under_its_old_key(env: Env, story: FakeProvider)
 # --- order, limit, filters ----------------------------------------------------------------------
 
 
-def test_limit_takes_the_oldest_n_and_newest_first_the_newest_n(env: Env, story: FakeProvider) -> None:
+def test_limit_takes_the_oldest_n_and_newest_first_the_newest_n(
+    env: Env, story: FakeProvider
+) -> None:
     _, oldest, _ = env.json("changelog", "DEMO-2", "--limit", "2")
     assert ids(oldest) == ["9001", "9002"] and oldest["truncated"] is True and oldest["total"] == 5
     _, newest, _ = env.json("changelog", "DEMO-2", "--limit", "2", "--newest-first")
@@ -629,7 +638,8 @@ def test_a_huge_value_is_cut_with_the_marker_and_named(env: Env, site: FakeProvi
 
 def test_at_most_200_items_of_an_entry_are_kept(env: Env, site: FakeProvider) -> None:
     items = [
-        FakeProvider.history_item(f"F{n}", "a", "b", field_id=f"customfield_{n}") for n in range(250)
+        FakeProvider.history_item(f"F{n}", "a", "b", field_id=f"customfield_{n}")
+        for n in range(250)
     ]
     reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=items)]})
     _, doc, _ = env.json("changelog", "DEMO-2")
@@ -675,8 +685,12 @@ def test_sprint_pairing_is_conservative(
 
 
 def test_a_secret_in_a_value_is_scrubbed(env: Env, site: FakeProvider) -> None:
-    item = FakeProvider.history_item("Notes", f"key {SITE_TOKEN}", f"{SITE_TOKEN}", field_id="customfield_9")
-    entry = raw("1", 1, items=[item], author={"accountId": OTHER_ACCOUNT, "displayName": SITE_TOKEN})
+    item = FakeProvider.history_item(
+        "Notes", f"key {SITE_TOKEN}", f"{SITE_TOKEN}", field_id="customfield_9"
+    )
+    entry = raw(
+        "1", 1, items=[item], author={"accountId": OTHER_ACCOUNT, "displayName": SITE_TOKEN}
+    )
     reply(site, "GET", PATH_END, {"total": 1, "values": [entry]})
     code, out, err = env.run("--json", "changelog", "DEMO-2")
     assert code == 0 and SITE_TOKEN not in out and SITE_TOKEN not in err
@@ -684,7 +698,9 @@ def test_a_secret_in_a_value_is_scrubbed(env: Env, site: FakeProvider) -> None:
 
 
 def test_a_custom_field_id_in_a_display_name_is_hidden(env: Env, site: FakeProvider) -> None:
-    item = FakeProvider.history_item("Copy of customfield_424242", "a", "b", field_id="customfield_1")
+    item = FakeProvider.history_item(
+        "Copy of customfield_424242", "a", "b", field_id="customfield_1"
+    )
     reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
     code, out, _ = env.run("--json", "changelog", "DEMO-2")
     assert code == 0 and CUSTOM_ID.search(out) is None and "<id>" in out
