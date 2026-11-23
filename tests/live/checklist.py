@@ -473,6 +473,19 @@ ITEMS: tuple[Item, ...] = (
         PROBED,
         ("test_every_created_ticket_is_closed",),
     ),
+    Item(
+        "W21",
+        "#43",
+        "comment-edit and comment-delete: the single-comment read embeds properties under "
+        "expand=properties; PUT of a comment accepts body and properties and rewrites the "
+        "ticketctl.meta property; PUT without visibility on a restricted comment (ticketctl "
+        "refuses it, so only a raw request shows what the provider does); DELETE removes the "
+        "comment; a non-author PUT or DELETE is refused",
+        HUMAN,
+        why="the write suite posts exactly one comment per test ticket and a delete would break "
+        "that count: a human runs comment-edit and comment-delete on a comment of their own "
+        "test ticket and reads the result with comments",
+    ),
 )
 
 

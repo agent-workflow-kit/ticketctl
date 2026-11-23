@@ -25,7 +25,7 @@ Both drive the `ticketctl` command line as a subprocess, like a real consumer, a
 
 The write suite changes a real site.
 
-- A comment cannot be deleted. The suite posts exactly one, on one of its own test tickets, and refuses a second one on any ticket. Its text is `TICKETCTL_LIVE_COMMENT_TEXT`, by default a neutral note (see "The comment" below).
+- The suite never deletes or edits a comment (the `comment-edit` and `comment-delete` commands are a human probe, W21 below). The suite posts exactly one, on one of its own test tickets, and refuses a second one on any ticket. Its text is `TICKETCTL_LIVE_COMMENT_TEXT`, by default a neutral note (see "The comment" below).
 - A ticket cannot be deleted either, only closed. The suite creates at most three (one or two with `TICKETCTL_LIVE_MAX_TICKETS`), titled `ticketctl live test <run id> ...`, and closes each as done with a "won't do" resolution in a `finally` (the module fixture `write_world`), also when a test fails, the request cap stops the run or you interrupt it. A ticket the closer could not close is printed at the end ("TEST TICKETS LEFT OPEN") so you can close it by hand.
 - It writes only tickets it created (the key a create returned, and after a create whose answer was lost, the tickets that carry this run's title marker).
 - Sprint tests move one of its own tickets into a future sprint of the board you name and back to the backlog. Use a board and sprints you may disturb.
@@ -216,6 +216,7 @@ The table maps every item of the checklist in issue #3 and of the review notes o
 | W18 | #10 | The 400 body of an unknown transition id and of a missing resolution, the ADF-required 400 for a plain string, the label, summary, parent and notifyUsers texts | needs a human decision or another environment: ticketctl validates these first, so the provider is never asked: needs raw requests | none |
 | W19 | #3 | Whether a done transition from a non-assigned sub-task needs a parent; the transition order (assign then done) | `test_transition_with_assign` (indirect: the suite closes tickets with the normal flow; a sub-task needs a parent ticket) | none |
 | W20 | #38 | The closer: every created ticket ends done with the won't-do resolution | `test_every_created_ticket_is_closed` | none |
+| W21 | #43 | comment-edit and comment-delete: the single-comment read embeds properties under expand=properties; PUT of a comment accepts body and properties and rewrites the ticketctl.meta property; PUT without visibility on a restricted comment (ticketctl refuses it, so only a raw request shows what the provider does); DELETE removes the comment; a non-author PUT or DELETE is refused | needs a human decision or another environment: the write suite posts exactly one comment per test ticket and a delete would break that count: a human runs comment-edit and comment-delete on a comment of their own test ticket and reads the result with comments | none |
 <!-- checklist:end -->
 
 ## Probes that depend on the site

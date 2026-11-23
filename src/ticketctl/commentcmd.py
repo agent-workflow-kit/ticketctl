@@ -230,6 +230,7 @@ def read_ticket(ctx: Context, key: str) -> dict[str, Any]:
         raise TicketctlError("provider_changed", "the provider answered no ticket fields")
     return fields
 
+
 def hook_facts(
     ctx: Context, fields: dict[str, Any], status: dict[str, Any], category: str | None
 ) -> dict[str, Any]:
@@ -243,9 +244,7 @@ def hook_facts(
             "subtask": itype.get("subtask") is True,
             "status": _name(status.get("name")),
             "priority": _name(priority),
-            "assignee_account_id": assignee
-            if GRAMMARS["account_id"].matches(assignee)
-            else None,
+            "assignee_account_id": assignee if GRAMMARS["account_id"].matches(assignee) else None,
             "assignee_is_me": assignee == ctx.me.account_id,
         },
         "current_status": {"name": _name(status.get("name")), "category": category},

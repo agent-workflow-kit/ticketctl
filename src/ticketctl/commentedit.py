@@ -178,7 +178,10 @@ class CommentEditAction(_Base):
         unchanged = found.digest == rich.sha256
         steps = [] if unchanged else [self._step(ctx, rich, info, found)]
         warnings: list[str] = []
-        if sum(len(t) for t in commentcmd._texts(rich.doc)) > commentcmd.NEAR_LIMIT * self.body_chars:
+        if (
+            sum(len(t) for t in commentcmd._texts(rich.doc))
+            > commentcmd.NEAR_LIMIT * self.body_chars
+        ):
             warnings.append("body_near_limit")
         return Planned(
             steps=steps,
@@ -250,24 +253,24 @@ class CommentDeleteAction(_Base):
         )
 
 
-def _target(g: Globals, a: argparse.Namespace) -> tuple[Any, selection.Selection]:
+def _target(g: Globals, a: argparse.Namespace) -> tuple[Any, str, str]:
+    """The runtime, the selected site and the canonical ticket key."""
     rt = load_runtime(g)
     chosen = selection.select_site(rt.config, site_flag=g.site, refs=[a.key])
     assert chosen.key is not None
-    return rt, chosen
+    return rt, chosen.site, chosen.key
 
 
 def comment_edit(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
-    rt, chosen = _target(g, a)
+    rt, site, key = _target(g, a)
     if a.body_file is not None:
         text = read_input(a.body_file, kind="body", body_chars=rt.config.limits.body_chars)
     else:
         text = a.body
-    action = CommentEditAction(chosen.key, a.comment_id, text, fmt=a.format or "markdown")
-    return writeflow.execute(rt, chosen.site, action, make_seams())
+    action = CommentEditAction(key, a.comment_id, text, fmt=a.format or "markdown")
+    return writeflow.execute(rt, site, action, make_seams())
 
 
 def comment_delete(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
-    rt, chosen = _target(g, a)
-    action = CommentDeleteAction(chosen.key, a.comment_id)
-    return writeflow.execute(rt, chosen.site, action, make_seams())
+    rt, site, key = _target(g, a)
+    return writeflow.execute(rt, site, CommentDeleteAction(key, a.comment_id), make_seams())

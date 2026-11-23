@@ -28,9 +28,7 @@ MARK = "zq7x-edit-marker-4f9c2e"  # must never reach a hook payload
 
 
 @pytest.fixture
-def cli(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: FakeProvider
-) -> Cli:
+def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: FakeProvider) -> Cli:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv(SITE_ENV_VAR, SITE_TOKEN)
     monkeypatch.setenv("PATH", "/nonexistent")
@@ -51,7 +49,9 @@ def posted(cli: Cli, body: str = "first draft", *extra: str) -> str:
     return str(result["comment_id"])
 
 
-def seed(cli: Cli, *, author: str, props: dict[str, Any], extra: dict[str, Any] | None = None) -> str:
+def seed(
+    cli: Cli, *, author: str, props: dict[str, Any], extra: dict[str, Any] | None = None
+) -> str:
     fake: FakeProvider = cli.fake
     cid = str(fake._next_comment)
     fake._next_comment += 1
@@ -119,7 +119,9 @@ def test_edit_keeps_the_dedupe_key_hash_of_the_original_post(cli: Cli) -> None:
     assert code == 0, result
     assert comments(cli)[-1]["properties"][attribution.META_PROPERTY]["key_sha256"] == old
     # the keyed post now sees a comment with its key and another body: nothing is posted twice
-    code, env = cli.doc("--dry-run", "comment", KEY, "--body", "first draft", "--dedupe-key", "k-edit")
+    code, env = cli.doc(
+        "--dry-run", "comment", KEY, "--body", "first draft", "--dedupe-key", "k-edit"
+    )
     assert (code, env["error"]["code"]) == (20, "already_exists")
 
 
@@ -140,7 +142,9 @@ def test_edit_dry_run_is_a_plan_with_the_change_and_sends_nothing(cli: Cli) -> N
 def test_editing_to_the_same_body_is_unchanged_and_writes_nothing(cli: Cli) -> None:
     cid = posted(cli, "same text")
     before = len(cli.writes())
-    code, result = cli.doc("--yes", "--expect-plan", "0" * 64, "comment-edit", KEY, cid, "--body", "same text")
+    code, result = cli.doc(
+        "--yes", "--expect-plan", "0" * 64, "comment-edit", KEY, cid, "--body", "same text"
+    )
     assert code == 0 and result["result"] == "unchanged" and result["changed"] is False
     assert result["comment_id"] == cid and result["steps"] == []
     validator("cli/comment-edit.json").validate(result)
@@ -185,7 +189,9 @@ def test_a_comment_changed_since_the_plan_is_stale(cli: Cli) -> None:
         pytest.param(OTHER_ACCOUNT, "valid", id="forged property on a foreign comment"),
         pytest.param(ME_ACCOUNT, {}, id="own comment, no property"),
         pytest.param(ME_ACCOUNT, {attribution.META_PROPERTY: {"v": 2}}, id="own, wrong version"),
-        pytest.param(ME_ACCOUNT, {attribution.META_PROPERTY: "text"}, id="own, property not an object"),
+        pytest.param(
+            ME_ACCOUNT, {attribution.META_PROPERTY: "text"}, id="own, property not an object"
+        ),
         pytest.param(
             ME_ACCOUNT,
             {attribution.META_PROPERTY: {"v": 1, "actor_kind": "robot", "body_sha256": "a" * 64}},
@@ -217,7 +223,10 @@ def test_a_comment_ticketctl_cannot_prove_is_its_own_is_refused(
     code, env = cli.doc("--yes", "--expect-plan", "0" * 64, command, KEY, cid, *argv)
     assert (code, env["error"]["code"]) == (20, "not_ticketctl_comment")
     assert len(cli.writes()) == before
-    assert len(comments(cli)) == 1 and comments(cli)[0]["body"]["content"][0]["content"][0]["text"] == "seeded"
+    assert (
+        len(comments(cli)) == 1
+        and comments(cli)[0]["body"]["content"][0]["content"][0]["text"] == "seeded"
+    )
 
 
 def test_edit_refuses_a_restricted_comment_and_delete_does_not(cli: Cli) -> None:
@@ -305,7 +314,9 @@ def test_an_auto_actor_edit_keeps_the_attribution_paragraph(cli: Cli) -> None:
 
 def test_a_human_edit_records_the_human_actor_kind(cli: Cli) -> None:
     cid = posted(cli)
-    code, plan = cli.doc("--actor", "human:tester", "--dry-run", "comment-edit", KEY, cid, "--body", "h")
+    code, plan = cli.doc(
+        "--actor", "human:tester", "--dry-run", "comment-edit", KEY, cid, "--body", "h"
+    )
     assert code == 0
     code, result = cli.doc(
         "--actor", "human:tester", "--yes", "--expect-plan", plan["plan_sha256"],
@@ -313,7 +324,9 @@ def test_a_human_edit_records_the_human_actor_kind(cli: Cli) -> None:
     )  # fmt: skip
     assert code == 0, result
     meta = comments(cli)[-1]["properties"][attribution.META_PROPERTY]
-    assert meta["actor_kind"] == "human" and meta["body_sha256"] == body_sha256(comments(cli)[-1]["body"])
+    assert meta["actor_kind"] == "human" and meta["body_sha256"] == body_sha256(
+        comments(cli)[-1]["body"]
+    )
 
 
 # --- delete -------------------------------------------------------------------------------------
@@ -490,9 +503,13 @@ def test_a_pre_hook_veto_stops_the_edit(cli: Cli, monkeypatch: pytest.MonkeyPatc
 
 def test_a_hook_flag_names_the_new_families(cli: Cli) -> None:
     cid = posted(cli)
-    code, env = cli.doc("--hook", "pre-comment-delete=exit 1", "--dry-run", "comment-delete", KEY, cid)
+    code, env = cli.doc(
+        "--hook", "pre-comment-delete=exit 1", "--dry-run", "comment-delete", KEY, cid
+    )
     assert code == 0, env  # a dry run runs no hook; the flag name is accepted
-    code, env = cli.doc("--hook", "pre-comment-remove=exit 1", "--dry-run", "comment-delete", KEY, cid)
+    code, env = cli.doc(
+        "--hook", "pre-comment-remove=exit 1", "--dry-run", "comment-delete", KEY, cid
+    )
     assert code == 2
 
 

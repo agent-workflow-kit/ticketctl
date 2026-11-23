@@ -50,6 +50,8 @@ TOKEN_VAR = "TICKETCTL_TEST_RO_TOKEN"
 WRITE_CASES: dict[tuple[str, ...], list[str]] = {
     ("transition",): ["transition", "DEMO-1", "--to", "Done"],
     ("comment",): ["comment", "DEMO-1", "--body", "hello"],
+    ("comment-edit",): ["comment-edit", "DEMO-1", "1", "--body", "hello"],
+    ("comment-delete",): ["comment-delete", "DEMO-1", "1"],
     ("create",): ["create", "--project", "DEMO", "--type", "Task", "--title", "t"],
     ("update",): ["update", "DEMO-1", "--title", "new"],
     ("sprint", "add"): ["sprint", "add", "DEMO-1", "--sprint", "1"],
