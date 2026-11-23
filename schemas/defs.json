@@ -221,7 +221,7 @@
         "pattern": "^[a-z][a-z0-9_.]{0,63}$"
       },
       "uniqueItems": true,
-      "description": "Parts cut off or unavailable: links, comments, attachments, links.unreadable, <part>.truncated, <part>.invalid_id, fields.<name>."
+      "description": "Parts cut off or unavailable: links, comments, attachments, links.unreadable, <part>.truncated, <part>.invalid_id, fields.<name>, and for the changelog: changelog, changelog.invalid_id, changelog.truncated."
     },
     "status": {
       "type": "object",

@@ -202,6 +202,7 @@ def _labels(text: object, marks: set[str]) -> list[str]:
         words = words[:MAX_LIST]
     for word in words:
         if _DEDUPE_LABEL.fullmatch(word):
+            marks.add("changelog")  # a real label of this shape is dropped too: named
             continue
         shown = _text(word, marks, cap=CAPS["label"])
         if shown is not None:
@@ -216,19 +217,25 @@ def _sprints(ident: object, text: object, marks: set[str]) -> list[dict[str, Any
             marks.add("changelog")
             return []
     id_parts = [p.strip() for p in ident.split(",")] if isinstance(ident, str) and ident else []
-    name_parts = [p.strip() for p in text.split(",")] if isinstance(text, str) and text else []
+    name_all = [p.strip() for p in text.split(",")] if isinstance(text, str) and text else []
     id_parts = [p for p in id_parts if p]
-    name_parts = [p for p in name_parts if p]
-    if len(id_parts) > MAX_LIST or len(name_parts) > MAX_LIST:
+    name_parts = [p for p in name_all if p]
+    if len(id_parts) > MAX_LIST or len(name_parts) > MAX_LIST or len(name_all) > MAX_LIST:
         marks.add("changelog.truncated")
         id_parts, name_parts = id_parts[:MAX_LIST], name_parts[:MAX_LIST]
+        name_all = name_all[:MAX_LIST]
     if not id_parts:
         return [{"id": None, "name": _text(n, marks, cap=NAME_CAP)} for n in name_parts]
-    paired = len(name_parts) == len(id_parts)
+    # an empty name element makes the names unpairable
+    paired = len(name_all) == len(id_parts) and all(name_all)
+    if name_all and not paired:
+        marks.add("changelog")  # names that cannot be paired are lost
     out: list[dict[str, Any]] = []
     for n, part in enumerate(id_parts):
         sprint_id = int(part) if _DIGITS.fullmatch(part) else None
-        name = _text(name_parts[n], marks, cap=NAME_CAP) if paired else None
+        if sprint_id is None:
+            marks.add("changelog")  # an id that does not parse is lost
+        name = _text(name_all[n], marks, cap=NAME_CAP) if paired else None
         out.append({"id": sprint_id, "name": name})
     return out
 
@@ -266,6 +273,9 @@ def _field(raw: dict[str, Any], names: dict[str, str], marks: set[str]) -> tuple
     return shown, TEXT
 
 
+ITEMS_CUT = "<items cut>"  # internal: matching items beyond the cap were cut (never printed)
+
+
 def item_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         marks.add("changelog")
@@ -281,8 +291,16 @@ def item_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[str
     }
 
 
-def entry_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[str, Any] | None:
-    """One changelog entry, or None for an entry that cannot be kept (named in ``marks``)."""
+def entry_object(
+    raw: object,
+    names: dict[str, str],
+    marks: set[str],
+    fields: frozenset[str] = frozenset(),
+) -> dict[str, Any] | None:
+    """One changelog entry, or None for an entry that cannot be kept (named in ``marks``).
+
+    With ``fields`` the filter runs before the item cap, so the cap counts matching items only.
+    """
     if not isinstance(raw, dict):
         marks.add("changelog")
         return None
@@ -297,12 +315,15 @@ def entry_object(raw: object, names: dict[str, str], marks: set[str]) -> dict[st
     items: list[dict[str, Any]] = []
     raw_items = raw.get("items")
     if isinstance(raw_items, list):
-        if len(raw_items) > MAX_ITEMS:
+        if not fields and len(raw_items) > MAX_ITEMS:
             marks.add("changelog.truncated")
-        for entry in raw_items[:MAX_ITEMS]:
+        for entry in raw_items if fields else raw_items[:MAX_ITEMS]:
             item = item_object(entry, names, marks)
-            if item is not None:
+            if item is not None and (not fields or item["field"].lower() in fields):
                 items.append(item)
+        if len(items) > MAX_ITEMS:
+            items = items[:MAX_ITEMS]
+            marks.update(("changelog.truncated", ITEMS_CUT))
     else:
         marks.add("changelog")
     return {
@@ -378,7 +399,11 @@ def scan_changelog(
             total = count if total is None else max(total, count)
         if newest_first and not jumped and start == 0 and total is not None and total > MAX_SCAN:
             jumped = True  # the newest end is the wanted one: read the window that ends the list
-            start = total - MAX_SCAN
+            first = page.get("values")
+            size = len(first) if isinstance(first, list) else 0
+            if size == 0:
+                size = PAGE_SIZE  # no page length observed: assume the requested one
+            start = max(0, total - min(MAX_SCAN, (MAX_REQUESTS - 1) * size))
             more = True
             continue
         raw = page.get("values")
@@ -389,7 +414,11 @@ def scan_changelog(
         chunk = raw[: MAX_SCAN - scanned]
         for item in chunk:
             own_marks: set[str] = set()
-            obj = entry_object(item, names, own_marks)
+            obj = entry_object(item, names, own_marks, fields)
+            cut = ITEMS_CUT in own_marks
+            own_marks.discard(ITEMS_CUT)
+            if cut:
+                dropped = True  # matching items beyond the cap are not shown
             if obj is None:
                 marks |= own_marks
                 dropped = True
@@ -400,10 +429,11 @@ def scan_changelog(
                 seen.add(obj["id"])
                 if since is not None and obj["created"] < since:
                     continue
-                if fields:
-                    obj["items"] = [i for i in obj["items"] if i["field"].lower() in fields]
-                    if not obj["items"]:
-                        continue
+                if fields and not obj["items"]:
+                    if own_marks:  # the lost part might have matched
+                        marks |= own_marks
+                        dropped = True
+                    continue
                 matches.append((obj, own_marks))
         scanned += len(chunk)
         start += len(raw)

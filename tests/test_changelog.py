@@ -140,9 +140,7 @@ def story(site: FakeProvider) -> FakeProvider:
             old_id=OTHER_ACCOUNT,
             new_id=ME_ACCOUNT,
         ),
-        FakeProvider.history_item(
-            "labels", "alpha", "alpha beta tc-0123456789abcdef", field_id="labels"
-        ),
+        FakeProvider.history_item("labels", "alpha", "alpha beta", field_id="labels"),
         author=OTHER_ACCOUNT,
         entry_id="9002",
     )
@@ -203,7 +201,6 @@ def test_assignee_and_labels_are_typed(env: Env, story: FakeProvider) -> None:
         "display_name": "Fake Other",
     }
     assert by_field["assignee"]["to"] == {"account_id": ME_ACCOUNT, "display_name": "Fake Me"}
-    # the dedupe label is never listed, as in the ticket object
     assert by_field["labels"]["from"] == ["alpha"]
     assert by_field["labels"]["to"] == ["alpha", "beta"]
 
@@ -723,3 +720,116 @@ def test_the_one_time_grammar_is_shared_with_comments() -> None:
     assert changelogcmd.since_cutoff("2026-03-01") == "2026-03-01T00:00:00Z"
     assert changelogcmd.effective_limit(None) == 50
     assert changelogcmd.MAX_SCAN == 1000 and changelogcmd.MAX_REQUESTS == 20
+
+
+# --- round 1 review fixes -----------------------------------------------------------------------
+
+
+def _summary_items(count: int) -> list[dict[str, Any]]:
+    return [
+        FakeProvider.history_item("summary", "a", "b", field_id="summary") for _ in range(count)
+    ]
+
+
+def test_field_filter_is_applied_before_the_item_cap(env: Env, site: FakeProvider) -> None:
+    items = [*_summary_items(250), status("To Do", "Done")]
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=items)]})
+    _, doc, _ = env.json("changelog", "DEMO-2", "--field", "status")
+    assert [i["field"] for i in doc["items"][0]["items"]] == ["status"]
+    assert doc["truncated"] is False and doc["incomplete"] == []
+
+
+def test_field_filter_that_still_exceeds_the_item_cap_is_truncated_and_named(
+    env: Env, site: FakeProvider
+) -> None:
+    items = [status("a", "b") for _ in range(250)]
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=items)]})
+    _, doc, _ = env.json("changelog", "DEMO-2", "--field", "status")
+    assert len(doc["items"][0]["items"]) == 200 and doc["truncated"] is True
+    assert "changelog.truncated" in doc["incomplete"]
+
+
+def test_field_filter_keeps_the_marks_of_an_entry_it_drops(env: Env, site: FakeProvider) -> None:
+    unreadable = {"fieldId": ["x"], "from": "a", "to": "b"}
+    entry = raw("1", 1, items=[status("a", "b"), unreadable])
+    reply(site, "GET", PATH_END, {"total": 1, "values": [entry]})
+    _, doc, _ = env.json("changelog", "DEMO-2", "--field", "priority")
+    assert doc["items"] == [] and doc["truncated"] is True and "changelog" in doc["incomplete"]
+
+
+@pytest.mark.parametrize("items", [None, "x", 5])
+def test_field_filter_keeps_the_mark_of_a_bad_items_list(
+    env: Env, site: FakeProvider, items: Any
+) -> None:
+    reply(site, "GET", PATH_END, {"total": 1, "values": [{**raw("1", 1), "items": items}]})
+    _, doc, _ = env.json("changelog", "DEMO-2", "--field", "status")
+    assert doc["items"] == [] and doc["truncated"] is True and "changelog" in doc["incomplete"]
+
+
+def test_the_newest_window_follows_the_providers_page_size(env: Env, site: FakeProvider) -> None:
+    seen = serve(site, rows(2500), page_cap=50)
+    _, doc, _ = env.json("changelog", "DEMO-2", "--newest-first", "--limit", "2")
+    assert ids(doc) == ["2500", "2499"] and doc["total"] == 2500 and len(seen) <= 20
+
+
+def test_a_page_larger_than_the_scan_cap_is_cut_and_named(env: Env, site: FakeProvider) -> None:
+    serve(site, rows(5000), whole=True)
+    stamp = at(1001).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _, doc, _ = env.json("changelog", "DEMO-2", "--since", stamp)
+    assert doc["items"] == [] and doc["total"] == 5000 and doc["truncated"] is True
+    assert "changelog.truncated" in doc["incomplete"]
+    edge = at(1000).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _, inside, _ = env.json("changelog", "DEMO-2", "--since", edge)
+    assert ids(inside) == ["1000"]
+
+
+@pytest.mark.parametrize(
+    ("ids_text", "names_text"),
+    [
+        ("1, 2", "A, B, C"),
+        ("7", "Has, comma"),
+        ("1" * 30, "A"),
+        ("x, 2", "A, B"),
+        ("1, 2", "A, , B"),
+    ],
+)
+def test_unpairable_sprint_values_name_the_loss(
+    env: Env, site: FakeProvider, ids_text: str, names_text: str
+) -> None:
+    item = FakeProvider.history_item(
+        "Sprint", "", names_text, field_id=F_SPRINT, old_id=None, new_id=ids_text, custom=True
+    )
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
+    _, doc, _ = env.json("changelog", "DEMO-2")
+    assert "changelog" in doc["incomplete"]
+
+
+def test_an_empty_name_element_is_never_paired(env: Env, site: FakeProvider) -> None:
+    item = FakeProvider.history_item(
+        "Sprint", "", "A, ", field_id=F_SPRINT, old_id=None, new_id="1, 2", custom=True
+    )
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
+    _, doc, _ = env.json("changelog", "DEMO-2")
+    assert doc["items"][0]["items"][0]["to"] == [
+        {"id": 1, "name": None},
+        {"id": 2, "name": None},
+    ]
+
+
+def test_a_pairable_sprint_value_names_nothing(env: Env, site: FakeProvider) -> None:
+    item = FakeProvider.history_item(
+        "Sprint", "", "A, B", field_id=F_SPRINT, old_id=None, new_id="1, 2", custom=True
+    )
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
+    _, doc, _ = env.json("changelog", "DEMO-2")
+    assert doc["incomplete"] == []
+
+
+def test_a_dropped_dedupe_shaped_label_is_named(env: Env, site: FakeProvider) -> None:
+    item = FakeProvider.history_item(
+        "labels", "alpha", "alpha tc-0123456789abcdef", field_id="labels"
+    )
+    reply(site, "GET", PATH_END, {"total": 1, "values": [raw("1", 1, items=[item])]})
+    _, doc, _ = env.json("changelog", "DEMO-2")
+    value = doc["items"][0]["items"][0]
+    assert value["from"] == value["to"] == ["alpha"] and "changelog" in doc["incomplete"]
