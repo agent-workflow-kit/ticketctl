@@ -43,6 +43,8 @@ ENV_DONE_STATUS = "TICKETCTL_LIVE_DONE_STATUS"
 ENV_KEY_VAR = "TICKETCTL_LIVE_TOKEN_ENV"  # names the variable that holds the site key
 ENV_PASS = "TICKETCTL_LIVE_PASS_ENV"  # more variable names the child may see (comma separated)
 ENV_FINDINGS = "TICKETCTL_LIVE_FINDINGS_DIR"
+ENV_MAX_TICKETS = "TICKETCTL_LIVE_MAX_TICKETS"  # lowers the ticket cap (1 to 3), never raises it
+ENV_COMMENT_TEXT = "TICKETCTL_LIVE_COMMENT_TEXT"  # the text of the one comment per ticket
 
 PROJECT_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
 KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}-[0-9]{1,9}")
@@ -53,8 +55,41 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 DEFAULT_RESOLUTION = "Won't Do"
 DEFAULT_DONE_STATUS = "Done"
 DEFAULT_TYPE = "Task"
-MAX_TEST_TICKETS = 3
+MAX_TEST_TICKETS = 3  # the hard ceiling: ENV_MAX_TICKETS can only lower the cap below it
 MAX_COMMENTS_PER_TICKET = 1
+DEFAULT_COMMENT_TEXT = (
+    "This ticket was created by an automated ticketctl workflow test "
+    "and is being closed as Won't Do."
+)
+MAX_COMMENT_CHARS = 2000
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def parse_max_tickets(raw: str) -> int:
+    """The ticket cap: 3 when unset, else 1, 2 or 3. It can never exceed the hard ceiling."""
+    value = raw.strip()
+    if not value:
+        return MAX_TEST_TICKETS
+    if value not in tuple(str(n) for n in range(1, MAX_TEST_TICKETS + 1)):
+        raise ValueError(
+            f"{ENV_MAX_TICKETS} must be 1, 2 or 3 (it only lowers the cap of {MAX_TEST_TICKETS}); "
+            "unset it for the default"
+        )
+    return int(value)
+
+
+def parse_comment_text(raw: str) -> str:
+    """The comment text: the neutral default when unset; else plain text up to a size limit."""
+    value = raw.strip()
+    if not value:
+        return DEFAULT_COMMENT_TEXT
+    if len(value) > MAX_COMMENT_CHARS or _CONTROL.search(value):
+        raise ValueError(
+            f"{ENV_COMMENT_TEXT} must be plain text of at most {MAX_COMMENT_CHARS} characters "
+            "with no control characters"
+        )
+    return value
+
 
 # Names the child may never be told to read through the key or pass variables: they would change
 # where the child keeps its state or finds its programs.
@@ -132,6 +167,8 @@ class LiveEnv:
     done_status: str = DEFAULT_DONE_STATUS
     key_env: str = ""
     pass_env: tuple[str, ...] = ()
+    max_tickets: int = MAX_TEST_TICKETS
+    comment_text: str = DEFAULT_COMMENT_TEXT
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> LiveEnv:
@@ -167,6 +204,8 @@ class LiveEnv:
             done_status=get(ENV_DONE_STATUS) or DEFAULT_DONE_STATUS,
             key_env=env_name(ENV_KEY_VAR),
             pass_env=passed,
+            max_tickets=parse_max_tickets(env.get(ENV_MAX_TICKETS, "")),
+            comment_text=parse_comment_text(env.get(ENV_COMMENT_TEXT, "")),
         )
 
     def child_env_names(self) -> tuple[str, ...]:
@@ -684,6 +723,11 @@ class Ledger:
     closed: dict[str, str] = field(default_factory=dict)  # key -> "closed" | "already" | error
     left_open: list[str] = field(default_factory=list)
 
+    @property
+    def cap(self) -> int:
+        """The ticket cap of this run: never above the hard ceiling, whatever the environment says."""
+        return max(1, min(self.env.max_tickets, MAX_TEST_TICKETS))
+
     def __post_init__(self) -> None:
         self.cli.guard = self.guard
         self.cli.observer = self.observe
@@ -702,12 +746,10 @@ class Ledger:
                 "a write with input on stdin is refused: it would confirm outside the --yes caps"
             )
         if name == "create" and applied:
-            if self.create_launches >= MAX_TEST_TICKETS:
-                raise TooManyTickets(
-                    f"a create beyond the {MAX_TEST_TICKETS}-ticket cap is refused"
-                )
+            if self.create_launches >= self.cap:
+                raise TooManyTickets(f"a create beyond the {self.cap}-ticket cap is refused")
             # The cap counts applied create launches, so the retry of W02 after a refusal uses one
-            # more of the three. The runner calls this only after the budget check passed.
+            # more of the cap (with a cap of 1 there is no retry: the probe is skipped). The runner calls this only after the budget check passed.
             self.create_launches += 1
             self._prior_unknown = self.unknown_create
             # until a key is recorded the outcome is unknown: a timeout or an abort after the POST
@@ -749,9 +791,9 @@ class Ledger:
             self.names[name] = key
         if key in self.created:
             return
-        if len(self.created) >= MAX_TEST_TICKETS:
+        if len(self.created) >= self.cap:
             self.created.append(key)  # it is this run's ticket: the closer still closes it
-            raise TooManyTickets(f"more than {MAX_TEST_TICKETS} test tickets were created")
+            raise TooManyTickets(f"more than {self.cap} test tickets were created")
         self.created.append(key)
 
     def note_comment(self, key: str) -> None:

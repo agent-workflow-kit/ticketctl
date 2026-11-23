@@ -24,14 +24,24 @@ import pytest
 from tests.fake_provider import SITE_EMAIL, FakeProvider
 from tests.fake_provider import SITE_TOKEN as FAKE_SITE_KEY
 from tests.live import checklist
-from tests.live.conftest import CLEANUP_RESERVE, READ_LIMIT, WRITE_LIMIT
+from tests.live.conftest import (
+    CLEANUP_RESERVE,
+    READ_LIMIT,
+    WRITE_LIMIT,
+    write_limit,
+    write_reserve,
+)
 from tests.live.support import (
+    DEFAULT_COMMENT_TEXT,
+    ENV_COMMENT_TEXT,
     ENV_FINDINGS,
     ENV_KEY_VAR,
     ENV_LIVE,
+    ENV_MAX_TICKETS,
     ENV_PASS,
     ENV_PROJECT,
     ENV_WRITE,
+    MAX_COMMENT_CHARS,
     MAX_COMMENTS_PER_TICKET,
     MAX_TEST_TICKETS,
     SWEEP_RETRIES,
@@ -568,6 +578,124 @@ def test_at_most_three_tickets_and_one_comment_per_ticket(
         ledger.add("not a key")
 
 
+# ---- the ticket cap and the comment text ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected", [("", 3), ("  ", 3), ("1", 1), ("2", 2), ("3", 3), (" 2 ", 2)]
+)
+def test_the_ticket_cap_can_be_lowered_to_one_or_two(raw: str, expected: int) -> None:
+    env = {ENV_MAX_TICKETS: raw} if raw else {}
+    assert LiveEnv.from_env(env).max_tickets == expected
+
+
+@pytest.mark.parametrize(
+    "raw", ["0", "4", "5", "99", "-1", "+2", "1.0", "two", "2,3", "03", "1 2", "١", "1; rm", "all"]
+)
+def test_an_invalid_ticket_cap_refuses_to_start_and_can_never_exceed_three(raw: str) -> None:
+    with pytest.raises(ValueError, match=ENV_MAX_TICKETS):
+        LiveEnv.from_env({ENV_MAX_TICKETS: raw})
+    assert LiveEnv(max_tickets=9).max_tickets == 9  # a hand-built value is clamped by the ledger
+    assert MAX_TEST_TICKETS == 3
+
+
+def test_the_ledger_clamps_a_hand_built_cap_to_the_ceiling(
+    world: tuple[LiveCli, LiveEnv, Path],
+) -> None:
+    cli, _, _ = world
+    assert Ledger(cli, LiveEnv(max_tickets=9), "ab12cd34").cap == MAX_TEST_TICKETS
+    assert Ledger(cli, LiveEnv(max_tickets=0), "ab12cd34").cap == 1
+
+
+@pytest.mark.parametrize("cap", [1, 2])
+def test_the_ledger_refuses_a_create_past_a_lowered_cap_before_the_request(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider, cap: int
+) -> None:
+    cli, _, _ = world
+    ledger = Ledger(
+        cli, LiveEnv.from_env({ENV_PROJECT: "DEMO", ENV_MAX_TICKETS: str(cap)}), "ab12cd34"
+    )
+    for n in range(cap):
+        _create(cli, ledger, f"T{n}", f"k{n}")
+    before = len(fake.calls)
+    with pytest.raises(TooManyTickets):
+        cli.run(*_create_argv(ledger))
+    assert len(fake.calls) == before
+    with pytest.raises(TooManyTickets):
+        ledger.add("DEMO-900")
+    ledger.close_all()
+
+
+@pytest.mark.parametrize("cap", [1, 2])
+def test_one_comment_per_ticket_holds_under_a_lowered_cap(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider, cap: int
+) -> None:
+    cli, _, _ = world
+    ledger = Ledger(
+        cli, LiveEnv.from_env({ENV_PROJECT: "DEMO", ENV_MAX_TICKETS: str(cap)}), "ab12cd34"
+    )
+    keys = [_create(cli, ledger, f"T{n}", f"k{n}") for n in range(cap)]
+    for n, key in enumerate(keys):
+        ledger.note_comment(key)
+        _, done = cli.apply("comment", key, "--body", "b", "--dedupe-key", f"kc{n}")
+        assert done is not None and done.code == 0
+        with pytest.raises(TooManyComments):
+            ledger.note_comment(key)
+        with pytest.raises(TooManyComments):
+            cli.run("--yes", "--expect-plan", "0" * 64, "comment", key, "--body", "again")
+    assert [len(fake.tickets[k].comments) for k in keys] == [1] * cap
+    ledger.close_all()
+
+
+def test_the_closer_closes_both_tickets_after_a_forced_failure_with_a_cap_of_two(
+    world: tuple[LiveCli, LiveEnv, Path], fake: FakeProvider
+) -> None:
+    cli, _, _ = world
+    live = LiveEnv.from_env({ENV_PROJECT: "DEMO", ENV_MAX_TICKETS: "2"})
+    ledger = Ledger(cli, live, "ab12cd34")
+    keys: list[str] = []
+    outcome: dict[str, str] = {}
+    with pytest.raises(RuntimeError, match="forced failure"):
+        try:
+            keys.append(_create(cli, ledger, "A", "ka"))
+            keys.append(_create(cli, ledger, "B", "kb"))
+            raise RuntimeError("forced failure inside the test body")
+        finally:
+            outcome = ledger.close_all()
+    assert len(keys) == 2 and sorted(outcome.values()) == ["closed", "closed"]
+    for key in keys:
+        assert fake.tickets[key].status == "Done" and fake.tickets[key].resolution == "Won't Do"
+    assert ledger.still_open() == []
+
+
+@pytest.mark.parametrize(
+    "raw", ["x" * (MAX_COMMENT_CHARS + 1), "line\nbreak", "nul\x00byte", "tab\there", "\x7f"]
+)
+def test_a_bad_comment_text_is_refused(raw: str) -> None:
+    with pytest.raises(ValueError, match=ENV_COMMENT_TEXT):
+        LiveEnv.from_env({ENV_COMMENT_TEXT: raw})
+
+
+def test_the_comment_text_defaults_and_is_stripped() -> None:
+    assert LiveEnv.from_env({}).comment_text == DEFAULT_COMMENT_TEXT
+    assert LiveEnv.from_env({ENV_COMMENT_TEXT: "  "}).comment_text == DEFAULT_COMMENT_TEXT
+    assert LiveEnv.from_env({ENV_COMMENT_TEXT: " mine "}).comment_text == "mine"
+    assert LiveEnv.from_env({ENV_COMMENT_TEXT: "x" * MAX_COMMENT_CHARS}).comment_text
+
+
+def test_the_comment_text_is_not_a_masked_literal() -> None:
+    env = LiveEnv.from_env({ENV_COMMENT_TEXT: "some plain words here"})
+    assert "some plain words here" not in env.literals()
+
+
+def test_the_request_budget_adapts_to_the_ticket_cap() -> None:
+    assert write_limit(3) == WRITE_LIMIT
+    assert [write_limit(n) for n in (1, 2, 3)] == [120, 125, 130]
+    assert [write_reserve(n) for n in (1, 2, 3)] == [20, 25, 30]
+    # one ticket still needs its close (about 10 requests) and a sweep search on top
+    assert write_reserve(1) >= 10 + 3 * 2
+
+
 # ---- repository hygiene and the checklist ------------------------------------------------------
 
 
@@ -639,48 +767,71 @@ def test_the_runbook_table_is_the_rendered_checklist() -> None:
 # ---- the live test bodies, end to end against the fake ----------------------------------------
 
 
+WRITE_BODIES = (
+    "test_create_with_dedupe_key_and_the_label_lag",
+    "test_create_explicit_unassigned",
+    "test_transition_with_assign",
+    "test_update_title_labels_order",
+    "test_update_description_is_unchanged_on_rerun",
+    "test_comment_with_key",
+    "test_sprint_add_move_and_remove",
+    "test_sprint_errors",
+    "test_every_created_ticket_is_closed",
+)
+NEEDS_TMP = {"test_update_description_is_unchanged_on_rerun", "test_comment_with_key"}
+
+
+def _run_write_suite(
+    world: tuple[LiveCli, LiveEnv, Path],
+    fake: FakeProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: dict[str, str],
+) -> tuple[LiveEnv, Ledger, Recorder, dict[str, str], dict[str, tuple[str, str | None]]]:
+    from tests.live import test_live_write as w
+
+    monkeypatch.setattr(w.time, "sleep", lambda seconds: fake.advance(seconds))
+    cli, _, state = world
+    live = LiveEnv.from_env({ENV_PROJECT: "DEMO", "TICKETCTL_LIVE_BOARD": "1", **extra})
+    cli.budget = Budget(
+        state, limit=write_limit(live.max_tickets), reserve=write_reserve(live.max_tickets)
+    )
+    rec = Recorder("write", tmp_path / "findings", Redactor(live.literals()))
+    ledger = Ledger(cli, live, "feedbeef")
+    seeded = _statuses(fake)
+    outcome: dict[str, str] = {}
+    try:
+        for name in WRITE_BODIES:
+            body = getattr(w, name)
+            try:
+                if name in NEEDS_TMP:
+                    body((live, cli, rec, ledger), tmp_path)
+                else:
+                    body((live, cli, rec, ledger))
+                outcome[name] = "passed"
+            except pytest.skip.Exception as exc:
+                outcome[name] = f"skipped: {exc}"
+    finally:
+        ledger.close_all()
+    return live, ledger, rec, outcome, seeded
+
+
+@pytest.mark.parametrize("cap", [1, 2, 3])
 def test_the_write_suite_runs_against_the_fake_and_closes_everything(
     world: tuple[LiveCli, LiveEnv, Path],
     fake: FakeProvider,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cap: int,
 ) -> None:
-    from tests.live import test_live_write as w
-
-    monkeypatch.setattr(w.time, "sleep", lambda seconds: fake.advance(seconds))
-    cli, _, state = world
-    live = LiveEnv.from_env({ENV_PROJECT: "DEMO", "TICKETCTL_LIVE_BOARD": "1"})
-    cli.budget = Budget(state, limit=WRITE_LIMIT, reserve=CLEANUP_RESERVE)
-    rec = Recorder("write", tmp_path / "findings", Redactor(live.literals()))
-    ledger = Ledger(cli, live, "feedbeef")
-    seeded = _statuses(fake)
-    bodies = [
-        w.test_create_with_dedupe_key_and_the_label_lag,
-        w.test_create_explicit_unassigned,
-        w.test_transition_with_assign,
-        w.test_update_title_labels_order,
-        w.test_update_description_is_unchanged_on_rerun,
-        w.test_comment_with_key,
-        w.test_sprint_add_move_and_remove,
-        w.test_sprint_errors,
-        w.test_every_created_ticket_is_closed,
-    ]
-    outcome: dict[str, str] = {}
-    try:
-        for body in bodies:
-            try:
-                if body is w.test_update_description_is_unchanged_on_rerun:
-                    body((live, cli, rec, ledger), tmp_path)
-                else:
-                    body((live, cli, rec, ledger))
-                outcome[body.__name__] = "passed"
-            except pytest.skip.Exception as exc:
-                outcome[body.__name__] = f"skipped: {exc}"
-    finally:
-        ledger.close_all()
+    cli = world[0]
+    live, ledger, rec, outcome, seeded = _run_write_suite(
+        world, fake, tmp_path, monkeypatch, {ENV_MAX_TICKETS: str(cap)}
+    )
     assert not [n for n, o in outcome.items() if o.startswith("skipped")], outcome
-    assert cli.budget.used() <= WRITE_LIMIT
-    assert len(ledger.created) <= MAX_TEST_TICKETS
+    print(f"MEASURED cap={cap} requests={cli.budget.used()}")  # noqa: T201
+    assert cli.budget.used() <= write_limit(cap)
+    assert len(ledger.created) <= cap
     after = _statuses(fake)
     for key in set(after) - set(seeded):
         assert after[key] == ("Done", "Won't Do")
@@ -691,6 +842,56 @@ def test_the_write_suite_runs_against_the_fake_and_closes_everything(
     assert sum(len(t.comments) for k, t in fake.tickets.items() if k in ledger.created) == 1
     path = rec.write()
     assert "W10" in path.read_text()
+
+
+def test_the_default_comment_text_is_posted_and_is_neutral(
+    world: tuple[LiveCli, LiveEnv, Path],
+    fake: FakeProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live, ledger, rec, outcome, _ = _run_write_suite(world, fake, tmp_path, monkeypatch, {})
+    (comment,) = [c for k, t in fake.tickets.items() if k in ledger.created for c in t.comments]
+    assert DEFAULT_COMMENT_TEXT in repr(comment)
+    assert "automated ticketctl workflow test" in DEFAULT_COMMENT_TEXT
+    assert "Won't Do" in DEFAULT_COMMENT_TEXT
+
+
+def test_the_comment_text_override_is_posted_once_and_kept_out_of_the_findings(
+    world: tuple[LiveCli, LiveEnv, Path],
+    fake: FakeProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "--odd-leading-dashes; $(not run) `nor this` zebra-quartz-marker"
+    live, ledger, rec, outcome, _ = _run_write_suite(
+        world, fake, tmp_path, monkeypatch, {ENV_COMMENT_TEXT: text, ENV_MAX_TICKETS: "1"}
+    )
+    assert outcome["test_comment_with_key"] == "passed", outcome
+    (comment,) = [c for k, t in fake.tickets.items() if k in ledger.created for c in t.comments]
+    assert "zebra-quartz-marker" in repr(comment)
+    assert "zebra-quartz-marker" not in rec.write().read_text()  # only the length is recorded
+    assert DEFAULT_COMMENT_TEXT not in repr(comment)
+
+
+def test_the_closer_read_back_fails_when_a_ticket_holds_more_than_its_one_comment(
+    world: tuple[LiveCli, LiveEnv, Path],
+    fake: FakeProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.live import test_live_write as w
+
+    cli, live0, _ = world
+    live, ledger, rec, outcome, _ = _run_write_suite(
+        world, fake, tmp_path, monkeypatch, {ENV_MAX_TICKETS: "1"}
+    )
+    (key,) = ledger.created
+    stray = dict(fake.tickets[key].comments[0])
+    stray["id"] = "999001"  # a stray second comment (another id: a repeated id is merged)
+    fake.tickets[key].comments.append(stray)
+    with pytest.raises(AssertionError, match="exactly one comment"):
+        w.test_every_created_ticket_is_closed((live, cli, rec, ledger))
 
 
 PASSES = {
