@@ -1,0 +1,30 @@
+{
+  "project": "DEMO",
+  "site": "main",
+  "types": [
+    {
+      "id": "2",
+      "name": "Bug",
+      "required_fields": null,
+      "subtask": false
+    },
+    {
+      "id": "4",
+      "name": "Epic",
+      "required_fields": null,
+      "subtask": false
+    },
+    {
+      "id": "3",
+      "name": "Sub-task",
+      "required_fields": null,
+      "subtask": true
+    },
+    {
+      "id": "1",
+      "name": "Task",
+      "required_fields": null,
+      "subtask": false
+    }
+  ]
+}

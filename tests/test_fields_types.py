@@ -66,7 +66,7 @@ def swap(cli: Cli, **handlers: Any) -> None:
 
 
 def with_fields(cli: Cli, **extra: dict[str, Any]) -> None:
-    """Make createmeta list extra fields (``field id -> entry keys``; an existing one is updated)."""
+    """Make createmeta list extra fields (``id -> entry keys``; an existing one is updated)."""
     original = cli.fake._createmeta_fields
 
     def fields(call: Any, project: str, type_id: str) -> Out:
@@ -131,7 +131,9 @@ def test_one_type_lists_its_required_fields(cli: Cli) -> None:
 def test_required_fields_match_what_create_reports_missing(cli: Cli) -> None:
     with_fields(cli, **{F_POINTS: {"name": "Story Points", "required": True}})
     _, listed = cli.types("--project", "DEMO", "--type", "Task")
-    _, refused = cli.doc("--dry-run", "create", "--project", "DEMO", "--type", "Task", "--title", "t")
+    _, refused = cli.doc(
+        "--dry-run", "create", "--project", "DEMO", "--type", "Task", "--title", "t"
+    )
     assert refused["error"]["reason"] == "missing_required_fields"
     assert listed["types"][0]["required_fields"] == refused["error"]["details"]["required_fields"]
 
@@ -158,7 +160,9 @@ def test_fields_ticketctl_supplies_are_not_listed(cli: Cli, fid: str) -> None:
 
 
 def test_a_required_field_with_a_default_is_not_listed(cli: Cli) -> None:
-    with_fields(cli, **{F_POINTS: {"name": "Story Points", "required": True, "hasDefaultValue": True}})
+    with_fields(
+        cli, **{F_POINTS: {"name": "Story Points", "required": True, "hasDefaultValue": True}}
+    )
     _, doc = cli.types("--project", "DEMO", "--type", "Task")
     assert doc["types"][0]["required_fields"] == []
 
@@ -244,7 +248,12 @@ def test_the_values_shape_and_paging_are_the_ones_of_create(cli: Cli) -> None:
         everything.append(type_entry("4", "Last"))
         return Out(
             200,
-            {"startAt": start, "maxResults": size, "total": 450, "values": everything[start:start + size]},
+            {
+                "startAt": start,
+                "maxResults": size,
+                "total": 450,
+                "values": everything[start : start + size],
+            },
         )
 
     swap(cli, _createmeta_types=types)
@@ -294,7 +303,11 @@ def test_type_names_are_sanitized_and_capped(cli: Cli) -> None:
     swap(
         cli,
         _createmeta_types=lambda call, project: Out(
-            200, {"total": 2, "issueTypes": [type_entry("1", "Ta\x1b[31msk‮"), type_entry("2", long_name)]}
+            200,
+            {
+                "total": 2,
+                "issueTypes": [type_entry("1", "Ta\x1b[31msk‮"), type_entry("2", long_name)],
+            },
         ),
     )
     _, doc = cli.types("--project", "DEMO")

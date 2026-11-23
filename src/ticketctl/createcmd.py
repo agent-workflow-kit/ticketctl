@@ -37,7 +37,7 @@ import argparse
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from . import dedupe, fieldload, selection, setspec, transitionscmd, writeflow
 from .adf_from_markdown import text_chars
@@ -135,6 +135,7 @@ def create(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
 class _Type:
     id: str
     name: str
+    subtask: bool | None = None  # the provider's flag; None when it did not say
 
 
 @dataclass
@@ -146,8 +147,23 @@ class _Resolved:
     edits: list[FieldEdit]
 
 
-def _get(ctx: Context, path: str, template: str, **params: object) -> dict[str, Any]:
-    response = ctx.gw.request("GET", path, template=template, query=query(params))
+class _Reader(Protocol):
+    """What the createmeta reads need: the write flow's gateway and the plain one both fit."""
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        template: str,
+        query: str = "",
+        body: object | None = None,
+        write: bool | None = None,
+    ) -> Any: ...
+
+
+def _get(gw: _Reader, path: str, template: str, **params: object) -> dict[str, Any]:
+    response = gw.request("GET", path, template=template, query=query(params))
     if response.status == 404:
         raise TicketctlError("not_found", "the project or issue type is missing or hidden")
     data = response.data
@@ -157,7 +173,7 @@ def _get(ctx: Context, path: str, template: str, **params: object) -> dict[str, 
 
 
 def _paged(
-    ctx: Context,
+    gw: _Reader,
     path: str,
     template: str,
     names: tuple[str, ...],
@@ -176,7 +192,7 @@ def _paged(
     for _ in range(MAX_PAGES):
         data = first if first is not None and start == 0 else None
         if data is None:
-            data = _get(ctx, path, template, startAt=start, maxResults=PAGE)
+            data = _get(gw, path, template, startAt=start, maxResults=PAGE)
         page = next((data[n] for n in names if isinstance(data.get(n), list)), None)
         if page is None:
             raise TicketctlError("provider_changed", "the createmeta answer has no list")
@@ -198,10 +214,10 @@ def _paged(
     raise TicketctlError("provider_changed", "the createmeta list has too many pages")
 
 
-def _types(ctx: Context, project: str) -> list[_Type]:
+def read_types(gw: _Reader, project: str) -> list[_Type]:
     path = f"{ISSUE}/createmeta/{segment('project_key', project)}/issuetypes"
     out: list[_Type] = []
-    for raw in _paged(ctx, path, TYPES_TEMPLATE, ("issueTypes", "values"), MAX_TYPES):
+    for raw in _paged(gw, path, TYPES_TEMPLATE, ("issueTypes", "values"), MAX_TYPES):
         if not isinstance(raw, dict):
             continue
         ident, name = raw.get("id"), raw.get("name")
@@ -209,11 +225,18 @@ def _types(ctx: Context, project: str) -> list[_Type]:
             ident = str(ident)
         if not (isinstance(name, str) and name and GRAMMARS["numeric_id"].matches(ident)):
             continue
-        out.append(_Type(str(ident), sanitize_field(name, cap=256)[0]))
+        subtask = raw.get("subtask")
+        out.append(
+            _Type(
+                str(ident),
+                sanitize_field(name, cap=256)[0],
+                subtask if isinstance(subtask, bool) else None,
+            )
+        )
     return out
 
 
-def _choose_type(types: list[_Type], wanted: str) -> _Type:
+def choose_type(types: list[_Type], wanted: str) -> _Type:
     """The type named ``wanted``: an exact name, else the one case-insensitive match."""
     exact = [t for t in types if t.name == wanted]
     folded = [t for t in types if t.name.casefold() == wanted.casefold()]
@@ -234,18 +257,18 @@ def _choose_type(types: list[_Type], wanted: str) -> _Type:
     )
 
 
-def _meta_fields(ctx: Context, project: str, issue_type: _Type) -> dict[str, dict[str, Any]]:
+def read_meta_fields(gw: _Reader, project: str, issue_type: _Type) -> dict[str, dict[str, Any]]:
     """The fields of the type's create screen keyed by field id (createmeta lists them by
     ``fieldId``; an object keyed by id is accepted too)."""
     path = (
         f"{ISSUE}/createmeta/{segment('project_key', project)}"
         f"/issuetypes/{segment('numeric_id', issue_type.id)}"
     )
-    data = _get(ctx, path, FIELDS_TEMPLATE, startAt=0, maxResults=PAGE)
+    data = _get(gw, path, FIELDS_TEMPLATE, startAt=0, maxResults=PAGE)
     raw_fields = data.get("fields", data.get("values"))
     if isinstance(raw_fields, dict):
         return {k: v for k, v in raw_fields.items() if isinstance(k, str) and isinstance(v, dict)}
-    items = _paged(ctx, path, FIELDS_TEMPLATE, ("fields", "values"), MAX_META_FIELDS, first=data)
+    items = _paged(gw, path, FIELDS_TEMPLATE, ("fields", "values"), MAX_META_FIELDS, first=data)
     out: dict[str, dict[str, Any]] = {}
     for raw in items:
         ident = raw.get("fieldId", raw.get("key")) if isinstance(raw, dict) else None
@@ -255,6 +278,29 @@ def _meta_fields(ctx: Context, project: str, issue_type: _Type) -> dict[str, dic
 
 
 # ---- the lookup --------------------------------------------------------------------------------
+
+
+def required_of(
+    rt: Any, meta_fields: dict[str, dict[str, Any]], supplied: set[str]
+) -> list[dict[str, Any]]:
+    """The required fields of a create screen that are not ``supplied`` (``missing_required_fields``
+    shape). A field with a default value is never missing; ``parent`` is never listed (the
+    provider judges it). Warns once when an entry was left out or cut."""
+    missing = {
+        fid: raw
+        for fid, raw in meta_fields.items()
+        if raw.get("required") is True
+        and raw.get("hasDefaultValue") is not True
+        and fid not in supplied
+        and fid != "parent"
+    }
+    marks: set[str] = set()
+    required = transitionscmd.required_fields(missing, marks)
+    if marks:
+        warn_incomplete(rt, "the required fields", marks)
+    for item in required:
+        item["name"] = hide_field_ids(item["name"])
+    return required
 
 
 def _order(key: str) -> tuple[str, int]:
@@ -355,20 +401,7 @@ class CreateAction:
             supplied.add("assignee")
         if self.labels or self.dedupe_key is not None:
             supplied.add("labels")
-        missing = {
-            fid: raw
-            for fid, raw in resolved.meta_fields.items()
-            if raw.get("required") is True
-            and raw.get("hasDefaultValue") is not True
-            and fid not in supplied
-            and fid != "parent"
-        }
-        marks: set[str] = set()
-        required = transitionscmd.required_fields(missing, marks)
-        if marks:
-            warn_incomplete(ctx.rt, "the required fields", marks)
-        for item in required:
-            item["name"] = hide_field_ids(item["name"])
+        required = required_of(ctx.rt, resolved.meta_fields, supplied)
         if required:
             raise TicketctlError(
                 "invalid_request",
@@ -378,8 +411,8 @@ class CreateAction:
             )
 
     def _resolve(self, ctx: Context) -> _Resolved:
-        issue_type = _choose_type(_types(ctx, self.project), self.type_name)
-        meta_fields = _meta_fields(ctx, self.project, issue_type)
+        issue_type = choose_type(read_types(ctx.gw, self.project), self.type_name)
+        meta_fields = read_meta_fields(ctx.gw, self.project, issue_type)
         edits: list[FieldEdit] = []
         if self.assignments:
             gw = cast(Gateway, ctx.gw)  # the guarded gateway answers the same GET interface
@@ -629,4 +662,15 @@ class CreateAction:
         return Step("create", send, props)
 
 
-__all__ = ["CreateAction", "check_offline", "create", "make_clock", "make_seams"]
+__all__ = [
+    "SUPPLIED",
+    "CreateAction",
+    "check_offline",
+    "choose_type",
+    "create",
+    "make_clock",
+    "make_seams",
+    "read_meta_fields",
+    "read_types",
+    "required_of",
+]
