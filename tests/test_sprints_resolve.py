@@ -269,7 +269,9 @@ def test_very_long_hostile_names_stay_bounded(cli: Cli) -> None:
     hostile = "A\x1b[31m\x00" * 2000 + "‮" * 500
     set_sprint(cli.fake, 2, name=hostile)
     code, out, _ = cli.run("--json", "sprints", "resolve", "open", *P)
-    assert code == 0 and len(out) < 20000
+    assert code == 0
+    assert len(json.loads(out)["sprint"]["name"]) <= 256  # the name cap, marker included
+    assert len(out) < 1000
     assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f‮]", out)
     set_sprint(cli.fake, 4, name=hostile, state="active")
     for selector_cmd in (
@@ -277,5 +279,6 @@ def test_very_long_hostile_names_stay_bounded(cli: Cli) -> None:
         ("--dry-run", "sprint", "add", "DEMO-1", "--sprint", "open"),
     ):
         code, out, _ = cli.run("--json", *selector_cmd)
-        assert code == 21 and len(out) < 20000
+        # two capped names plus a fixed envelope (measured about 1200)
+        assert code == 21 and len(out) < 1500
         assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f‮]", out)
