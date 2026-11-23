@@ -15,6 +15,7 @@ import pytest
 from tests.fake_provider import SITE_EMAIL, SITE_TOKEN, FakeProvider, Fault
 from tests.golden import assert_golden, validator
 from ticketctl import attribution, commentcmd, config, hooks
+from ticketctl.adf_validate import body_sha256
 from ticketctl.cli import main
 from ticketctl.errors import TicketctlError
 from ticketctl.flags import Globals
@@ -88,6 +89,22 @@ def test_posts_the_comment_with_the_property_and_golden(cli: Cli) -> None:
     meta = posted["properties"][attribution.META_PROPERTY]
     assert meta["v"] == 1 and meta["actor_kind"] == "auto" and "key_sha256" in meta
     assert len(cli.writes()) == 1
+
+
+@pytest.mark.parametrize("actor", ["auto:bot", "human:tester"])
+def test_the_property_body_hash_is_the_hash_of_the_posted_body(cli: Cli, actor: str) -> None:
+    args = ("--actor", actor, "comment", "DEMO-2", "--body", "hello **world**", "--dedupe-key", "h1")
+    code, plan = cli.doc("--dry-run", *args)
+    assert code == 0, plan
+    code, result = cli.doc("--yes", "--expect-plan", plan["plan_sha256"], *args)
+    assert code == 0, result
+    posted = cli.fake.tickets["DEMO-2"].comments[-1]
+    meta = posted["properties"][attribution.META_PROPERTY]
+    assert meta["body_sha256"] == body_sha256(posted["body"])
+    if actor.startswith("auto:"):  # the hash covers the attribution paragraph that leads the body
+        text = attribution.attribution_text(config.Attribution().template)
+        assert posted["body"]["content"][0]["content"][0]["text"] == text
+    assert meta["actor_kind"] == actor.split(":")[0]
 
 
 def test_dry_run_is_a_plan_and_sends_nothing(cli: Cli) -> None:
