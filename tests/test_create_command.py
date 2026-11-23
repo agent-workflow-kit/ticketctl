@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from tests.fake_provider import (
+    F_CRITERIA,
     F_POINTS,
     ME_ACCOUNT,
     OTHER_ACCOUNT,
@@ -311,6 +312,34 @@ def test_set_fields_priority_and_estimate_and_never_a_sprint(cli: Cli) -> None:
     for typed in ("Sprint", "Parent", "Labels", "Reporter", "description", "Summary"):
         code, env = cli.doc("--dry-run", "create", *BASE, "S", "--set", f"{typed}=x")
         assert code == 2, typed
+
+
+def test_an_auto_actor_cannot_set_a_rich_custom_field_and_nothing_is_posted(
+    cli: Cli, tmp_path: Path
+) -> None:
+    textarea = "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
+    with_required(
+        cli, **{F_CRITERIA: {"name": "Acceptance Criteria", "schema": {"custom": textarea}}}
+    )
+    cli.config.write_text(
+        cli.config.read_text().replace(
+            f"fields: {{estimate: {{id: {F_POINTS}}}}}",
+            f"fields: {{estimate: {{id: {F_POINTS}}}, extra: {{criteria: {{id: {F_CRITERIA}}}}}}}",
+        )
+    )
+    f = tmp_path / "c.md"
+    f.write_text("Criteria text\n")
+    code, env = cli.doc(
+        "--actor", "auto:bot", "--dry-run", "create", *BASE, "S", "--set", f"criteria=@{f}"
+    )
+    assert (code, env["error"]["reason"]) == (22, "invalid_value")
+    assert re.search(r"automatic actor.*attribution", env["error"]["message"])
+    code, env = cli.doc(
+        "--actor", "auto:bot", "--yes", "--expect-plan", "0" * 64, "create", *BASE, "S",
+        "--set", f"criteria=@{f}", "--dedupe-key", "rk",
+    )  # fmt: skip
+    assert (code, env["error"]["reason"]) == (22, "invalid_value")
+    assert cli.posts() == [] and cli.writes() == []
 
 
 def test_set_unknown_field_and_bad_value(cli: Cli) -> None:

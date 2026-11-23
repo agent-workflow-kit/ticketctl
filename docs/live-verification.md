@@ -2,10 +2,22 @@
 
 Status: the suites exist; nothing in this repository has been verified live by them yet. A run only records what it saw; a human turns an observation into a dated fact in [design.md](design.md#live-findings-log).
 
+## Before the first run
+
+Check these once, with your own values (placeholders here):
+
+- A ticketctl configuration naming the site and the account email, in the default place or in the file named by `TICKETCTL_LIVE_CONFIG`.
+- The site token in the environment variable that configuration names, and `TICKETCTL_LIVE_TOKEN_ENV` set to that variable's name (the name, not the value).
+- `TICKETCTL_LIVE_PASS_ENV` is optional: set it to the name of the variable that holds the account email, only when your configuration reads the email from a variable (`email_env`).
+- `TICKETCTL_LIVE_PROJECT` naming a test project (needed by the write suite).
+- `TICKETCTL_LIVE_BOARD` is optional and only for the sprint probes; leave it unset for the minimal pass.
+- `TICKETCTL_LIVE_TICKET` naming a ticket with comments you can read, for the read suite.
+- Your attribution template (see "The comment" below), because a billed run posts a comment.
+
 The live suites settle the facts that the fake provider (`tests/fake_provider.py`, its `UNVERIFIED` list) and the code only assume. They are two `live`-marked pytest modules under `tests/live/`, run by hand against your own site, never in CI:
 
 - `tests/live/test_live_read.py` (issue #37) reads and writes nothing.
-- `tests/live/test_live_write.py` (issue #38) creates at most three titled test tickets, posts one comment and closes every ticket it created.
+- `tests/live/test_live_write.py` (issue #38) creates at most three titled test tickets (`TICKETCTL_LIVE_MAX_TICKETS` lowers that to one or two), posts one comment per ticket it comments on and closes every ticket it created.
 
 Both drive the `ticketctl` command line as a subprocess, like a real consumer, and make no HTTP request of their own. The harness logic (skipping, redaction, the request budget, the closer) is tested in normal CI against the fake provider by `tests/live/test_harness.py`.
 
@@ -13,8 +25,8 @@ Both drive the `ticketctl` command line as a subprocess, like a real consumer, a
 
 The write suite changes a real site.
 
-- A comment cannot be deleted. The suite posts exactly one, on one of its own test tickets, and refuses a second one on any ticket.
-- A ticket cannot be deleted either, only closed. The suite creates at most three, titled `ticketctl live test <run id> ...`, and closes each as done with a "won't do" resolution in a `finally` (the module fixture `write_world`), also when a test fails, the request cap stops the run or you interrupt it. A ticket the closer could not close is printed at the end ("TEST TICKETS LEFT OPEN") so you can close it by hand.
+- A comment cannot be deleted. The suite posts exactly one, on one of its own test tickets, and refuses a second one on any ticket. Its text is `TICKETCTL_LIVE_COMMENT_TEXT`, by default a neutral note (see "The comment" below).
+- A ticket cannot be deleted either, only closed. The suite creates at most three (one or two with `TICKETCTL_LIVE_MAX_TICKETS`), titled `ticketctl live test <run id> ...`, and closes each as done with a "won't do" resolution in a `finally` (the module fixture `write_world`), also when a test fails, the request cap stops the run or you interrupt it. A ticket the closer could not close is printed at the end ("TEST TICKETS LEFT OPEN") so you can close it by hand.
 - It writes only tickets it created (the key a create returned, and after a create whose answer was lost, the tickets that carry this run's title marker).
 - Sprint tests move one of its own tickets into a future sprint of the board you name and back to the backlog. Use a board and sprints you may disturb.
 - The suite refuses to run the writes unless `TICKETCTL_LIVE=1` and `TICKETCTL_LIVE_WRITE=1` are both set and `TICKETCTL_LIVE_PROJECT` names a test project. Use a project made for testing: the tickets, labels and the comment stay in it.
@@ -50,9 +62,11 @@ Nothing here is read from the repository. Set the variables in your shell; the v
 | `TICKETCTL_LIVE_TYPE` | write, optional | issue type for the created tickets (default `Task`) |
 | `TICKETCTL_LIVE_RESOLUTION` | write, optional | the closing resolution (default `Won't Do`) |
 | `TICKETCTL_LIVE_DONE_STATUS` | write, optional | the done status name (default `Done`) |
+| `TICKETCTL_LIVE_MAX_TICKETS` | write, optional | `1`, `2` or `3` (the default): lowers the cap of created test tickets, never raises it; any other value (`0`, `4`, text) makes the suite refuse to start with a message naming the variable |
+| `TICKETCTL_LIVE_COMMENT_TEXT` | write, optional | the text of the one comment (default below): plain text of 1 to 2000 characters with no control characters or line breaks; an empty value means the default, an invalid one makes the suite refuse to start |
 | `TICKETCTL_LIVE_FINDINGS_DIR` | optional | where findings go (default `live-findings/` in the checkout, git-ignored) |
 
-The suites give every run a private state directory (`XDG_STATE_HOME`), so a run starts with a cold cache, its request log holds exactly its own requests, and your real state, audit log and locks are untouched. Your configuration directory is used as it is. The `ticketctl` child process gets a minimal environment: `PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `XDG_*`, `TICKETCTL_*`, the proxy and CA bundle variables, and the variables named by `TICKETCTL_LIVE_TOKEN_ENV` and `TICKETCTL_LIVE_PASS_ENV`; nothing else of your environment reaches it. The read suite also refuses `--yes` and any command whose request log shows a write, and the write suite's runner refuses a create beyond three, a comment the ledger did not approve (one per ticket) and any write given input on stdin (a confirmation that way would bypass the `--yes` caps), before any request is sent. The cap of three counts applied create launches, so the retry of W02 after a refusal uses one more of the three.
+The suites give every run a private state directory (`XDG_STATE_HOME`), so a run starts with a cold cache, its request log holds exactly its own requests, and your real state, audit log and locks are untouched. Your configuration directory is used as it is. The `ticketctl` child process gets a minimal environment: `PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `XDG_*`, `TICKETCTL_*`, the proxy and CA bundle variables, and the variables named by `TICKETCTL_LIVE_TOKEN_ENV` and `TICKETCTL_LIVE_PASS_ENV`; nothing else of your environment reaches it. The read suite also refuses `--yes` and any command whose request log shows a write, and the write suite's runner refuses a create beyond three, a comment the ledger did not approve (one per ticket) and any write given input on stdin (a confirmation that way would bypass the `--yes` caps), before any request is sent. The cap (three, or the lower value of `TICKETCTL_LIVE_MAX_TICKETS`) counts applied create launches, so the retry of W02 after a refusal uses one more of the cap; with a cap of 1 there is no retry, and the create probes skip with that reason (a `skipped` finding for W03) instead of failing.
 
 ## Commands
 
@@ -63,24 +77,68 @@ TICKETCTL_LIVE=1 TICKETCTL_LIVE_TICKET=<a ticket> TICKETCTL_LIVE_PROJECT=<projec
   uv run pytest -m live tests/live/test_live_read.py -v
 ```
 
-Write suite (read the section above first):
+Write suite (read the section above first), the minimal pass: one ticket, no sprint probes:
 
 ```sh
 TICKETCTL_LIVE=1 TICKETCTL_LIVE_WRITE=1 TICKETCTL_LIVE_PROJECT=<test project> \
-  TICKETCTL_LIVE_BOARD=<board id> \
+  TICKETCTL_LIVE_TOKEN_ENV=<name of your token variable> TICKETCTL_LIVE_MAX_TICKETS=1 \
   uv run pytest -m live tests/live/test_live_write.py -v
 ```
 
+Add `TICKETCTL_LIVE_BOARD=<board id>` only for the full run with the sprint probes; drop the `TICKETCTL_LIVE_MAX_TICKETS=1` to allow up to three tickets.
+
 `-m live` is needed because the default run deselects the marker. Without the variables, `uv run pytest -m live` skips every live test and says why; plain `uv run pytest` does not collect them. The `-s` flag shows the progress lines; the findings summary and the findings file path print at the end of each module either way.
+
+## A minimal pass: one or two throwaway tickets
+
+For a first real run, limit the suite to one ticket (two when you also want the retry of W02 available):
+
+```sh
+TICKETCTL_LIVE=1 TICKETCTL_LIVE_WRITE=1 TICKETCTL_LIVE_PROJECT=<test project> \
+  TICKETCTL_LIVE_TOKEN_ENV=<name of your token variable> TICKETCTL_LIVE_MAX_TICKETS=1 \
+  uv run pytest -m live tests/live/test_live_write.py -v
+```
+
+Leave `TICKETCTL_LIVE_BOARD` unset to skip the sprint probes (they move the ticket through a future sprint); that is the recommended setting for the minimal pass. The suite already reuses one ticket for every probe, so a cap of 1 loses only the retry of W02: when the site refuses the explicit unassigned value, the run records the refusal, skips the rest (a `skipped` W03 finding names the reason) and closes the ticket; run again with `TICKETCTL_LIVE_MAX_TICKETS=2` to get the retry. A cap never fails a run for lack of a ticket. The value can only lower the cap: `0`, `4` and anything but `1`, `2` or `3` are refused at start.
+
+### What is written to each created ticket
+
+The caps limit the number of tickets and comments only, not the other writes. On each created ticket the suite does exactly these writes:
+
+- the create itself (title, dedupe key label, `--assign none` or, after a refusal, no assignee value);
+- a label add and a label remove, and a title rename (one `update` each);
+- a description write (`update --set description=@file`, as a human actor);
+- a transition to a non-done status with `--assign me`, and one assignee change that goes with it;
+- the one comment;
+- the close: a transition to the done status with the won't-do resolution and `--assign me`;
+- only when `TICKETCTL_LIVE_BOARD` is set: a sprint add, a move to a second future sprint when one exists, and a sprint remove.
+
+Leave `TICKETCTL_LIVE_BOARD` unset for the minimal pass.
+
+### One run, one set of limits
+
+The ticket cap and the one-comment limit hold per pytest invocation. A re-run, or a pytest rerun plugin, creates new tickets and posts new comments. When you are at a hard limit on tickets or comments, run once and close any leftovers by hand.
+
+### The comment
+
+The suite posts at most one comment per ticket, on its own ticket, and the runner refuses a second one. By default the comment reads:
+
+> This ticket was created by an automated ticketctl workflow test (we were testing workflows on it) and is being closed as Won't Do.
+
+The text says Won't Do. If you change `TICKETCTL_LIVE_RESOLUTION`, set `TICKETCTL_LIVE_COMMENT_TEXT` to match.
+
+For an automated actor (a non-TTY run, which is what the suite is) ticketctl adds the attribution paragraph of your config template before the comment text. Check your attribution template before a billed run: the paragraph is posted with the comment and cannot be deleted.
+
+Set `TICKETCTL_LIVE_COMMENT_TEXT` to change it. The text goes to `ticketctl comment --body-file` through a temporary file (no shell is involved, and a text that starts with a dash is safe), with `--dedupe-key`: the same comment is the dedupe-key probe. The suite then repeats the same command as a dry run and expects no steps (the comment is found by its key, not posted again), and lists the ticket's own comments. The text is never written to the findings file (only its length). When the suite finishes, it reads each commented ticket back and asserts it holds exactly one comment.
 
 ## Request budget
 
-Requests are counted from ticketctl's own request log (`log.jsonl`: one line per provider call, plus its retries), read from the run's private state directory. The runner checks the count before each command (it does not start one at or over the cap) and after it (a command that went over the cap aborts the suite). The module fixtures then close the test tickets with a reserve above the cap, so cleanup is never starved.
+Requests are counted from ticketctl's own request log (`log.jsonl`: one line per provider call, plus its retries), read from the run's private state directory. The runner checks the count before each command (a normal command is not started within 10 requests of the cap, so one command of many requests cannot eat the closer's reserve; cleanup commands may run up to the cap plus the reserve) and after it (a command that went over the cap aborts the suite). The module fixtures then close the test tickets with a reserve above the cap, so cleanup is never starved.
 
-- Write suite: about 110 requests for a full run against the fake provider with one future sprint (measured by `test_the_write_suite_runs_against_the_fake_and_closes_everything`; a site with two future sprints, a slow label index or retries costs a few more), cap 130, cleanup reserve 25. The issue's estimate of about 60 did not account for the plan-then-apply protocol: every write is a `--dry-run` (reads only: the runner asserts it sent no write) followed by the applied plan with `--expect-plan`, and each of the two commands re-reads the ticket, the account and the transitions. One test ticket serves every probe to keep the count down (a second ticket would add about twenty requests); the three-ticket ceiling stays as a guard. Typical costs: a create 10, a transition 10, an update 6 to 8, a comment 9, a sprint add 9, the close 10.
+- Write suite: about 110 requests for a full run against the fake provider with one future sprint, whatever the ticket cap: measured 110 for each of `TICKETCTL_LIVE_MAX_TICKETS=1`, 2 and 3 (the label-lag polling can move it by a few; measured by the parametrized `test_the_write_suite_runs_against_the_fake_and_closes_everything`; a site with two future sprints, a slow label index or retries costs a few more). One ticket serves every probe, so the cap changes the headroom, not the count: request cap 120 for 1 ticket, 125 for 2 and 130 for 3, cleanup reserve 20, 25 and 30 (a close costs about 10 requests per ticket, plus a sweep search after a lost create answer). The issue's estimate of about 60 did not account for the plan-then-apply protocol: every write is a `--dry-run` (reads only: the runner asserts it sent no write) followed by the applied plan with `--expect-plan`, and each of the two commands re-reads the ticket, the account and the transitions. One test ticket serves every probe to keep the count down (a second ticket would add about twenty requests); the three-ticket ceiling stays as a guard. Typical costs: a create 10, a transition 10, an update 6 to 8, a comment 9, a sprint add 9, the close 10.
 - Read suite: about 40 requests against the fake with the optional probes skipped, up to about 55 on a site with the optional probes and more than 150 tickets, cap 70, reserve 25.
 
-A run that stops at the cap exits with code 3 and says "the live suite hit its request cap". The cap is a constant in `tests/live/conftest.py`.
+A run that stops at the cap exits with code 3 and says "the live suite hit its request cap". The caps are constants and two functions (`write_limit`, `write_reserve`) in `tests/live/conftest.py`.
 
 ## Reading the findings file
 
@@ -139,8 +197,8 @@ The table maps every item of the checklist in issue #3 and of the review notes o
 | L31 | #39 | Whether the platform reads work on macOS (paths, files, prompt) | needs a human decision or another environment: the macOS checklist (#39): another machine | none |
 | L32 | #73, #52 | export --to and the input-file reader on macOS and APFS, a real separate writer process, a real full disk | needs a human decision or another environment: another machine and a manual setup (#39) | none |
 | W01 | #3, #31, #84 | The label index lag after a create with the label in the body (the dedupe lag guard is a bound until measured) | `test_create_with_dedupe_key_and_the_label_lag` | none |
-| W02 | #3, #31 | An explicit unassigned value in a create body leaves the ticket unassigned | `test_create_explicit_unassigned` | none |
-| W03 | #31 | createmeta shapes (issueTypes or values, fields as list or object, paging) and the POST /issue response carrying a usable key | `test_create_with_dedupe_key_and_the_label_lag` (indirect: a create that works proves the shapes are accepted, not which one the site sent) | none |
+| W02 | #3, #31 | An explicit unassigned value in a create body leaves the ticket unassigned | `test_create_explicit_unassigned` | a ticket cap of 2 or 3 (TICKETCTL_LIVE_MAX_TICKETS) only when the site refuses the unassigned value: the retry is a second create, and with a cap of 1 the run skips instead |
+| W03 | #31 | createmeta shapes (issueTypes or values, fields as list or object, paging) and the POST /issue response carrying a usable key | `test_create_with_dedupe_key_and_the_label_lag` (indirect: a create that works proves the shapes are accepted, not which one the site sent; at a cap of 1 after a W02 refusal the create is not retried and this shape finding stays unobserved) | none |
 | W04 | #31 | A site that refuses labels on create answers 400 with a labels field error | needs a human decision or another environment: needs a project that refuses labels: a site setting the suite cannot change | none |
 | W05 | #31, #3 | The parent rejection shape (Sub-task without a parent, Task under a Task: 400 with errors.parent) | needs a human decision or another environment: already verified by spike D (V-29); a live run would have to create a failing ticket: left to the human if wanted | none |
 | W06 | #3, #23 | The order of add and remove within one update (labels) | `test_update_title_labels_order` (indirect: one update adds one label and removes another and the result is read back; the same label in both is refused by ticketctl (exit 22), so the add-versus-remove order for one label is not probed) | none |
