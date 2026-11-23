@@ -274,6 +274,70 @@ def resolve_board(
     return scrum[0].id
 
 
+# --- the open and next rules (shared by ``sprint add`` and ``sprints resolve``) -----------------
+
+CANDIDATES = 20  # an ``open`` listing reads this many active sprints; 20 or more are ambiguous
+
+
+def no_sprint(why: str) -> TicketctlError:
+    return TicketctlError("not_found", why, details={"option": "sprint"})
+
+
+def _whole(marks: set[str]) -> None:
+    """A sprint the listing dropped (or with an unreadable date) could be the right one."""
+    if SPRINTS_CUT in marks:
+        raise TicketctlError(
+            "lookup_incomplete",
+            "the board's sprint list was cut off before its end; "
+            "name the sprint with --sprint <id>",
+        )
+    if marks - {"sprints.truncated"}:
+        raise TicketctlError(
+            "provider_changed",
+            "the board's sprint list holds a sprint that cannot be read; "
+            "name the sprint with --sprint <id>",
+        )
+
+
+def pick_sprint(
+    gw: Gateway, site: Site, selector: str, *, board: str | None, project: str | None
+) -> dict[str, Any]:
+    """The sprint object (``sprint_object``) that ``open`` or ``next`` names on the board.
+
+    ``open``: the board's one ``active`` sprint (several: ``ambiguous_sprint``; none:
+    ``not_found``). ``next``: the ``future`` sprint with the earliest non-null ``start``, else the
+    lowest id. A listing that was cut off, reached the cap or dropped a sprint is never guessed
+    from (``lookup_incomplete``, ``provider_changed``).
+    """
+    assert selector in ("open", "next")
+    board_id = resolve_board(gw, site, board=board, project=project)
+    marks: set[str] = set()
+    if selector == "open":
+        found = read_sprints(gw, board_id, "active", CANDIDATES, marks)
+        _whole(marks)
+        if len(found) > 1:
+            raise TicketctlError(
+                "ambiguous_sprint",
+                "several sprints are active; name one with --sprint <id>",
+                details={"candidates": [f"{s['id']} ({s['name']})" for s in found]},
+            )
+        if not found:
+            raise no_sprint("the board has no active sprint")
+        return found[0]
+    found = read_sprints(gw, board_id, "future", MAX_LIMIT, marks)
+    _whole(marks)
+    if len(found) >= MAX_LIMIT:
+        raise TicketctlError(
+            "lookup_incomplete",
+            "the board has too many future sprints to pick the next one; "
+            "name the sprint with --sprint <id>",
+        )
+    if not found:
+        raise no_sprint("the board has no future sprint")
+    pool = [s for s in found if s["start"] is not None] or found
+    return min(pool, key=lambda s: (s["start"] or "", s["id"]))
+
+
 # --- commands ----------------------------------------------------------------------------------
 
 
@@ -349,6 +413,18 @@ def sprints_show(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     return {"site": site, "sprint": sprint}
 
 
+def sprints_resolve(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
+    """Read-only: the sprint ``sprint add --sprint open|next`` would pick (no lock, no audit)."""
+    rt = load_runtime(g)
+    site = _select(g, rt, a.project)
+    with for_site(site):
+        gw = open_gateway(rt, site)
+        sprint = pick_sprint(
+            gw, rt.config.sites[site], a.selector, board=a.board, project=a.project
+        )
+    return {"site": site, "sprint": sprint}
+
+
 def _line(s: dict[str, Any]) -> str:
     when = f" {s['start']} to {s['end']}" if s["start"] else ""
     return f"{s['id']} {s['name']} [{s['state']}] board {s['board']}{when}"
@@ -356,6 +432,10 @@ def _line(s: dict[str, Any]) -> str:
 
 def human_sprints_list(r: dict[str, Any]) -> str:
     return "\n".join(_line(s) for s in r["sprints"]) or "no sprints"
+
+
+def human_sprints_resolve(r: dict[str, Any]) -> str:
+    return _line(r["sprint"])
 
 
 def human_sprints_show(r: dict[str, Any]) -> str:
