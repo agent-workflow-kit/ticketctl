@@ -572,6 +572,165 @@ def test_resolve_no_sites(env: Env) -> None:
     assert_golden("cli", "error", "no-sites", json.loads(out))
 
 
+# --- sites resolve --project -----------------------------------------------------------------
+
+TWO_CLAIMING = (
+    "sites:\n"
+    + "  one:\n    url: https://example.test\n    email: me@example.test\n"
+    + "    token_env: TICKETCTL_UNSET_ONE\n    projects: [AB]\n"
+    + "  two:\n    url: https://other.test\n    email: me@example.test\n"
+    + "    token_env: TICKETCTL_UNSET_TWO\n    projects: [AB]\n"
+)
+
+
+def test_resolve_project_rows(env: Env) -> None:
+    env.write(TWO)
+    rows = {
+        "project-claimed": (["--project", "DEMO"], ("zed", "project")),
+        "project-default-site": (["--project", "TEST"], ("alpha", "default_site")),
+        "project-site-flag": (["--site", "alpha", "--project", "DEMO"], ("alpha", "site_flag")),
+    }
+    for case, (argv, expected) in rows.items():
+        code, out, err = env.run("--json", "sites", "resolve", *argv)
+        doc = json.loads(out)
+        assert code == 0 and err == ""
+        assert doc == {"key": None, "site": expected[0], "rule": expected[1]}
+        assert_golden("cli", "sites-resolve", case, doc)
+
+
+def test_resolve_project_only_site(env: Env) -> None:
+    env.write("sites:\n" + env.site_yaml("solo"))
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "AB")
+    assert code == 0 and json.loads(out) == {"key": None, "site": "solo", "rule": "only_site"}
+
+
+def test_resolve_project_several_sites_claim_it_is_ambiguous(env: Env) -> None:
+    env.write(TWO_CLAIMING)
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "AB")
+    body = err_of(out)
+    assert (code, body["code"]) == (21, "ambiguous_site")
+    assert body["details"]["candidates"] == ["one", "two"]
+    code, out, _ = env.run("--json", "--site", "two", "sites", "resolve", "--project", "AB")
+    assert code == 0 and json.loads(out)["rule"] == "site_flag"
+
+
+def test_resolve_project_nothing_selects_is_ambiguous(env: Env) -> None:
+    env.write(TWO_CLAIMING)
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "ZZNOPE")
+    body = err_of(out)
+    assert (code, body["code"]) == (21, "ambiguous_site")
+    assert body["details"]["candidates"] == ["one", "two"]
+
+
+SOLO = (
+    "sites:\n  solo:\n    url: https://example.test\n    email: me@example.test\n"
+    + "    token_env: TICKETCTL_UNSET_ONE\n"
+)
+
+# (config, global flags, project, a key of that project)
+AGREEMENT = {
+    "project": (TWO, [], "DEMO", "DEMO-1"),
+    "default_site": (TWO, [], "TEST", "TEST-1"),
+    "only_site": (SOLO, [], "AB", "AB-9"),
+    "site_flag": (TWO, ["--site", "alpha"], "DEMO", "DEMO-1"),
+    "ambiguous": (TWO_CLAIMING, [], "AB", "AB-1"),
+    "nothing_selects": (TWO_CLAIMING, [], "ZZNOPE", "ZZNOPE-1"),
+    "no_sites": ("sites: {}\n", [], "AB", "AB-1"),
+}
+
+
+@pytest.mark.parametrize("row", sorted(AGREEMENT))
+def test_resolve_project_agrees_with_a_key_of_that_project(env: Env, row: str) -> None:
+    config, flags, project, key = AGREEMENT[row]
+    env.write(config)
+    by_key = env.run("--json", *flags, "sites", "resolve", key)
+    by_project = env.run("--json", *flags, "sites", "resolve", "--project", project)
+    assert by_project[0] == by_key[0]
+    key_doc, project_doc = json.loads(by_key[1]), json.loads(by_project[1])
+    if by_key[0] == 0:
+        assert key_doc["key"] == key and project_doc["key"] is None
+        assert {**project_doc, "key": key} == key_doc
+    else:
+        a, b = key_doc["error"], project_doc["error"]
+        assert (a["code"], a.get("reason"), a.get("details")) == (
+            b["code"],
+            b.get("reason"),
+            b.get("details"),
+        )
+    expected = {"ambiguous": 21, "nothing_selects": 21, "no_sites": 2}.get(row, 0)
+    assert by_project[0] == expected
+
+
+def test_resolve_project_no_sites(env: Env) -> None:
+    env.write("sites: {}\n")
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "AB")
+    body = err_of(out)
+    assert (code, body["code"], body["reason"]) == (2, "invalid_config", "no_sites")
+
+
+def test_resolve_project_and_key_are_exclusive_and_one_is_required(env: Env) -> None:
+    env.write(TWO)
+    code, out, _ = env.run("--json", "sites", "resolve", "DEMO-1", "--project", "DEMO")
+    assert (code, err_of(out)["code"], err_of(out)["reason"]) == (2, "usage", "invalid_combination")
+    code, out, _ = env.run("--json", "sites", "resolve")
+    assert (code, err_of(out)["code"], err_of(out)["reason"]) == (2, "usage", "missing_option")
+
+
+def test_resolve_project_given_twice_is_refused(env: Env) -> None:
+    env.write(TWO)
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "DEMO", "--project", "TEST")
+    assert (code, err_of(out)["code"], err_of(out)["reason"]) == (2, "usage", "invalid_combination")
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "DEMO", "--project", "DEMO")
+    assert (code, err_of(out)["reason"]) == (2, "invalid_combination")
+
+
+@pytest.mark.parametrize(
+    "project",
+    ["", "demo", "DEMO-1", "A B", "1AB", "DEMO\n", "ДЕМО", "A'; DROP", "../x", "--site", "A" * 65],
+)
+def test_resolve_project_malformed_names_are_invalid_key(env: Env, project: str) -> None:
+    env.write(TWO)
+    code, out, err = env.run("--json", "sites", "resolve", f"--project={project}")
+    body = err_of(out)
+    assert (code, body["code"], body["reason"]) == (22, "invalid_request", "invalid_key")
+    assert "Traceback" not in out + err
+    assert len(out) < 2000 and len(err) < 2000
+
+
+def test_resolve_project_a_huge_name_is_refused_and_not_echoed(env: Env) -> None:
+    env.write(TWO)
+    code, out, err = env.run("--json", "sites", "resolve", "--project=" + "A" * 5000)
+    body = err_of(out)
+    assert code == 22 and body["code"] == "invalid_request"
+    assert "Traceback" not in out + err
+    assert "A" * 200 not in out + err
+    assert len(out) < 2000 and len(err) < 2000
+
+
+@pytest.mark.parametrize(
+    ("project", "site", "rule"), [("DEMO", "zed", "project"), ("TEST", "alpha", "default_site")]
+)
+def test_resolve_project_human_output(env: Env, project: str, site: str, rule: str) -> None:
+    env.write(TWO)
+    code, out, _ = env.run("sites", "resolve", "--project", project)
+    assert code == 0
+    assert out.strip() == f"project: {site} (rule {rule})"
+    assert "None" not in out
+
+
+def test_resolve_project_is_offline(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    env.write(TWO)
+
+    def refuse(*a: object, **k: object) -> None:
+        raise AssertionError("offline command used a socket")
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    assert env.run("--json", "sites", "resolve", "--project", "DEMO")[0] == 0
+
+
 # --- validate --------------------------------------------------------------------------------
 
 
