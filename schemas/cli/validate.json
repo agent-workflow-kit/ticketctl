@@ -109,6 +109,10 @@
           "site"
         ]
       }
+    },
+    "read_only": {
+      "const": true,
+      "description": "Present, and true, only when read-only mode is on (config read_only or TICKETCTL_READ_ONLY); absent otherwise, so existing output does not change."
     }
   },
   "additionalProperties": false,

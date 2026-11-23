@@ -69,13 +69,13 @@ One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the 
 
 ## Environment
 
-- `TICKETCTL_TIMEOUT` and `TICKETCTL_DEFAULT_SITE` set the two top-level scalar config keys; nested keys cannot come from the environment.
+- `TICKETCTL_TIMEOUT`, `TICKETCTL_DEFAULT_SITE` and `TICKETCTL_READ_ONLY` set the three top-level scalar config keys (`TICKETCTL_READ_ONLY=1` turns read-only mode on and nothing in the same process turns it off (an accident guard, not a security boundary), see [Read-only mode](docs/interface.md#read-only-mode)); nested keys cannot come from the environment.
 - The API token is read only from the variable named by `token_env` (and the email from `email_env` when used).
 - Hooks receive `TICKETCTL_HOOK`, `TICKETCTL_ID` and `TICKETCTL_OBJECT_TYPE`; they are hook variables, not config keys. `TICKETCTL_DEBUG` is a debug switch (a traceback for exit 1) and `TICKETCTL_LIVE` is the live-test switch.
 
 ## Exit codes
 
-Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `invalid_request`. The full table is in [docs/interface.md](docs/interface.md#exit-codes). Reasons: exit 2 `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument`, `config_invalid`, `no_sites`, `account_mismatch`; exit 20 equal to the code (`stale_ticket`, `precondition_failed`, `no_such_transition`, `sprint_closed`, `already_exists`, `declined`); exit 12 `unavailable` with `locked`; exit 1 `internal` with `audit_failed` or `hooks_unavailable`; exit 22 `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_invalid`, `cursor_expired`. A failure after an earlier step landed is exit 12 `partial` with the applied steps in `details.result`.
+Shared codes from the design guide (0, 1, 2, 10, 11, 12, 13, 20, 21) plus 22 `invalid_request`. The full table is in [docs/interface.md](docs/interface.md#exit-codes). Reasons: exit 2 `human_only`, `yes_requires_expect_plan`, `dedupe_key_required`, `stdin_conflict`, `invalid_combination`, `missing_option`, `invalid_argument`, `config_invalid`, `no_sites`, `account_mismatch`; exit 20 equal to the code (`stale_ticket`, `precondition_failed`, `no_such_transition`, `sprint_closed`, `already_exists`, `declined`, `read_only`); exit 12 `unavailable` with `locked`; exit 1 `internal` with `audit_failed` or `hooks_unavailable`; exit 22 `invalid_query`, `unknown_field`, `not_editable`, `invalid_value`, `needs_resolution`, `missing_required_fields`, `node_not_allowed`, `body_too_large`, `empty_body`, `unknown_site`, `invalid_key`, `mixed_sites`, `invalid_file`, `secret_in_body`, `cursor_invalid`, `cursor_expired`. A failure after an earlier step landed is exit 12 `partial` with the applied steps in `details.result`.
 
 ## Documentation
 

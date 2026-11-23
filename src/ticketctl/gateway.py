@@ -65,6 +65,16 @@ RETRY_AFTER_CLAMP = 2**31
 USER_AGENT = f"ticketctl/{__version__}"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
+READ_ONLY_CODE = "read_only"
+READ_ONLY_MESSAGE = "read-only mode is on: write commands are refused and no write request is sent"
+# Read-only mode: the only non-GET requests that stay allowed are the reads that need a POST.
+READ_ONLY_POSTS = frozenset(
+    {
+        "/rest/api/3/search/jql",
+        "/rest/api/3/search/approximate-count",
+        "/rest/api/3/jql/parse",
+    }
+)
 _READ_RETRY_STATUSES = frozenset({502, 503, 504})
 _RATE_HEADERS = ("retry-after", "x-ratelimit-limit", "x-ratelimit-remaining")
 
@@ -706,6 +716,7 @@ class Gateway:
         log_sink: Callable[[dict[str, Any]], None] | None = None,
         verbose: Callable[[str], None] | None = None,
         config_sha256: str = "0" * 64,
+        read_only: bool = False,
         sleep: Callable[[float], None] = time.sleep,
         rng: Callable[[], float] = random.random,
     ) -> None:
@@ -716,6 +727,7 @@ class Gateway:
         self._log_sink = log_sink
         self._verbose = verbose
         self._config_sha256 = config_sha256
+        self._read_only = read_only
         self._sleep = sleep
         self._rng = rng
         # Pacing state is shared by the threads of a multi-key command; every access holds the
@@ -745,6 +757,14 @@ class Gateway:
         """
         if method not in _METHODS:
             raise _internal("unsupported method")
+        if (
+            self._read_only
+            and method != "GET"
+            and not (method == "POST" and path in READ_ONLY_POSTS)
+        ):
+            # Judged on the method and the path, never on the caller's `write` argument, so a
+            # command that skipped its own check still cannot write. Nothing is sent or logged.
+            raise GatewayError(READ_ONLY_CODE, READ_ONLY_MESSAGE, exit_code=20)
         if (
             not _PATH.fullmatch(path)
             or _PATH_FORBIDDEN.search(path)

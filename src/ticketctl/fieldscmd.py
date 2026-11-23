@@ -16,8 +16,9 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from . import fieldload, selection
+from . import createcmd, fieldload, selection
 from .config import LOGICAL_FIELDS
+from .errors import usage_error
 from .fieldmap import SiteFields, Status
 from .flags import Globals
 from .runtime import Runtime, for_site, load_runtime, open_gateway
@@ -115,3 +116,49 @@ def fields_refresh(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
 
 def human_fields_refresh(r: dict[str, Any]) -> str:
     return f"{r['site']}: field list refreshed"
+
+
+def fields_types(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
+    """The creatable issue types of a project, and with ``--type`` the required fields of one.
+
+    Read-only; createmeta is read fresh (never cached) through ``createcmd``'s readers, so the
+    paging caps and answer shapes are the ones ``create`` uses.
+    """
+    rt = load_runtime(g)
+    chosen = selection.select_site(
+        rt.config, site_flag=g.site, projects=[a.project] if a.project is not None else []
+    )
+    project = a.project
+    if project is None:
+        listed = list(rt.config.sites[chosen.site].projects)
+        if len(listed) != 1:
+            raise usage_error(
+                "missing_option", "fields types needs --project (the site has no single default)"
+            )
+        project = listed[0]
+    with for_site(chosen.site):
+        gw = open_gateway(rt, chosen.site)
+        types = createcmd.read_types(gw, project)
+        if a.type is not None:
+            types = [createcmd.choose_type(types, a.type)]
+        entries: list[dict[str, Any]] = []
+        for t in sorted(types, key=lambda t: (t.name, t.id)):
+            required = None
+            if a.type is not None:
+                meta = createcmd.read_meta_fields(gw, project, t)
+                required = createcmd.required_of(rt, meta, set(createcmd.SUPPLIED))
+            entries.append(
+                {"id": t.id, "name": t.name, "subtask": t.subtask, "required_fields": required}
+            )
+    return {"site": chosen.site, "project": project, "types": entries}
+
+
+def human_fields_types(r: dict[str, Any]) -> str:
+    lines = [f"{r['site']} {r['project']}: {len(r['types'])} issue types"]
+    for t in r["types"]:
+        flags = " (sub-task)" if t["subtask"] else ""
+        lines.append(f"{t['id']}  {t['name']}{flags}")
+        for f in t["required_fields"] or []:
+            allowed = f" ({'; '.join(f['allowed_values'])})" if f.get("allowed_values") else ""
+            lines.append(f"  requires {f['name']} [{f['kind']}]{allowed}")
+    return "\n".join(lines)

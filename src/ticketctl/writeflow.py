@@ -63,7 +63,7 @@ from . import attribution, audit, confirm_tty, flags, identity
 from .adf_validate import canonical_json, validate_adf
 from .attribution import Format, Kind, RichText
 from .dedupe import bucket_lock
-from .errors import TicketctlError, from_exception, usage_error
+from .errors import TicketctlError, from_exception, read_only_error, usage_error
 from .flags import Globals
 from .gateway import Deadline, Gateway, Response, Target
 from .plan import Planned, Step, build_plan, canonical_bytes
@@ -615,6 +615,10 @@ def execute(
     Returns the plan (``--dry-run``) or the result of an ``ok`` or ``unchanged`` run. Every
     failure is a ``TicketctlError`` (or another module's error that ``from_exception`` maps).
     """
+    if rt.config.read_only and not rt.g.dry_run:
+        # The engine's own guard, for a caller that did not come through the CLI dispatch: before
+        # the action is touched, so no read, prompt, hook, lock or audit record happens.
+        raise read_only_error()
     with for_site(site):
         return _Run(rt, site, action, seams or Seams()).run()
 

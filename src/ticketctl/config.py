@@ -41,8 +41,12 @@ MAX_YAML_DEPTH = 32
 MAX_BOARD_ID = 10**18 - 1
 
 ENV_PREFIX = "TICKETCTL_"
-ENV_SCALARS = ("TIMEOUT", "DEFAULT_SITE")
+ENV_SCALARS = ("TIMEOUT", "DEFAULT_SITE", "READ_ONLY")
 # Variables of the interface that are not config keys (hook variables, debug and live switches).
+_READ_ONLY_VALUES = {
+    "1": True, "true": True, "yes": True, "on": True,
+    "0": False, "false": False, "no": False, "off": False,
+}  # fmt: skip
 ENV_NON_CONFIG = frozenset({"HOOK", "ID", "OBJECT_TYPE", "DEBUG", "LIVE"})
 
 LOGICAL_FIELDS = (
@@ -433,6 +437,7 @@ class Config(_Model):
     timeout: Timeout = timedelta(seconds=120)
     me: Me = Me()
     attribution: Attribution = Attribution()
+    read_only: bool = False
     limits: Limits = Limits()
     hooks: dict[str, list[Hook]] = {}
 
@@ -778,7 +783,20 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> tuple[Config, list[str
         if config.sites:  # with no sites, `require_sites` reports no_sites instead
             _check_default_site(config, default_site, default_key)
         update["default_site"] = default_site
-    top_level = {k for k in Config.model_fields if k not in ("timeout", "default_site")}
+    read_only = env.get(f"{ENV_PREFIX}READ_ONLY", "")
+    if read_only:
+        # The environment can turn the mode on, never off: a false value changes nothing, and a
+        # value that is neither true nor false is refused so a typo cannot leave the mode off.
+        flag = _READ_ONLY_VALUES.get(read_only.lower()) if read_only.isascii() else None
+        if flag is None:
+            raise ConfigError(
+                "must be one of 1, true, yes, on, 0, false, no, off", key=f"{ENV_PREFIX}READ_ONLY"
+            )
+        if flag:
+            update["read_only"] = True
+    top_level = {
+        k for k in Config.model_fields if k not in ("timeout", "default_site", "read_only")
+    }
     warnings: list[str] = []
     for name in sorted(env):
         if not name.startswith(ENV_PREFIX):
@@ -788,8 +806,8 @@ def _apply_env(config: Config, env: Mapping[str, str]) -> tuple[Config, list[str
             continue
         if "__" in suffix or suffix.lower() in top_level:
             warnings.append(
-                f"{_seg(name)}: ignored; only {ENV_PREFIX}TIMEOUT and "
-                f"{ENV_PREFIX}DEFAULT_SITE are read from the environment"
+                f"{_seg(name)}: ignored; only {ENV_PREFIX}TIMEOUT, "
+                f"{ENV_PREFIX}DEFAULT_SITE and {ENV_PREFIX}READ_ONLY are read from the environment"
             )
     return (config.model_copy(update=update) if update else config), warnings
 
@@ -799,7 +817,8 @@ def load_config(path: Path | None = None, *, env: Mapping[str, str] | None = Non
 
     With `path` only that file is read (and it must exist). Otherwise `config.yaml` then
     `config.d/*.yaml` under `$XDG_CONFIG_HOME/ticketctl` (default `~/.config/ticketctl`) are read;
-    a missing default config is an empty configuration. `env` defaults to `os.environ`.
+    a missing default config is an empty configuration. `read_only: true` in one file cannot be
+    turned off by a later file. `env` defaults to `os.environ`.
     """
     environment: Mapping[str, str] = os.environ if env is None else env
     if path is not None:
@@ -810,7 +829,11 @@ def load_config(path: Path | None = None, *, env: Mapping[str, str] | None = Non
         files = ([main] if _exists(main) else []) + _dropins(directory / "config.d")
     merged: dict[str, Any] = {}
     for file in files:
+        was_read_only = merged.get("read_only") is True
         merged = _merge(merged, _parse_yaml(_read_file(file), file))
+        if was_read_only and merged.get("read_only") is False:
+            # Read-only mode is sticky across layers: a later drop-in cannot turn it off.
+            merged["read_only"] = True
     config = _validate(merged)
     _check(config)
     if config.me.name is None:

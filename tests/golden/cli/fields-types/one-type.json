@@ -1,0 +1,25 @@
+{
+  "project": "DEMO",
+  "site": "main",
+  "types": [
+    {
+      "id": "1",
+      "name": "Task",
+      "required_fields": [
+        {
+          "allowed_values": [
+            "High",
+            "Low"
+          ],
+          "kind": "priority",
+          "name": "Priority"
+        },
+        {
+          "kind": "number",
+          "name": "Story Points"
+        }
+      ],
+      "subtask": false
+    }
+  ]
+}
