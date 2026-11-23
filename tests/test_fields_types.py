@@ -318,7 +318,7 @@ def test_type_names_are_sanitized_and_capped(cli: Cli) -> None:
 
 
 def test_a_provider_field_id_in_a_required_name_is_hidden(cli: Cli) -> None:
-    with_fields(cli, **{"customfield_90001": {"name": "customfield_90009", "required": True}})
+    with_fields(cli, **{"customfield_90001": {"name": "customfield_90005", "required": True}})
     _, doc = cli.types("--project", "DEMO", "--type", "Task")
     assert "customfield_" not in json.dumps(doc)
 
