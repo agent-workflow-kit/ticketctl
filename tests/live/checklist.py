@@ -396,7 +396,7 @@ ITEMS: tuple[Item, ...] = (
         "and rich-text custom fields, an empty text node, a total text limit across ADF nodes, "
         "a 300 KB body",
         HUMAN,
-        why="needs oversized writes; a comment cannot be deleted, so this is a human decision "
+        why="needs oversized writes; the live suite never deletes a comment, so this is a human decision "
         "(a description on a test ticket is the safer place)",
     ),
     Item(
@@ -478,8 +478,9 @@ ITEMS: tuple[Item, ...] = (
         "#43",
         "comment-edit and comment-delete: the single-comment read embeds properties under "
         "expand=properties; PUT of a comment accepts body and properties and rewrites the "
-        "ticketctl.meta property; PUT without visibility on a restricted comment (ticketctl "
-        "refuses it, so only a raw request shows what the provider does); DELETE removes the "
+        "ticketctl.meta property; PUT without visibility on a restricted comment, and whether an "
+        "internal-only comment reads as jsdPublic false (ticketctl refuses both, so only a raw "
+        "request shows what the provider does); DELETE removes the "
         "comment; a non-author PUT or DELETE is refused",
         HUMAN,
         why="the write suite posts exactly one comment per test ticket and a delete would break "

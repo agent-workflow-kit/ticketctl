@@ -183,7 +183,8 @@
         "ambiguous_board",
         "ambiguous_sprint",
         "not_ticketctl_comment",
-        "restricted_comment"
+        "restricted_comment",
+        "human_comment"
       ]
     },
     "error_reason": {
@@ -223,6 +224,7 @@
         "read_only",
         "not_ticketctl_comment",
         "restricted_comment",
+        "human_comment",
         "locked",
         "audit_failed",
         "hooks_unavailable"
@@ -1270,6 +1272,27 @@
             "properties": {
               "code": {
                 "enum": [
+                  "human_comment"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "human_comment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
                   "usage",
                   "invalid_config",
                   "invalid_request",
@@ -1283,7 +1306,8 @@
                   "declined",
                   "read_only",
                   "not_ticketctl_comment",
-                  "restricted_comment"
+                  "restricted_comment",
+                  "human_comment"
                 ]
               }
             },

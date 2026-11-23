@@ -96,7 +96,7 @@ ERROR_CODES = (
     "confirmation_required", "escalated", "stale_ticket", "precondition_failed",
     "no_such_transition", "sprint_closed", "already_exists", "declined", "read_only",
     "ambiguous_site", "ambiguous_field", "ambiguous_transition", "ambiguous_board",
-    "ambiguous_sprint", "not_ticketctl_comment", "restricted_comment",
+    "ambiguous_sprint", "not_ticketctl_comment", "restricted_comment", "human_comment",
 )  # fmt: skip
 LOG_METHODS = ("GET", "POST", "PUT", "DELETE")
 

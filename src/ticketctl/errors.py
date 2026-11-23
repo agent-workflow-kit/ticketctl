@@ -111,6 +111,7 @@ CODES: dict[str, CodeSpec] = {
             "read_only",
             "not_ticketctl_comment",
             "restricted_comment",
+            "human_comment",
         )
     },
     "ambiguous_site": _spec(21),

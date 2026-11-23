@@ -237,6 +237,7 @@ HANDLER_ROWS = [
     ("read_only", None, 20),
     ("not_ticketctl_comment", None, 20),
     ("restricted_comment", None, 20),
+    ("human_comment", None, 20),
     ("ambiguous_site", None, 21),
     ("ambiguous_field", None, 21),
     ("ambiguous_transition", None, 21),

@@ -10,8 +10,11 @@ secret and size checks), the same guarded gateway, plan, confirmation, hooks, au
   property (``v`` 1, an ``actor_kind`` and a ``body_sha256``). Anything else is exit 20
   ``not_ticketctl_comment`` and nothing is sent. The marker is advisory like the rest of the
   attribution (anyone who may edit the comment can forge it); the author test and the provider's
-  own permission checks are the real gates. An edit also refuses a comment with a visibility
-  restriction (exit 20 ``restricted_comment``): the update request carries no ``visibility``, and
+  own permission checks are the real gates. An auto actor also never changes a comment whose
+  marker says a human posted it (exit 20 ``human_comment``; a human actor may change both kinds).
+  An edit also refuses a comment with a visibility restriction or an internal-only flag
+  (``jsdPublic`` false) (exit 20 ``restricted_comment``): the update request carries no
+  ``visibility``, and
   whether the provider then keeps, drops or widens the restriction is unverified, so the tool never
   risks making a restricted comment public.
 * **Edit** replaces the whole body (attribution paragraph included, as for a new comment) and
@@ -113,11 +116,18 @@ def read_comment(ctx: Context, key: str, cid: str) -> Found:
             "only a comment this account posted through ticketctl can be changed",
             reason="not_ticketctl_comment",
         )
+    if obj["actor_kind"] == "human" and attribution.actor_kind(ctx.actor) == "auto":
+        raise TicketctlError(
+            "human_comment",
+            "an auto actor cannot change a comment a human posted through ticketctl",
+            reason="human_comment",
+        )
     try:
         digest = hashlib.sha256(canonical_json(doc).encode("utf-8")).hexdigest()
     except (ValueError, TypeError, RecursionError):
         raise TicketctlError("provider_changed", "the comment body cannot be read") from None
-    return Found(obj, doc, digest, raw.get("visibility") not in (None, {}))
+    restricted = raw.get("visibility") not in (None, {}) or raw.get("jsdPublic") is False
+    return Found(obj, doc, digest, restricted)
 
 
 class _Base:

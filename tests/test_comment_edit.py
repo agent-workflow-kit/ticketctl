@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,7 +21,9 @@ from tests.golden import assert_golden, validator
 from tests.test_comment import ATTEMPT, SITE_ENV_VAR, Cli
 from ticketctl import attribution, commentcmd, commentedit, config, hooks
 from ticketctl.adf_validate import body_sha256
+from ticketctl.errors import TicketctlError
 from ticketctl.gateway import HookRun
+from ticketctl.sanitize import InputError
 from ticketctl.writeflow import Seams
 
 KEY = "DEMO-2"
@@ -548,3 +551,178 @@ def test_a_provider_that_answers_another_comment_id_fails_closed(
     monkeypatch.setattr(FakeProvider, "_comment_obj", liar)
     code, env = cli.doc("--dry-run", "comment-delete", KEY, cid)
     assert (code, env["error"]["code"]) == (12, "provider_changed")
+
+
+# --- review round 1 ------------------------------------------------------------------------------
+
+
+def seed_human(cli: Cli) -> str:
+    """An own comment that carries a valid property saying a human posted it."""
+    return seed(cli, author=ME_ACCOUNT, props={attribution.META_PROPERTY: valid_meta()})
+
+
+@pytest.mark.parametrize(
+    "command, argv", [("comment-edit", ["--body", "x"]), ("comment-delete", [])]
+)
+def test_an_auto_actor_cannot_change_a_human_comment(
+    cli: Cli, command: str, argv: list[str]
+) -> None:
+    cid = seed_human(cli)
+    before = len(cli.writes())
+    code, env = cli.doc("--dry-run", command, KEY, cid, *argv)
+    assert (code, env["error"]["code"], env["error"]["reason"]) == (
+        20,
+        "human_comment",
+        "human_comment",
+    )
+    validator("cli/error.json").validate(env)
+    code, env = cli.doc("--yes", "--expect-plan", "0" * 64, command, KEY, cid, *argv)
+    assert (code, env["error"]["code"]) == (20, "human_comment")
+    assert len(cli.writes()) == before and len(comments(cli)) == 1
+
+
+def test_a_human_actor_may_change_a_human_comment(cli: Cli) -> None:
+    cid = seed_human(cli)
+    code, plan = cli.doc("--actor", "human:tester", "--dry-run", "comment-delete", KEY, cid)
+    assert code == 0, plan
+    code, result = cli.doc(
+        "--actor", "human:tester", "--yes", "--expect-plan", plan["plan_sha256"],
+        "comment-delete", KEY, cid,
+    )  # fmt: skip
+    assert code == 0, result
+    assert comments(cli) == []
+
+
+def test_a_human_actor_may_delete_an_auto_comment(cli: Cli) -> None:
+    cid = posted(cli)
+    code, plan = cli.doc("--actor", "human:tester", "--dry-run", "comment-delete", KEY, cid)
+    assert code == 0, plan
+    code, result = cli.doc(
+        "--actor", "human:tester", "--yes", "--expect-plan", plan["plan_sha256"],
+        "comment-delete", KEY, cid,
+    )  # fmt: skip
+    assert code == 0, result
+    assert comments(cli) == []
+
+
+def test_edit_refuses_an_internal_comment_without_a_visibility_object(cli: Cli) -> None:
+    cid = posted(cli)
+    comments(cli)[-1]["jsdPublic"] = False
+    code, env = cli.doc("--dry-run", "comment-edit", KEY, cid, "--body", "x")
+    assert (code, env["error"]["code"], env["error"]["reason"]) == (
+        20,
+        "restricted_comment",
+        "restricted_comment",
+    )
+    code, plan = cli.doc("--dry-run", "comment-delete", KEY, cid)
+    assert code == 0 and plan["steps"][0]["kind"] == "delete_comment"
+
+
+def test_a_keyed_comment_posts_again_after_the_comment_was_deleted(cli: Cli) -> None:
+    cid = posted(cli)
+    code, _ = change(cli, "comment-delete", cid)
+    assert code == 0
+    new_id = posted(cli)
+    assert new_id != cid and len(comments(cli)) == 1
+
+
+def test_the_edit_request_carries_exactly_the_body_and_one_property(cli: Cli) -> None:
+    cid = posted(cli)
+    before = len(cli.writes())
+    code, result = change(cli, "comment-edit", cid, "--body", "second")
+    assert code == 0, result
+    (call,) = cli.writes()[before:]
+    assert set(call.body) == {"body", "properties"}
+    assert [p["key"] for p in call.body["properties"]] == [attribution.META_PROPERTY]
+
+
+def _twin_comments(cli: Cli) -> tuple[str, str]:
+    ids = []
+    for n in (1, 2):
+        code, result = cli.post("--body", "twin", "--dedupe-key", f"twin-{n}", key=KEY)
+        assert code == 0, result
+        ids.append(str(result["comment_id"]))
+    return ids[0], ids[1]
+
+
+def test_the_plan_hash_of_an_edit_binds_the_comment_id(cli: Cli) -> None:
+    a, b = _twin_comments(cli)
+    hashes = [
+        cli.doc("--dry-run", "comment-edit", KEY, cid, "--body", "new")[1]["plan_sha256"]
+        for cid in (a, b)
+    ]
+    assert hashes[0] != hashes[1]
+
+
+def test_the_plan_hash_of_a_delete_binds_the_comment_id(cli: Cli) -> None:
+    a, b = _twin_comments(cli)
+    hashes = [cli.doc("--dry-run", "comment-delete", KEY, cid)[1]["plan_sha256"] for cid in (a, b)]
+    assert hashes[0] != hashes[1]
+
+
+class _Gw:
+    def __init__(self, data: Any) -> None:
+        self.data = data
+
+    def request(self, method: str, path: str, **kw: Any) -> Any:
+        return SimpleNamespace(status=200, data=self.data)
+
+
+def _ctx(data: Any, actor: str = "auto:t") -> Any:
+    return SimpleNamespace(gw=_Gw(data), me=SimpleNamespace(account_id="me"), actor=actor)
+
+
+def _obj(**kw: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": "5",
+        "own": True,
+        "authored_by_ticketctl": True,
+        "actor_kind": "auto",
+        "body_sha256": "a" * 64,
+        "body": "text",
+        "dedupe_key_sha256": None,
+    }
+    base.update(kw)
+    return base
+
+
+_RAW = {"id": "5", "body": {"type": "doc", "version": 1, "content": []}}
+
+
+def _read(monkeypatch: pytest.MonkeyPatch, obj: dict[str, Any]) -> Any:
+    monkeypatch.setattr(commentedit, "comment_object", lambda raw, me, marks: obj)
+    return commentedit.read_comment(_ctx(dict(_RAW)), "DEMO-1", "5")
+
+
+def test_read_comment_accepts_a_fully_proven_own_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _read(monkeypatch, _obj()).obj["id"] == "5"
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"own": False},
+        {"authored_by_ticketctl": False},
+        {"actor_kind": None},
+        {"body_sha256": None},
+    ],
+    ids=["not own", "marker missing", "no actor kind", "no body hash"],
+)
+def test_read_comment_refuses_each_missing_proof(
+    monkeypatch: pytest.MonkeyPatch, override: dict[str, Any]
+) -> None:
+    with pytest.raises(TicketctlError) as err:
+        _read(monkeypatch, _obj(**override))
+    assert err.value.code == "not_ticketctl_comment"
+
+
+@pytest.mark.parametrize("bad", ["1/2", "..", "1?x", "1 2", "", "1\n2", "#1"])
+def test_the_comment_id_segment_refuses_path_tricks(bad: str) -> None:
+    with pytest.raises(InputError):
+        commentedit._item_path("DEMO-1", bad)
+
+
+@pytest.mark.parametrize("bad", ["DEMO-1/x", "DEMO-1?x", "DEMO 1", "..", ""])
+def test_the_ticket_key_segment_refuses_path_tricks(bad: str) -> None:
+    with pytest.raises(InputError):
+        commentedit._item_path(bad, "5")
