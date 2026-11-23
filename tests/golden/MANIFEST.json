@@ -7,6 +7,7 @@
   "cli/fields-check.json": "9f8eb25ae91f48511aa756e52831484d1611a26c881e5bab13d2e7a235e152f9",
   "cli/fields-list.json": "ef93a325bdf1c1c2c612c681e82effcfa0a828b10e6f40c62c41843e1be7de27",
   "cli/fields-refresh.json": "cc88a979c03b84ff5bdf51027cbe396668d2a12d56cf5a942a4b4c23f29a0465",
+  "cli/fields-types.json": "2ee95402fd5c3f6884449bac11b8e1f4937d0c7a9288bc05c4d06117b760949f",
   "cli/get.json": "1fe538add940c3a26659e1041e78d4bf8c72304a0c892c95bd519ac13fe45d9e",
   "cli/plan.json": "c71bbd31a23e138a5deb5887e9491bb6da5b771f0275a57d15de834be38aae1d",
   "cli/result.json": "d2676829e01a64b3b66eaa73f8b6d7d6ffadccc94ea634d4896b3e6a39f5b7f0",

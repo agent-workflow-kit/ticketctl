@@ -138,6 +138,11 @@ def _sprints_show(p: argparse.ArgumentParser) -> None:
     _add(p, "--project", help="selects the site; a sprint is read by id, no board is needed")
 
 
+def _fields_types(p: argparse.ArgumentParser) -> None:
+    _add(p, "--project", help="default: the site's only project")
+    _add(p, "--type", help="list only this type, with its required fields")
+
+
 def _sprints_resolve(p: argparse.ArgumentParser) -> None:
     _add(p, "selector", metavar="open|next", choices=["open", "next"])
     _add(p, "--board")
@@ -305,6 +310,14 @@ def _specs() -> list[CommandSpec]:
             fieldscmd.fields_refresh,
             _none,
             fieldscmd.human_fields_refresh,
+        ),
+        CommandSpec(
+            ("fields", "types"),
+            r,
+            "list the creatable issue types of a project",
+            fieldscmd.fields_types,
+            _fields_types,
+            fieldscmd.human_fields_types,
         ),
         CommandSpec(
             ("sites",), r, "list configured sites", handlers.sites, _none, handlers.human_sites
