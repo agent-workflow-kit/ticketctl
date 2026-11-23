@@ -138,6 +138,12 @@ def _sprints_show(p: argparse.ArgumentParser) -> None:
     _add(p, "--project", help="selects the site; a sprint is read by id, no board is needed")
 
 
+def _sprints_resolve(p: argparse.ArgumentParser) -> None:
+    _add(p, "selector", metavar="open|next", choices=["open", "next"])
+    _add(p, "--board")
+    _add(p, "--project")
+
+
 def _sites_resolve(p: argparse.ArgumentParser) -> None:
     _add(p, "key", metavar="KEY_OR_URL", nargs="?")
     _add(
@@ -267,6 +273,14 @@ def _specs() -> list[CommandSpec]:
             sprintscmd.sprints_show,
             _sprints_show,
             sprintscmd.human_sprints_show,
+        ),
+        CommandSpec(
+            ("sprints", "resolve"),
+            r,
+            "resolve open or next to one sprint",
+            sprintscmd.sprints_resolve,
+            _sprints_resolve,
+            sprintscmd.human_sprints_resolve,
         ),
         CommandSpec(
             ("fields", "list"),

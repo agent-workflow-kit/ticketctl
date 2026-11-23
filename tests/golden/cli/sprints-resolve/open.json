@@ -1,0 +1,11 @@
+{
+  "site": "main",
+  "sprint": {
+    "board": 1,
+    "end": "2026-03-02T15:00:00Z",
+    "id": 2,
+    "name": "Sprint two",
+    "start": "2026-02-16T15:00:00Z",
+    "state": "active"
+  }
+}
