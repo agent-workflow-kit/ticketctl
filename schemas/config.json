@@ -69,6 +69,11 @@
       },
       "additionalProperties": false
     },
+    "read_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Refuse every write command (exit 20 read_only). An accident guard, not a security boundary. Also TICKETCTL_READ_ONLY=1; the environment can turn it on, never off."
+    },
     "limits": {
       "type": "object",
       "properties": {

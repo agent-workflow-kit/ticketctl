@@ -168,6 +168,7 @@
         "sprint_closed",
         "already_exists",
         "declined",
+        "read_only",
         "ambiguous_site",
         "ambiguous_field",
         "ambiguous_transition",
@@ -209,6 +210,7 @@
         "sprint_closed",
         "already_exists",
         "declined",
+        "read_only",
         "locked",
         "audit_failed",
         "hooks_unavailable"
@@ -1190,6 +1192,27 @@
             "properties": {
               "code": {
                 "enum": [
+                  "read_only"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "read_only"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
                   "usage",
                   "invalid_config",
                   "invalid_request",
@@ -1200,7 +1223,8 @@
                   "no_such_transition",
                   "sprint_closed",
                   "already_exists",
-                  "declined"
+                  "declined",
+                  "read_only"
                 ]
               }
             },

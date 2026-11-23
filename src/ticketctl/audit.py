@@ -89,8 +89,9 @@ ERROR_CODES = (
     "auth_required", "bad_credentials", "forbidden", "rejected", "unavailable", "timeout",
     "outcome_unknown", "rate_limited", "provider_changed", "partial", "lookup_incomplete",
     "confirmation_required", "escalated", "stale_ticket", "precondition_failed",
-    "no_such_transition", "sprint_closed", "already_exists", "declined", "ambiguous_site",
-    "ambiguous_field", "ambiguous_transition", "ambiguous_board", "ambiguous_sprint",
+    "no_such_transition", "sprint_closed", "already_exists", "declined", "read_only",
+    "ambiguous_site", "ambiguous_field", "ambiguous_transition", "ambiguous_board",
+    "ambiguous_sprint",
 )  # fmt: skip
 LOG_METHODS = ("GET", "POST", "PUT", "DELETE")
 
