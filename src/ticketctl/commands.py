@@ -150,7 +150,13 @@ def _sprints_resolve(p: argparse.ArgumentParser) -> None:
 
 
 def _sites_resolve(p: argparse.ArgumentParser) -> None:
-    _add(p, "key", metavar="KEY_OR_URL")
+    _add(p, "key", metavar="KEY_OR_URL", nargs="?")
+    _add(
+        p,
+        "--project",
+        action="append",
+        help="resolve a project key instead (once); the result's key is null",
+    )
 
 
 def _validate(p: argparse.ArgumentParser) -> None:
@@ -319,7 +325,7 @@ def _specs() -> list[CommandSpec]:
         CommandSpec(
             ("sites", "resolve"),
             r,
-            "show which site a key selects",
+            "show which site a key or project selects",
             handlers.sites_resolve,
             _sites_resolve,
             handlers.human_sites_resolve,
