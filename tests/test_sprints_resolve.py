@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -204,3 +205,77 @@ def test_resolve_human_output_is_one_line(cli: Cli) -> None:
     code, out, _ = cli.run("sprints", "resolve", "open", *P)
     assert code == 0 and out.startswith("2 Sprint two [active] board 1")
     assert out.count("\n") == 1
+
+
+# --- the branches of the open and next rules, asserted absolutely (issue #70 review) -------------
+
+
+def _both(cli: Cli, selector: str) -> list[tuple[int, dict[str, Any]]]:
+    return [
+        cli.doc("--dry-run", "sprint", "add", "DEMO-1", "--sprint", selector),
+        cli.doc("sprints", "resolve", selector, *P),
+    ]
+
+
+def test_open_reads_at_most_twenty_candidates_for_both_commands(cli: Cli) -> None:
+    for sid in range(10, 35):  # 25 more active sprints beside the one in the seed data
+        set_sprint(cli.fake, sid, state="active")
+    for code, doc in _both(cli, "open"):
+        assert (code, doc["error"]["code"]) == (21, "ambiguous_sprint")
+        assert len(doc["error"]["details"]["candidates"]) == 20
+
+
+def test_open_candidates_are_id_and_name_for_both_commands(cli: Cli) -> None:
+    _two_active(cli)
+    for code, doc in _both(cli, "open"):
+        assert (code, doc["error"]["code"]) == (21, "ambiguous_sprint")
+        assert doc["error"]["details"]["candidates"] == [
+            "2 (Sprint two)",
+            "4 (Sprint four <id>)",
+        ]
+
+
+def _next_id(cli: Cli) -> int:
+    code, doc = cli.doc("sprints", "resolve", "next", *P)
+    assert code == 0
+    return int(doc["sprint"]["id"])
+
+
+def test_next_dated_beats_undated(cli: Cli) -> None:
+    _dated(cli)  # 5 and 6 are dated, 7 and 3 are not
+    assert _next_id(cli) == 6
+
+
+def test_next_earliest_start_wins(cli: Cli) -> None:
+    _dated(cli)
+    set_sprint(cli.fake, 5, start="2026-03-01T15:00:00.000Z")
+    set_sprint(cli.fake, 6, start="2026-05-01T15:00:00.000Z")
+    assert _next_id(cli) == 5
+
+
+def test_next_equal_starts_lowest_id_wins(cli: Cli) -> None:
+    _equal_starts(cli)  # 6 and 8 share a start
+    assert _next_id(cli) == 6
+
+
+def test_next_no_starts_lowest_id_wins(cli: Cli) -> None:
+    _undated(cli)  # 9 and 8 are undated beside the seed future sprint 3
+    assert _next_id(cli) == 3
+    cli.fake.sprints[3]["state"] = "closed"
+    assert _next_id(cli) == 8
+
+
+def test_very_long_hostile_names_stay_bounded(cli: Cli) -> None:
+    hostile = "A\x1b[31m\x00" * 2000 + "‮" * 500
+    set_sprint(cli.fake, 2, name=hostile)
+    code, out, _ = cli.run("--json", "sprints", "resolve", "open", *P)
+    assert code == 0 and len(out) < 20000
+    assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f‮]", out)
+    set_sprint(cli.fake, 4, name=hostile, state="active")
+    for selector_cmd in (
+        ("sprints", "resolve", "open", *P),
+        ("--dry-run", "sprint", "add", "DEMO-1", "--sprint", "open"),
+    ):
+        code, out, _ = cli.run("--json", *selector_cmd)
+        assert code == 21 and len(out) < 20000
+        assert not re.search(r"[\x00-\x08\x0b-\x1f\x7f‮]", out)

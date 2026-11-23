@@ -23,9 +23,9 @@ L1 (primitive). Works fully standalone.
 Finalized in [docs/interface.md](docs/interface.md#commands).
 
 ```text
-ticketctl whoami | get KEY... | search | comments KEY | transitions KEY | sprints | fields | sites | validate
+ticketctl whoami | get KEY... | search | comments KEY | transitions KEY | sprints | sprints resolve open|next | fields | sites | validate
 ticketctl transition KEY --to STATUS | comment KEY --body-file F | create --title T --body-file F | update KEY --set k=v
-ticketctl sprint add KEY --sprint open|next|ID | sprint remove KEY | sprints resolve open|next
+ticketctl sprint add KEY --sprint open|next|ID | sprint remove KEY
 ticketctl export
 ```
 

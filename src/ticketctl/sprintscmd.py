@@ -276,7 +276,7 @@ def resolve_board(
 
 # --- the open and next rules (shared by ``sprint add`` and ``sprints resolve``) -----------------
 
-CANDIDATES = 20  # an ``open`` listing reads this many active sprints; 20 or more are ambiguous
+CANDIDATES = 20  # ``open`` reads at most this many active sprints; two or more are ambiguous
 
 
 def no_sprint(why: str) -> TicketctlError:
