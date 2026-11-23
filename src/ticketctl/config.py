@@ -817,7 +817,8 @@ def load_config(path: Path | None = None, *, env: Mapping[str, str] | None = Non
 
     With `path` only that file is read (and it must exist). Otherwise `config.yaml` then
     `config.d/*.yaml` under `$XDG_CONFIG_HOME/ticketctl` (default `~/.config/ticketctl`) are read;
-    a missing default config is an empty configuration. `env` defaults to `os.environ`.
+    a missing default config is an empty configuration. `read_only: true` in one file cannot be
+    turned off by a later file. `env` defaults to `os.environ`.
     """
     environment: Mapping[str, str] = os.environ if env is None else env
     if path is not None:
@@ -828,7 +829,11 @@ def load_config(path: Path | None = None, *, env: Mapping[str, str] | None = Non
         files = ([main] if _exists(main) else []) + _dropins(directory / "config.d")
     merged: dict[str, Any] = {}
     for file in files:
+        was_read_only = merged.get("read_only") is True
         merged = _merge(merged, _parse_yaml(_read_file(file), file))
+        if was_read_only and merged.get("read_only") is False:
+            # Read-only mode is sticky across layers: a later drop-in cannot turn it off.
+            merged["read_only"] = True
     config = _validate(merged)
     _check(config)
     if config.me.name is None:

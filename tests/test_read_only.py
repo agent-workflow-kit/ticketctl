@@ -43,7 +43,6 @@ def serve():
 
 
 TOKEN_VAR = "TICKETCTL_TEST_RO_TOKEN"
-SITE_URL = "https://tracker.example.test"
 
 # One valid invocation per write command. A command registered as a write that is missing here
 # fails `test_every_registered_write_command_has_a_case`: add its case, and the tests below then
@@ -64,10 +63,10 @@ class Rig:
         self.config = root / "config.yaml"
         self.write_config(read_only)
 
-    def write_config(self, read_only: bool | None) -> None:
+    def write_config(self, read_only: bool | None, hooks: str = "") -> None:
         extra = "" if read_only is None else f"read_only: {str(read_only).lower()}\n"
         self.config.write_text(
-            f"{extra}sites:\n  main:\n    url: {self.fake.url}\n    email: {SITE_EMAIL}\n"
+            f"{extra}{hooks}sites:\n  main:\n    url: {self.fake.url}\n    email: {SITE_EMAIL}\n"
             f"    token_env: {TOKEN_VAR}\n    allow_http: true\n"
         )
         self.config.chmod(0o600)
@@ -102,6 +101,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: Fake
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv(TOKEN_VAR, SITE_TOKEN)
     monkeypatch.delenv("TICKETCTL_READ_ONLY", raising=False)
+    monkeypatch.setenv("PATH", "/nonexistent")
     return Rig(tmp_path, fake, capsys, read_only=True)
 
 
@@ -133,6 +133,88 @@ def test_the_refusal_also_applies_to_yes_with_a_plan_hash(rig: Rig) -> None:
     )
     assert (code, env["error"]["code"]) == (20, "read_only")
     assert rig.fake.calls == []
+    assert rig.side_effects() == []
+
+
+def test_a_refusal_runs_no_pre_or_post_hook(rig: Rig, tmp_path: Path) -> None:
+    pre, post = tmp_path / "pre-ran", tmp_path / "post-ran"
+    rig.write_config(
+        True,
+        hooks=(
+            f"hooks:\n  pre-comment:\n    - cmd: /bin/sh -c 'echo x > {pre}'\n"
+            f"  post-comment:\n    - cmd: /bin/sh -c 'echo x > {post}'\n"
+        ),
+    )
+    code, env = rig.doc("comment", "DEMO-1", "--body", "x")
+    assert (code, env["error"]["code"]) == (20, "read_only")
+    assert not pre.exists() and not post.exists()
+    assert rig.fake.calls == [] and rig.side_effects() == []
+
+
+# Each upper layer on its own: the layers below it are replaced by recorders, so a layer that lets a
+# write through would show up as a recorded call, a hook, a lock or an audit record.
+NON_DRY_GLOBALS = [
+    ["--verbose"],
+    ["--quiet"],
+    ["--yes", "--expect-plan", "0" * 64],
+    ["--actor", "human:tester", "--override-escalation"],
+    ["--json"],
+]
+
+
+@pytest.mark.parametrize("argv", list(WRITE_CASES.values()), ids=[" ".join(p) for p in WRITE_CASES])
+def test_the_dispatch_layer_refuses_a_real_write_on_its_own(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
+    from ticketctl import writeflow
+
+    reached: list[str] = []
+    monkeypatch.setattr(writeflow, "execute", lambda *a, **k: reached.append("execute") or {})
+    code, env = rig.doc(*argv)
+    assert (code, env["error"]["code"]) == (20, "read_only")
+    assert reached == [] and rig.fake.calls == [] and rig.side_effects() == []
+
+
+@pytest.mark.parametrize("flags", NON_DRY_GLOBALS, ids=[" ".join(f) for f in NON_DRY_GLOBALS])
+def test_only_dry_run_exempts_a_write_at_dispatch(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, flags: list[str]
+) -> None:
+    from ticketctl import writeflow
+
+    reached: list[str] = []
+    monkeypatch.setattr(writeflow, "execute", lambda *a, **k: reached.append("execute") or {})
+    code, env = rig.doc(*flags, "comment", "DEMO-1", "--body", "x", "--dedupe-key", "k")
+    assert (code, env["error"]["code"]) == (20, "read_only")
+    assert reached == [] and rig.fake.calls == [] and rig.side_effects() == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"verbose": True},
+        {"quiet": True},
+        {"yes": True, "expect_plan": "0" * 64},
+        {"override_escalation": "ticketctl"},
+        {"json": True},
+        {},
+    ],
+)
+def test_the_write_flow_refuses_every_non_dry_run_on_its_own(
+    rig: Rig, overrides: dict[str, Any]
+) -> None:
+    from ticketctl import writeflow
+
+    class Boom:
+        name = "boom"
+
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(f"the action was touched: {name}")
+
+    rt = load_runtime(Globals(config=str(rig.config), **overrides))
+    with pytest.raises(TicketctlError) as err:
+        writeflow.execute(rt, "main", Boom())  # type: ignore[arg-type]
+    assert err.value.code == "read_only"
+    assert rig.fake.calls == [] and rig.side_effects() == []
 
 
 def test_a_refusal_in_plain_text_names_the_mode(rig: Rig) -> None:
@@ -267,6 +349,45 @@ def test_a_nested_or_non_boolean_config_value_is_refused(rig: Rig) -> None:
         assert (code, env["error"]["code"]) == (2, "invalid_config"), text
 
 
+def test_a_later_dropin_cannot_turn_a_config_true_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rig: Rig
+) -> None:
+    home = tmp_path / "xdg"
+    directory = home / "ticketctl"
+    (directory / "config.d").mkdir(parents=True)
+    site = (
+        f"sites:\n  main:\n    url: {rig.fake.url}\n    email: {SITE_EMAIL}\n"
+        f"    token_env: {TOKEN_VAR}\n    allow_http: true\n"
+    )
+    (directory / "config.yaml").write_text(f"read_only: true\n{site}")
+    (directory / "config.d" / "zz.yaml").write_text("read_only: false\n")
+    for file in (directory / "config.yaml", directory / "config.d" / "zz.yaml"):
+        file.chmod(0o600)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    code = main(["--json", "comment", "DEMO-1", "--body", "hi"])
+    env = json.loads(rig.capsys.readouterr().out)
+    assert (code, env["error"]["code"]) == (20, "read_only")
+    assert rig.fake.calls == []
+    assert rig.side_effects() == []
+
+
+def test_a_dropin_that_turns_it_on_wins_over_an_earlier_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "ticketctl"
+    (directory / "config.d").mkdir(parents=True)
+    (directory / "config.yaml").write_text("read_only: false\n")
+    (directory / "config.d" / "zz.yaml").write_text("read_only: true\n")
+    for file in (directory / "config.yaml", directory / "config.d" / "zz.yaml"):
+        file.chmod(0o600)
+    loaded = config.load_config(env={"XDG_CONFIG_HOME": str(tmp_path)})
+    assert loaded.config.read_only is True
+    only_false = tmp_path / "c.yaml"
+    only_false.write_text("read_only: false\n")
+    only_false.chmod(0o600)
+    assert config.load_config(only_false, env={}).config.read_only is False
+
+
 def test_the_environment_turns_on_what_the_file_leaves_off(tmp_path: Path) -> None:
     path = tmp_path / "c.yaml"
     path.write_text("read_only: false\n")
@@ -388,7 +509,7 @@ def test_gateway_allows_only_the_exact_read_post_paths(serve: Any, path: str) ->
     rig = make_rig(server.url, read_only=True)
     with pytest.raises(GatewayError) as err:
         rig.gw.request("POST", path, template=path.split("%")[0], body={})
-    assert err.value.code in {"read_only", "internal"}
+    assert err.value.code == "read_only"
     assert server.requests == []
 
 
