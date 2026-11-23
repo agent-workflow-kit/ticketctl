@@ -12,6 +12,7 @@ come from the user's own ticketctl configuration and from environment variables 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import secrets
@@ -59,10 +60,11 @@ MAX_TEST_TICKETS = 3  # the hard ceiling: ENV_MAX_TICKETS can only lower the cap
 MAX_COMMENTS_PER_TICKET = 1
 DEFAULT_COMMENT_TEXT = (
     "This ticket was created by an automated ticketctl workflow test "
-    "and is being closed as Won't Do."
+    "(we were testing workflows on it) and is being closed as Won't Do."
 )
 MAX_COMMENT_CHARS = 2000
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# C0 and C1 controls (U+0085 included) and the Unicode line and paragraph separators
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def parse_max_tickets(raw: str) -> int:
@@ -153,8 +155,8 @@ def _key_reason(env: Mapping[str, str]) -> str | None:
 class LiveEnv:
     """The probe targets, all from the environment; empty means "not given"."""
 
-    site: str = ""
-    config: str = ""
+    site: str = field(default="", repr=False)
+    config: str = field(default="", repr=False)
     project: str = ""
     ticket: str = ""
     moved_ticket: str = ""
@@ -165,10 +167,10 @@ class LiveEnv:
     issue_type: str = DEFAULT_TYPE
     resolution: str = DEFAULT_RESOLUTION
     done_status: str = DEFAULT_DONE_STATUS
-    key_env: str = ""
-    pass_env: tuple[str, ...] = ()
+    key_env: str = field(default="", repr=False)
+    pass_env: tuple[str, ...] = field(default=(), repr=False)
     max_tickets: int = MAX_TEST_TICKETS
-    comment_text: str = DEFAULT_COMMENT_TEXT
+    comment_text: str = field(default=DEFAULT_COMMENT_TEXT, repr=False)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> LiveEnv:
@@ -426,6 +428,11 @@ class BudgetExceeded(RuntimeError):
     """The request cap was reached: the suite stops (cleanup still runs, within its reserve)."""
 
 
+COMMAND_HEADROOM = 10  # a normal command starts only if it can still end under the limit
+READBACK_EXTRA = 10  # room above limit + reserve for the closer's verifying reads
+TIMEOUT_CHARGE = 10  # requests charged for a command that timed out (the call and its retries)
+
+
 class Budget:
     """Counts the provider requests ticketctl made, from its own request log.
 
@@ -436,10 +443,20 @@ class Budget:
     it. Cleanup commands are allowed a reserve on top of the limit so test tickets are still closed.
     """
 
-    def __init__(self, state_home: Path, limit: int, reserve: int = 20) -> None:
+    def __init__(
+        self,
+        state_home: Path,
+        limit: int,
+        reserve: int = 20,
+        headroom: int = COMMAND_HEADROOM,
+        readback: int = READBACK_EXTRA,
+    ) -> None:
         self.log = state_home / "ticketctl" / "log.jsonl"
         self.limit = limit
         self.reserve = reserve
+        self.headroom = headroom  # a normal command may not start within this many of the limit
+        self.readback = readback  # extra room only for the closer's verifying reads
+        self.penalty = 0  # requests charged without a log line (a command that timed out)
         self.aborted = False
 
     def records(self) -> list[dict[str, Any]]:
@@ -462,17 +479,26 @@ class Budget:
         return 1 + (retries if isinstance(retries, int) and retries > 0 else 0)
 
     def used(self) -> int:
-        return sum(self.weight(r) for r in self.records())
+        return sum(self.weight(r) for r in self.records()) + self.penalty
 
-    def check_before(self, *, cleanup: bool = False) -> None:
-        ceiling = self.limit + (self.reserve if cleanup else 0)
+    def charge(self, requests: int) -> None:
+        """Count requests the log cannot show (a command that was killed on a timeout)."""
+        self.penalty += requests
+
+    def _ceiling(self, cleanup: bool, readback: bool) -> int:
+        return self.limit + (self.reserve if cleanup else 0) + (self.readback if readback else 0)
+
+    def check_before(self, *, cleanup: bool = False, readback: bool = False) -> None:
+        ceiling = self._ceiling(cleanup, readback)
         used = self.used()
-        if used >= ceiling:
+        # a normal command keeps headroom, so one command of many requests cannot eat the
+        # reserve the closer needs; cleanup commands may run up to their ceiling
+        if used + (0 if cleanup else self.headroom) >= ceiling:
             self.aborted = True
             raise BudgetExceeded(f"request budget reached before a command: {used} of {ceiling}")
 
-    def check_after(self, *, cleanup: bool = False) -> None:
-        ceiling = self.limit + (self.reserve if cleanup else 0)
+    def check_after(self, *, cleanup: bool = False, readback: bool = False) -> None:
+        ceiling = self._ceiling(cleanup, readback)
         used = self.used()
         if used > ceiling:
             self.aborted = True
@@ -495,7 +521,7 @@ def is_write(rec: Mapping[str, Any]) -> bool:
     return not (rec.get("method") == "POST" and path.endswith(READ_POSTS))
 
 
-@dataclass
+@dataclass(repr=False)
 class Result:
     argv: tuple[str, ...]
     code: int
@@ -504,6 +530,11 @@ class Result:
     stderr: str
     seconds: float
     calls: list[dict[str, Any]]  # the request-log records this command added
+
+    def __repr__(self) -> str:
+        """No stdout, stderr or document: a failure report must not print what the child said."""
+        name, _ = command_name(self.argv)
+        return f"Result(command={name!r}, code={self.code}, requests={self.requests})"
 
     @property
     def requests(self) -> int:
@@ -590,13 +621,14 @@ class LiveCli:
         self,
         *argv: str,
         cleanup: bool = False,
+        readback: bool = False,
         extra_env: Mapping[str, str] | None = None,
         stdin: str | None = None,
     ) -> Result:
         if self.read_only and "--yes" in argv:
             raise AssertionError("the read suite never applies a plan: --yes is refused")
         # the budget first: a refusal here must not count as a launch or as an unknown outcome
-        self.budget.check_before(cleanup=cleanup)
+        self.budget.check_before(cleanup=cleanup, readback=readback)
         if self.guard is not None:
             # raises before any request when a cap would be crossed
             self.guard(tuple(argv), stdin=stdin)
@@ -604,15 +636,22 @@ class LiveCli:
         # the private state directory comes last: nothing may redirect where the log is kept
         env = {**self.base_env, **(extra_env or {}), "XDG_STATE_HOME": str(self.state_home)}
         started = time.monotonic()
-        done = subprocess.run(  # noqa: S603 - the interpreter running the tests, fixed module
-            self.command(argv),
-            env=env,
-            input=stdin if stdin is not None else "",
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-            check=False,
-        )
+        try:
+            done = subprocess.run(  # noqa: S603 - the interpreter running the tests, fixed module
+                self.command(argv),
+                env=env,
+                input=stdin if stdin is not None else "",
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # the killed command may have sent requests (and retries) the log does not show yet
+            self.budget.charge(TIMEOUT_CHARGE)
+            with contextlib.suppress(BudgetExceeded):
+                self.budget.check_after(cleanup=cleanup, readback=readback)
+            raise
         seconds = time.monotonic() - started
         try:
             doc = json.loads(done.stdout) if done.stdout.strip() else None
@@ -631,7 +670,7 @@ class LiveCli:
         if self.observer is not None:
             self.observer(result)
         self.check_read_only(result)
-        self.budget.check_after(cleanup=cleanup)
+        self.budget.check_after(cleanup=cleanup, readback=readback)
         return result
 
     def check_read_only(self, result: Result) -> None:
@@ -769,6 +808,13 @@ class Ledger:
         name, _ = command_name(result.argv)
         if name != "create" or "--yes" not in result.argv:
             return
+        key = result.doc.get("key") if isinstance(result.doc, dict) else None
+        if result.code == 0 and isinstance(key, str) and KEY_RE.fullmatch(key):
+            # record the key before the budget check that follows can raise: the closer closes by key
+            if key not in self.created:
+                self.created.append(key)
+            self.unknown_create = False
+            return
         error = result.error
         if result.code != 0 and error and not error.get("outcome_unknown"):
             self.unknown_create = self._prior_unknown
@@ -845,12 +891,37 @@ class Ledger:
             "transition", key, "--to", self.env.done_status,
             "--resolution", self.env.resolution, "--assign", "me",
         )  # fmt: skip
-        plan, done = self.cli.apply(*args, cleanup=True)
+        try:
+            plan, done = self.cli.apply(*args, cleanup=True)
+        except BudgetExceeded:
+            # the apply may have landed before the budget check raised: read the ticket back
+            return self._read_back(key)
         shown = done or plan
         if done is not None and done.code == 0:
             result = done.doc.get("result") if isinstance(done.doc, dict) else None
             return "already" if result == "unchanged" else "closed"
         return f"failed: exit {shown.code} {shown.error.get('code')}"
+
+    def _read_back(self, key: str) -> str:
+        """After a budget stop in the middle of a close: is the ticket done with the resolution?"""
+        try:
+            res = self.cli.run(
+                "get", key, "--fields", "status,resolution", cleanup=True, readback=True
+            )
+            tickets = res.doc.get("tickets") if isinstance(res.doc, dict) else None
+            ticket = tickets[0] if isinstance(tickets, list) and tickets else {}
+        except Exception as exc:  # noqa: BLE001 - cleanup must go on
+            return f"failed: {type(exc).__name__}"
+        status = ticket.get("status") if isinstance(ticket, dict) else None
+        resolution = ticket.get("resolution") if isinstance(ticket, dict) else None
+        name = resolution.get("name") if isinstance(resolution, dict) else resolution
+        if (
+            isinstance(status, dict)
+            and status.get("category") == "done"
+            and name == self.env.resolution
+        ):
+            return "closed"
+        return "failed: BudgetExceeded"
 
     def close_all(self) -> dict[str, str]:
         """Close every ticket of this run, never raising: a failure is recorded and printed."""

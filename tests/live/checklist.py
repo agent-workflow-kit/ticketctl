@@ -325,9 +325,9 @@ ITEMS: tuple[Item, ...] = (
         "paging) and the POST /issue response carrying a usable key",
         INDIRECT,
         ("test_create_with_dedupe_key_and_the_label_lag",),
-        why="a create that works proves the shapes are accepted, not which one the site sent",
-        needs="a ticket cap of 2 or 3 (TICKETCTL_LIVE_MAX_TICKETS) only when the site refuses the "
-        "unassigned value: the retry is a second create, and with a cap of 1 the run skips instead",
+        why="a create that works proves the shapes are accepted, not which one the site sent; "
+        "at a cap of 1 after a W02 refusal the create is not retried and this shape finding stays "
+        "unobserved",
     ),
     Item(
         "W04",

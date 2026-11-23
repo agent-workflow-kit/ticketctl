@@ -74,8 +74,8 @@ def landed(ledger: Ledger, res: Result, name: str) -> str:
     return key
 
 
-def read_ticket(cli: LiveCli, key: str, *fields: str) -> dict[str, Any]:
-    res = cli.run("get", key, "--fields", ",".join(fields))
+def read_ticket(cli: LiveCli, key: str, *fields: str, cleanup: bool = False) -> dict[str, Any]:
+    res = cli.run("get", key, "--fields", ",".join(fields), cleanup=cleanup)
     assert res.code == 0 and isinstance(res.doc, dict), (res.code, res.error.get("code"))
     (ticket,) = res.doc["tickets"]
     return ticket
@@ -109,7 +109,10 @@ def test_create_with_dedupe_key_and_the_label_lag(write_world: World) -> None:
             rec.record(
                 "W03",
                 "create retry without the unassigned value",
-                {"ticket_cap": ledger.cap},
+                {
+                    "ticket_cap": ledger.cap,
+                    "reason": "the create was refused and the cap allows no retry",
+                },
                 status="skipped",
             )
             pytest.skip(
@@ -394,12 +397,17 @@ def test_sprint_errors(write_world: World) -> None:
 
 def test_every_created_ticket_is_closed(write_world: World) -> None:
     live, cli, rec, ledger = write_world
-    assert ledger.created, "no ticket was created: nothing was probed"
+    if not ledger.created and not ledger.unknown_create:
+        # nothing was created and no create is in doubt (a refusal at a cap of 1, or a create
+        # screen ticketctl cannot fill): there is nothing to close or to check
+        reason = "no ticket was created: nothing was probed (see the skipped W03 finding)"
+        rec.record("W20", "the closer check", {"tickets": 0}, status="skipped")
+        pytest.skip(reason)
     outcome = ledger.close_all()
     facts: dict[str, Any] = {"closed_outcomes": sorted(outcome.values()), "tickets": len(outcome)}
     states = []
     for key in ledger.created:
-        ticket = read_ticket(cli, key, "status", "resolution")
+        ticket = read_ticket(cli, key, "status", "resolution", cleanup=True)  # verifies the closer
         resolution = ticket.get("resolution")
         states.append({
             "category": (ticket.get("status") or {}).get("category"),
@@ -410,7 +418,7 @@ def test_every_created_ticket_is_closed(write_world: World) -> None:
     counts: dict[str, int] = {}
     for key, posted in ledger.comments.items():
         if posted and key in ledger.created:
-            res = cli.run("comments", key, "--limit", "5")
+            res = cli.run("comments", key, "--limit", "5", cleanup=True)
             assert res.code == 0, explain(rec.redactor, res.error)
             counts[key] = len(res.doc.get("items") or [])
     facts["comments_per_posted_ticket"] = sorted(counts.values())
