@@ -656,6 +656,8 @@ class Ticket:
     due: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)  # values of the EXTRA_FLOATS fields
     properties: dict[str, Any] = field(default_factory=dict)  # issue properties
+    # raw changelog entries, oldest first: {id, author, _created, items}; see ``add_history``
+    history: list[dict[str, Any]] = field(default_factory=list)
 
 
 SPRINTS: dict[int, dict[str, Any]] = {
@@ -1084,6 +1086,7 @@ class FakeProvider:
         r("POST", api + f"/issue/{key}/transitions", self._transition)
         r("GET", api + f"/issue/{key}/comment", self._comments)
         r("POST", api + f"/issue/{key}/comment", self._add_comment)
+        r("GET", api + f"/issue/{key}/changelog", self._changelog)
         r("GET", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
         r("PUT", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
         comment_props = api + f"/issue/{key}/comment/([^/]+)/properties/([^/]+)"
@@ -2012,6 +2015,75 @@ class FakeProvider:
             },
         )
 
+    # -- changelog -------------------------------------------------------------------------------
+    def add_history(
+        self,
+        key: str,
+        *items: dict[str, Any],
+        when: datetime | None = None,
+        author: str | None = ME_ACCOUNT,
+        entry_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one changelog entry (the ``items`` are raw, as the provider sends them)."""
+        with self._lock:
+            ticket = self.tickets[key]
+            eid = entry_id if entry_id is not None else str(30000 + len(ticket.history))
+            entry = {
+                "id": eid,
+                "author": self._user(author),
+                "_created": when if when is not None else self.now + timedelta(seconds=1),
+                "items": list(items),
+            }
+            ticket.history.append(entry)
+            return entry
+
+    @staticmethod
+    def history_item(
+        field_name: str,
+        old: str | None,
+        new: str | None,
+        *,
+        field_id: str | None = None,
+        old_id: str | None = None,
+        new_id: str | None = None,
+        custom: bool = False,
+    ) -> dict[str, Any]:
+        """A raw item in the real shape: ``from``/``to`` hold ids, ``*String`` keys hold text."""
+        item: dict[str, Any] = {
+            "field": field_name,
+            "fieldtype": "custom" if custom else "jira",
+            "from": old_id,
+            "fromString": old,
+            "to": new_id,
+            "toString": new,
+        }
+        if field_id is not None:
+            item["fieldId"] = field_id
+        return item
+
+    def _changelog(self, call: Call, key: str) -> Out:
+        t = self._ticket(key)
+        start = self._int_param(call, "startAt", 0)
+        limit = min(self._int_param(call, "maxResults", 100), 100)
+        entries = list(t.history)
+        chunk = entries[start : start + limit]
+        values = []
+        for e in chunk:
+            out = {k: v for k, v in e.items() if k != "_created"}
+            out["created"] = self.stamp(e["_created"])
+            values.append(out)
+        return Out(
+            200,
+            {
+                "self": f"{self.url}/rest/api/3/issue/{t.id}/changelog",
+                "startAt": start,
+                "maxResults": limit,
+                "total": len(entries),
+                "isLast": start + limit >= len(entries),
+                "values": values,
+            },
+        )
+
     def _add_comment(self, call: Call, key: str) -> Out:
         t = self._ticket(key)
         body = self._need_body(call)
@@ -2281,6 +2353,11 @@ verification issues):
 - the 400 and 403 body texts for labels, summary, parent, notifyUsers, comment limits and
   properties (V-18, V-21, V-29 give statuses and key names only)
 - the comment list shape (startAt, maxResults, total) and ``expand=properties`` entries
+- the changelog endpoint (``GET /issue/{key}/changelog``): that it pages by ``startAt`` and
+  ``maxResults`` (capped at 100 here) in the shape {startAt, maxResults, total, isLast, values},
+  that ``values`` are oldest first, the item keys (field, fieldtype, fieldId, from, fromString,
+  to, toString) and which of them a system field, a sprint, a label list and a custom field fill
+  (ids in ``from``/``to``, text in the ``*String`` keys), and a hidden ticket's 404
 - the agile responses (board, sprint) and the closed-sprint add error
 - the issue ``self`` links, the ``expand`` string and the default priority list order
 - an empty-text or oversized ADF description on create or edit

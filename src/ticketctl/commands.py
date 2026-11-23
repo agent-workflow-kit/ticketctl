@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import (
+    changelogcmd,
     commentcmd,
     commentscmd,
     createcmd,
@@ -124,6 +125,14 @@ def _comments(p: argparse.ArgumentParser) -> None:
     _add(p, "--since")
     _add(p, "--newest-first", action="store_true")
     _add(p, "--own", action="store_true")
+
+
+def _changelog(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "--limit", type=count_arg, metavar="N")
+    _add(p, "--since")
+    _add(p, "--field", action="append", metavar="NAME")
+    _add(p, "--newest-first", action="store_true")
 
 
 def _sprints_list(p: argparse.ArgumentParser) -> None:
@@ -254,6 +263,14 @@ def _specs() -> list[CommandSpec]:
             commentscmd.comments,
             _comments,
             commentscmd.human_comments,
+        ),
+        CommandSpec(
+            ("changelog",),
+            r,
+            "list the change history",
+            changelogcmd.changelog,
+            _changelog,
+            changelogcmd.human_changelog,
         ),
         CommandSpec(
             ("transitions",),
