@@ -113,7 +113,9 @@
         "create",
         "update",
         "sprint_add",
-        "sprint_remove"
+        "sprint_remove",
+        "comment_edit",
+        "comment_delete"
       ]
     },
     "step_kind": {
@@ -124,7 +126,9 @@
         "add_comment",
         "create",
         "sprint_add",
-        "sprint_remove"
+        "sprint_remove",
+        "edit_comment",
+        "delete_comment"
       ]
     },
     "hook_name": {
@@ -138,7 +142,11 @@
         "pre-update",
         "post-update",
         "pre-sprint",
-        "post-sprint"
+        "post-sprint",
+        "pre-comment-edit",
+        "post-comment-edit",
+        "pre-comment-delete",
+        "post-comment-delete"
       ]
     },
     "error_code": {
@@ -173,7 +181,9 @@
         "ambiguous_field",
         "ambiguous_transition",
         "ambiguous_board",
-        "ambiguous_sprint"
+        "ambiguous_sprint",
+        "not_ticketctl_comment",
+        "restricted_comment"
       ]
     },
     "error_reason": {
@@ -211,6 +221,8 @@
         "already_exists",
         "declined",
         "read_only",
+        "not_ticketctl_comment",
+        "restricted_comment",
         "locked",
         "audit_failed",
         "hooks_unavailable"
@@ -609,6 +621,9 @@
         "type": {
           "type": "string",
           "maxLength": 256
+        },
+        "comment_id": {
+          "$ref": "#/$defs/provider_id"
         }
       },
       "additionalProperties": false,
@@ -1213,6 +1228,48 @@
             "properties": {
               "code": {
                 "enum": [
+                  "not_ticketctl_comment"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "not_ticketctl_comment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "restricted_comment"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "restricted_comment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
                   "usage",
                   "invalid_config",
                   "invalid_request",
@@ -1224,7 +1281,9 @@
                   "sprint_closed",
                   "already_exists",
                   "declined",
-                  "read_only"
+                  "read_only",
+                  "not_ticketctl_comment",
+                  "restricted_comment"
                 ]
               }
             },
