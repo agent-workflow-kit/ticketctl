@@ -616,17 +616,49 @@ def test_resolve_project_several_sites_claim_it_is_ambiguous(env: Env) -> None:
 
 def test_resolve_project_nothing_selects_is_ambiguous(env: Env) -> None:
     env.write(TWO_CLAIMING)
-    code, out, _ = env.run("--json", "sites", "resolve", "--project", "ZZ")
-    assert (code, err_of(out)["code"]) == (21, "ambiguous_site")
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "ZZNOPE")
+    body = err_of(out)
+    assert (code, body["code"]) == (21, "ambiguous_site")
+    assert body["details"]["candidates"] == ["one", "two"]
 
 
-def test_resolve_project_agrees_with_a_key_of_that_project(env: Env) -> None:
-    env.write(TWO)
-    for project, key in (("DEMO", "DEMO-1"), ("TEST", "TEST-1"), ("AB", "AB-9")):
-        by_key = json.loads(env.run("--json", "sites", "resolve", key)[1])
-        by_project = json.loads(env.run("--json", "sites", "resolve", "--project", project)[1])
-        assert (by_project["site"], by_project["rule"]) == (by_key["site"], by_key["rule"])
-        assert by_key["key"] == key and by_project["key"] is None
+SOLO = (
+    "sites:\n  solo:\n    url: https://example.test\n    email: me@example.test\n"
+    + "    token_env: TICKETCTL_UNSET_ONE\n"
+)
+
+# (config, global flags, project, a key of that project)
+AGREEMENT = {
+    "project": (TWO, [], "DEMO", "DEMO-1"),
+    "default_site": (TWO, [], "TEST", "TEST-1"),
+    "only_site": (SOLO, [], "AB", "AB-9"),
+    "site_flag": (TWO, ["--site", "alpha"], "DEMO", "DEMO-1"),
+    "ambiguous": (TWO_CLAIMING, [], "AB", "AB-1"),
+    "nothing_selects": (TWO_CLAIMING, [], "ZZNOPE", "ZZNOPE-1"),
+    "no_sites": ("sites: {}\n", [], "AB", "AB-1"),
+}
+
+
+@pytest.mark.parametrize("row", sorted(AGREEMENT))
+def test_resolve_project_agrees_with_a_key_of_that_project(env: Env, row: str) -> None:
+    config, flags, project, key = AGREEMENT[row]
+    env.write(config)
+    by_key = env.run("--json", *flags, "sites", "resolve", key)
+    by_project = env.run("--json", *flags, "sites", "resolve", "--project", project)
+    assert by_project[0] == by_key[0]
+    key_doc, project_doc = json.loads(by_key[1]), json.loads(by_project[1])
+    if by_key[0] == 0:
+        assert key_doc["key"] == key and project_doc["key"] is None
+        assert {**project_doc, "key": key} == key_doc
+    else:
+        a, b = key_doc["error"], project_doc["error"]
+        assert (a["code"], a.get("reason"), a.get("details")) == (
+            b["code"],
+            b.get("reason"),
+            b.get("details"),
+        )
+    expected = {"ambiguous": 21, "nothing_selects": 21, "no_sites": 2}.get(row, 0)
+    assert by_project[0] == expected
 
 
 def test_resolve_project_no_sites(env: Env) -> None:
@@ -644,35 +676,46 @@ def test_resolve_project_and_key_are_exclusive_and_one_is_required(env: Env) -> 
     assert (code, err_of(out)["code"], err_of(out)["reason"]) == (2, "usage", "missing_option")
 
 
+def test_resolve_project_given_twice_is_refused(env: Env) -> None:
+    env.write(TWO)
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "DEMO", "--project", "TEST")
+    assert (code, err_of(out)["code"], err_of(out)["reason"]) == (2, "usage", "invalid_combination")
+    code, out, _ = env.run("--json", "sites", "resolve", "--project", "DEMO", "--project", "DEMO")
+    assert (code, err_of(out)["reason"]) == (2, "invalid_combination")
+
+
 @pytest.mark.parametrize(
     "project",
-    [
-        "",
-        "demo",
-        "DEMO-1",
-        "A B",
-        "1AB",
-        "A" * 65,
-        "A" * 5000,
-        "DEMO\n",
-        "ДЕМО",
-        "A'; DROP",
-        "../x",
-        "--site",
-    ],
+    ["", "demo", "DEMO-1", "A B", "1AB", "DEMO\n", "ДЕМО", "A'; DROP", "../x", "--site", "A" * 65],
 )
-def test_resolve_project_hostile_names_are_refused(env: Env, project: str) -> None:
+def test_resolve_project_malformed_names_are_invalid_key(env: Env, project: str) -> None:
     env.write(TWO)
     code, out, err = env.run("--json", "sites", "resolve", f"--project={project}")
-    assert code in (2, 22)
-    assert err_of(out)["code"] in ("usage", "invalid_request")
-    assert len(out) < 2000  # a huge name is not echoed whole
+    body = err_of(out)
+    assert (code, body["code"], body["reason"]) == (22, "invalid_request", "invalid_key")
+    assert "Traceback" not in out + err
+    assert len(out) < 2000 and len(err) < 2000
 
 
-def test_resolve_project_human_output(env: Env) -> None:
+def test_resolve_project_a_huge_name_is_refused_and_not_echoed(env: Env) -> None:
     env.write(TWO)
-    code, out, _ = env.run("sites", "resolve", "--project", "DEMO")
-    assert code == 0 and "zed" in out and "project" in out and "None" not in out
+    code, out, err = env.run("--json", "sites", "resolve", "--project=" + "A" * 5000)
+    body = err_of(out)
+    assert code == 22 and body["code"] == "invalid_request"
+    assert "Traceback" not in out + err
+    assert "A" * 200 not in out + err
+    assert len(out) < 2000 and len(err) < 2000
+
+
+@pytest.mark.parametrize(
+    ("project", "site", "rule"), [("DEMO", "zed", "project"), ("TEST", "alpha", "default_site")]
+)
+def test_resolve_project_human_output(env: Env, project: str, site: str, rule: str) -> None:
+    env.write(TWO)
+    code, out, _ = env.run("sites", "resolve", "--project", project)
+    assert code == 0
+    assert out.strip() == f"project: {site} (rule {rule})"
+    assert "None" not in out
 
 
 def test_resolve_project_is_offline(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

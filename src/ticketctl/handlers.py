@@ -68,7 +68,7 @@ def human_sites(r: dict[str, Any]) -> str:
 def sites_resolve(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     rt = load_runtime(g)
     if a.project is not None:  # no ticket is named: the key is null
-        chosen = selection.select_site(rt.config, site_flag=g.site, projects=[a.project])
+        chosen = selection.select_site(rt.config, site_flag=g.site, projects=a.project)
         return {"key": None, "site": chosen.site, "rule": chosen.rule}
     chosen = selection.select_site(rt.config, site_flag=g.site, refs=[a.key])
     assert chosen.key is not None

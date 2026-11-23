@@ -96,6 +96,8 @@ def _one_of_key_or_project(ns: argparse.Namespace) -> None:
         raise usage_error("missing_option", "sites resolve needs KEY_OR_URL or --project")
     if ns.key is not None and ns.project is not None:
         raise usage_error("invalid_combination", "sites resolve takes KEY_OR_URL or --project")
+    if ns.project is not None and len(ns.project) > 1:
+        raise usage_error("invalid_combination", "sites resolve takes --project once")
 
 
 def _me_name(g: Globals) -> str | None:
