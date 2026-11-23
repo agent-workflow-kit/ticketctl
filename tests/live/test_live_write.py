@@ -1,7 +1,8 @@
 """The live write suite (issue #38): at most three titled test tickets, always closed as done.
 
 READ THIS BEFORE RUNNING. The suite creates up to three tickets in the project named by
-``TICKETCTL_LIVE_PROJECT`` and posts one comment on one of them. A comment cannot be deleted; a
+``TICKETCTL_LIVE_PROJECT`` and posts one comment on one of them; ``TICKETCTL_LIVE_MAX_TICKETS``
+(1, 2 or 3) lowers that cap and ``TICKETCTL_LIVE_COMMENT_TEXT`` sets the comment text. A comment cannot be deleted; a
 created ticket can only be closed. The suite refuses to run without ``TICKETCTL_LIVE=1`` and
 ``TICKETCTL_LIVE_WRITE=1`` and a named test project. Every ticket it created is closed as done with
 the won't-do resolution by the module fixture's ``finally`` (``conftest.write_world``), also when a
@@ -23,7 +24,16 @@ from typing import Any
 
 import pytest
 
-from tests.live.support import Ledger, LiveCli, LiveEnv, Recorder, Result, explain, shape
+from tests.live.support import (
+    ENV_MAX_TICKETS,
+    Ledger,
+    LiveCli,
+    LiveEnv,
+    Recorder,
+    Result,
+    explain,
+    shape,
+)
 
 World = tuple[LiveEnv, LiveCli, Recorder, Ledger]
 LAG_POLLS = (5.0,)  # extra waits (seconds) after the re-run's own lag guard
@@ -64,8 +74,8 @@ def landed(ledger: Ledger, res: Result, name: str) -> str:
     return key
 
 
-def read_ticket(cli: LiveCli, key: str, *fields: str) -> dict[str, Any]:
-    res = cli.run("get", key, "--fields", ",".join(fields))
+def read_ticket(cli: LiveCli, key: str, *fields: str, cleanup: bool = False) -> dict[str, Any]:
+    res = cli.run("get", key, "--fields", ",".join(fields), cleanup=cleanup)
     assert res.code == 0 and isinstance(res.doc, dict), (res.code, res.error.get("code"))
     (ticket,) = res.doc["tickets"]
     return ticket
@@ -94,6 +104,21 @@ def test_create_with_dedupe_key_and_the_label_lag(write_world: World) -> None:
                     {"exit": 12, "code": "rejected", "field_errors": sorted(
                         (done.error.get("details") or {}).get("field_errors") or {})},
                     expected="assignee: {accountId: null} is accepted")  # fmt: skip
+        if ledger.create_launches >= ledger.cap:
+            # the retry would be a second applied create: a cap of 1 allows only one
+            rec.record(
+                "W03",
+                "create retry without the unassigned value",
+                {
+                    "ticket_cap": ledger.cap,
+                    "reason": "the create was refused and the cap allows no retry",
+                },
+                status="skipped",
+            )
+            pytest.skip(
+                f"the create was refused and the ticket cap is {ledger.cap}: no retry is allowed "
+                f"(unset {ENV_MAX_TICKETS} or set it to 2 or 3 to run the retry)"
+            )
         args = create_args(live, ledger, "A")
         plan, done = cli.apply(*args)
     assert done is not None, explain(rec.redactor, plan.code, plan.error)
@@ -227,13 +252,16 @@ def test_update_description_is_unchanged_on_rerun(write_world: World, tmp_path: 
     )  # fmt: skip
 
 
-def test_comment_with_key(write_world: World) -> None:
+def test_comment_with_key(write_world: World, tmp_path: Path) -> None:
     live, cli, rec, ledger = write_world
     key = need_ticket(ledger, "A")
     assert ledger.may_comment(key)
     ledger.note_comment(key)  # counted before the post: one per ticket, ever
-    args = ("comment", key, "--body", "ticketctl live test comment", "--dedupe-key",
-            dedupe_key(ledger, "comment"))  # fmt: skip
+    # The one comment of the ticket doubles as the dedupe-key probe. The text goes through a body
+    # file (never a shell, never an argument that could read as an option) and is not recorded.
+    body = tmp_path / "comment.md"
+    body.write_text(live.comment_text + "\n", encoding="utf-8")
+    args = ("comment", key, "--body-file", str(body), "--dedupe-key", dedupe_key(ledger, "comment"))
     plan, done = cli.apply(*args)
     assert done is not None and done.code == 0, explain(
         rec.redactor, plan.code, plan.error, done and done.error
@@ -247,6 +275,7 @@ def test_comment_with_key(write_world: World) -> None:
         "W10", "a keyed comment: property accepted on create, read back, found again by its key",
         {
             "result": done.doc.get("result"),
+            "comment_chars": len(live.comment_text),
             "rerun_steps": codes(rerun.doc, "steps"),
             "rerun_dedupe": shape(rerun.doc.get("dedupe_match")),
             "own_comments_listed": len(items),
@@ -368,18 +397,33 @@ def test_sprint_errors(write_world: World) -> None:
 
 def test_every_created_ticket_is_closed(write_world: World) -> None:
     live, cli, rec, ledger = write_world
-    assert ledger.created, "no ticket was created: nothing was probed"
+    if not ledger.created and not ledger.unknown_create:
+        # nothing was created and no create is in doubt (a refusal at a cap of 1, or a create
+        # screen ticketctl cannot fill): there is nothing to close or to check
+        reason = "no ticket was created: nothing was probed (see the skipped W03 finding)"
+        rec.record("W20", "the closer check", {"tickets": 0}, status="skipped")
+        pytest.skip(reason)
     outcome = ledger.close_all()
     facts: dict[str, Any] = {"closed_outcomes": sorted(outcome.values()), "tickets": len(outcome)}
     states = []
     for key in ledger.created:
-        ticket = read_ticket(cli, key, "status", "resolution")
+        ticket = read_ticket(cli, key, "status", "resolution", cleanup=True)  # verifies the closer
         resolution = ticket.get("resolution")
         states.append({
             "category": (ticket.get("status") or {}).get("category"),
             "resolution": (resolution or {}).get("name") if isinstance(resolution, dict) else resolution,
         })  # fmt: skip
     facts["final_states"] = states
+    # one comment per ticket, the one the suite posted: read every ticket back (the posted ones)
+    counts: dict[str, int] = {}
+    for key, posted in ledger.comments.items():
+        if posted and key in ledger.created:
+            res = cli.run("comments", key, "--limit", "5", cleanup=True)
+            assert res.code == 0, explain(rec.redactor, res.error)
+            counts[key] = len(res.doc.get("items") or [])
+    facts["comments_per_posted_ticket"] = sorted(counts.values())
+    wrong = {k: n for k, n in counts.items() if n != 1}
+    assert not wrong, explain(rec.redactor, "a ticket does not hold exactly one comment", wrong)
     rec.record("W20", "every test ticket ends done with the won't-do resolution", facts)
     assert ledger.still_open() == [], "tickets are still open: close them by hand"
     assert all(s["category"] == "done" for s in states), states

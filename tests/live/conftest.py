@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,25 @@ from tests.live.support import (
 LIVE_MODULES = {"test_live_read.py": False, "test_live_write.py": True}  # name -> writes
 READ_LIMIT = 70
 WRITE_LIMIT = 130
+WRITE_LIMIT_STEP = 5
+RESERVE_BASE = 15
+RESERVE_PER_TICKET = 5  # 20, 25 and 30 for 1, 2 and 3 tickets
 CLEANUP_RESERVE = 25
+
+
+def write_limit(tickets: int) -> int:
+    """The write suite's request cap for a ticket cap of 1 to 3.
+
+    The suite reuses one ticket for every probe, so the count hardly depends on the cap (measured
+    against the fake: 110 requests for each of 1, 2 and 3 tickets); the cap only lowers the headroom,
+    so a runaway run with one ticket stops earlier. WRITE_LIMIT is the value for 3.
+    """
+    return WRITE_LIMIT - WRITE_LIMIT_STEP * (3 - tickets)
+
+
+def write_reserve(tickets: int) -> int:
+    """The closer's reserve: a close costs about 10 requests per ticket, plus room for a sweep."""
+    return RESERVE_BASE + RESERVE_PER_TICKET * tickets
 
 
 def _module_writes(item: pytest.Item) -> bool | None:
@@ -75,14 +93,15 @@ def _gate(*, write: bool) -> None:
 def _build(
     tmp_path_factory: pytest.TempPathFactory,
     suite: str,
-    limit: int,
+    limit: Callable[[LiveEnv], int],
+    reserve: Callable[[LiveEnv], int],
     session: pytest.Session,
     *,
     read_only: bool,
 ) -> tuple[LiveEnv, LiveCli, Recorder, Budget]:
     live = LiveEnv.from_env(os.environ)
     state = tmp_path_factory.mktemp(f"live-state-{suite}")
-    budget = Budget(state, limit=limit, reserve=CLEANUP_RESERVE)
+    budget = Budget(state, limit=limit(live), reserve=reserve(live))
     session.stash[_BUDGET_KEY] = budget
     cli = LiveCli(
         env=os.environ,
@@ -104,8 +123,9 @@ def read_world(
 ) -> Iterator[tuple[LiveEnv, LiveCli, Recorder]]:
     _gate(write=False)
     live, cli, recorder, budget = _build(
-        tmp_path_factory, "read", READ_LIMIT, request.session, read_only=True
-    )
+        tmp_path_factory, "read", lambda _: READ_LIMIT, lambda _: CLEANUP_RESERVE,
+        request.session, read_only=True,
+    )  # fmt: skip
     yield live, cli, recorder
     recorder.requests = budget.used()
     path = recorder.write()
@@ -120,8 +140,9 @@ def write_world(
 
     _gate(write=True)
     live, cli, recorder, budget = _build(
-        tmp_path_factory, "write", WRITE_LIMIT, request.session, read_only=False
-    )
+        tmp_path_factory, "write", lambda e: write_limit(e.max_tickets),
+        lambda e: write_reserve(e.max_tickets), request.session, read_only=False,
+    )  # fmt: skip
     ledger = Ledger(cli, live, run_marker())
     try:
         yield live, cli, recorder, ledger
