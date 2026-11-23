@@ -93,7 +93,7 @@ def test_posts_the_comment_with_the_property_and_golden(cli: Cli) -> None:
 
 @pytest.mark.parametrize("actor", ["auto:bot", "human:tester"])
 def test_the_property_body_hash_is_the_hash_of_the_posted_body(cli: Cli, actor: str) -> None:
-    args = ("--actor", actor, "comment", "DEMO-2", "--body", "hello **world**", "--dedupe-key", "h1")
+    args = ("--actor", actor, "comment", "DEMO-2", "--body", "hi **x**", "--dedupe-key", "h1")
     code, plan = cli.doc("--dry-run", *args)
     assert code == 0, plan
     code, result = cli.doc("--yes", "--expect-plan", plan["plan_sha256"], *args)
