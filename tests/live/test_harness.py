@@ -1626,3 +1626,31 @@ def test_the_sweep_searches_only_the_named_project(
     ledger.close_all()
     searches = [r.argv for r in cli.history if r.argv[:1] == ("search",)]
     assert searches and all(a[a.index("--project") + 1] == "DEMO" for a in searches)
+
+
+def test_a_landed_create_beyond_the_cap_is_recorded_and_still_refused(
+    world: tuple[LiveCli, LiveEnv, Path],
+) -> None:
+    cli, _, _ = world
+    ledger = Ledger(cli, LiveEnv.from_env({ENV_PROJECT: "DEMO", ENV_MAX_TICKETS: "1"}), "ab12cd34")
+    ledger.add("DEMO-1")
+    landed_create = Result(
+        ("create", "--yes"), 0, {"key": "DEMO-2"}, "", "", 0.0, []
+    )  # a create the guard did not see
+    with pytest.raises(TooManyTickets):
+        ledger.observe(landed_create)
+    assert ledger.created == ["DEMO-1", "DEMO-2"] and not ledger.unknown_create
+
+
+def test_the_closer_read_back_is_allowed_after_a_close_overshoots_the_ceiling_by_ten(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "ticketctl" / "log.jsonl"
+    log.parent.mkdir()
+    budget = Budget(tmp_path, limit=100, reserve=20)
+    log.write_text('{"retries": 0}\n' * 130)  # 10 over the cleanup ceiling of 120
+    with pytest.raises(BudgetExceeded):
+        budget.check_after(cleanup=True)
+    budget.check_before(cleanup=True, readback=True)  # the read-only get may still start
+    with pytest.raises(BudgetExceeded):
+        budget.check_before(cleanup=True)

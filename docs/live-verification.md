@@ -8,6 +8,7 @@ Check these once, with your own values (placeholders here):
 
 - A ticketctl configuration naming the site and the account email, in the default place or in the file named by `TICKETCTL_LIVE_CONFIG`.
 - The site token in the environment variable that configuration names, and `TICKETCTL_LIVE_TOKEN_ENV` set to that variable's name (the name, not the value).
+- `TICKETCTL_LIVE_PASS_ENV` is optional: set it to the name of the variable that holds the account email, only when your configuration reads the email from a variable (`email_env`).
 - `TICKETCTL_LIVE_PROJECT` naming a test project (needed by the write suite).
 - `TICKETCTL_LIVE_BOARD` is optional and only for the sprint probes; leave it unset for the minimal pass.
 - `TICKETCTL_LIVE_TICKET` naming a ticket with comments you can read, for the read suite.
@@ -94,7 +95,7 @@ For a first real run, limit the suite to one ticket (two when you also want the 
 
 ```sh
 TICKETCTL_LIVE=1 TICKETCTL_LIVE_WRITE=1 TICKETCTL_LIVE_PROJECT=<test project> \
-  TICKETCTL_LIVE_MAX_TICKETS=1 \
+  TICKETCTL_LIVE_TOKEN_ENV=<name of your token variable> TICKETCTL_LIVE_MAX_TICKETS=1 \
   uv run pytest -m live tests/live/test_live_write.py -v
 ```
 

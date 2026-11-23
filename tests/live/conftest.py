@@ -42,7 +42,7 @@ def write_limit(tickets: int) -> int:
     """The write suite's request cap for a ticket cap of 1 to 3.
 
     The suite reuses one ticket for every probe, so the count hardly depends on the cap (measured
-    against the fake: 106 to 110 requests for 1, 2 and 3 tickets); the cap only lowers the headroom,
+    against the fake: 110 requests for each of 1, 2 and 3 tickets); the cap only lowers the headroom,
     so a runaway run with one ticket stops earlier. WRITE_LIMIT is the value for 3.
     """
     return WRITE_LIMIT - WRITE_LIMIT_STEP * (3 - tickets)

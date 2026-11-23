@@ -429,7 +429,7 @@ class BudgetExceeded(RuntimeError):
 
 
 COMMAND_HEADROOM = 10  # a normal command starts only if it can still end under the limit
-READBACK_EXTRA = 10  # room above limit + reserve for the closer's verifying reads
+READBACK_EXTRA = 15  # room above limit + reserve for the closer's verifying reads
 TIMEOUT_CHARGE = 10  # requests charged for a command that timed out (the call and its retries)
 
 
@@ -810,10 +810,10 @@ class Ledger:
             return
         key = result.doc.get("key") if isinstance(result.doc, dict) else None
         if result.code == 0 and isinstance(key, str) and KEY_RE.fullmatch(key):
-            # record the key before the budget check that follows can raise: the closer closes by key
-            if key not in self.created:
-                self.created.append(key)
+            # record the key before the budget check that follows can raise: the closer closes by
+            # key; add() records it and still refuses a ticket beyond the cap
             self.unknown_create = False
+            self.add(key)
             return
         error = result.error
         if result.code != 0 and error and not error.get("outcome_unknown"):
