@@ -85,6 +85,8 @@ def validate(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     # A configuration with no site validates nothing a command could use: `no_sites`.
     rt.config.require_sites()
     result: dict[str, Any] = {"valid": True, "probe": a.probe, "warnings": list(rt.loaded.warnings)}
+    if rt.config.read_only:
+        result["read_only"] = True
     if a.probe:
         result["sites"] = probe.probe(rt, g.site)
     return result

@@ -9,8 +9,15 @@ import sys
 from typing import Any
 
 from . import createcmd, searchcmd, setspec, updatecmd
-from .commands import REGISTRY, CommandSpec
-from .errors import TicketctlError, clean_message, from_exception, internal_error, usage_error
+from .commands import REGISTRY, WRITE, CommandSpec
+from .errors import (
+    TicketctlError,
+    clean_message,
+    from_exception,
+    internal_error,
+    read_only_error,
+    usage_error,
+)
 from .flags import (
     GLOBAL_HELP,
     PROG,
@@ -158,6 +165,13 @@ def run(argv: list[str]) -> int:
         raise usage_error("invalid_argument", clean_message(str(e))) from None
     spec = REGISTRY[_command_path(ns)]
     check_command(g, spec, ns)
+    if (
+        spec.kind == WRITE
+        and not g.dry_run
+        and load_runtime(g, show_warnings=False).config.read_only
+    ):
+        # Every registered write is refused here, whatever its handler does (read-only mode).
+        raise read_only_error()
     result = spec.handler(g, ns)
     if result is not None:
         if g.json:

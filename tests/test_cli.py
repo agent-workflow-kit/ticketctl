@@ -231,6 +231,7 @@ HANDLER_ROWS = [
     ("sprint_closed", None, 20),
     ("already_exists", None, 20),
     ("declined", None, 20),
+    ("read_only", None, 20),
     ("ambiguous_site", None, 21),
     ("ambiguous_field", None, 21),
     ("ambiguous_transition", None, 21),
