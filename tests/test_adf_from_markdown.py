@@ -598,13 +598,17 @@ def test_hostile_inputs_finish_quickly_and_stay_in_the_allowlist(
     # quadratic scan of any of them would read on the order of 10^8.
     count_delimiter_reads(monkeypatch, 10 * 120_000)
     start = time.monotonic()
+    cpu_start = time.process_time()
     try:
         doc = markdown_to_adf(md, body_chars=32767)
     except sanitize.InputError as exc:
         assert exc.reason in {"body_too_large", "empty_body", "invalid_value"}
     else:
         check(doc)
-    assert time.monotonic() - start < 60  # only a backstop; the bound is the read count
+    # CPU time is not stretched by machine load; a quadratic scan of a 20 000-50 000 character
+    # input costs far more than this on any machine.
+    assert time.process_time() - cpu_start < 15
+    assert time.monotonic() - start < 60  # wall backstop only
 
 
 def test_deep_nesting_does_not_hit_the_recursion_limit() -> None:
