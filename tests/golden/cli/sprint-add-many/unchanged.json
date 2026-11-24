@@ -1,0 +1,39 @@
+{
+  "action": "sprint_add",
+  "attempt_id": null,
+  "changed": false,
+  "complete": true,
+  "count": 1,
+  "counts": {
+    "failed": 0,
+    "not_run": 0,
+    "ok": 0,
+    "outcome_unknown": 0,
+    "unchanged": 1
+  },
+  "plan_sha256": "ef2235bb55fb00e4a461842274921a67d44f10e2068a91ebd4b65ceda065c506",
+  "site": "main",
+  "tickets": [
+    {
+      "error": null,
+      "key": "DEMO-2",
+      "result": {
+        "action": "sprint_add",
+        "already_posted": false,
+        "attempt_id": null,
+        "changed": false,
+        "comment_id": null,
+        "decision_ids": [],
+        "key": "DEMO-2",
+        "result": "unchanged",
+        "reused": false,
+        "site": "main",
+        "steps": [],
+        "url": "https://tracker.example.test/browse/DEMO-2",
+        "warnings": []
+      },
+      "status": "unchanged"
+    }
+  ],
+  "warnings": []
+}

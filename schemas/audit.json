@@ -23,7 +23,7 @@
       "minimum": 1
     },
     "step_kind": {
-      "$ref": "defs.json#/$defs/step_kind"
+      "$ref": "defs.json#/$defs/audit_step_kind"
     },
     "actor": {
       "$ref": "defs.json#/$defs/actor"
@@ -65,7 +65,7 @@
       ]
     },
     "action": {
-      "$ref": "defs.json#/$defs/action"
+      "$ref": "defs.json#/$defs/audit_action"
     },
     "inputs": {
       "type": "object",
@@ -166,6 +166,16 @@
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
           "description": "The variable name, never a value."
+        },
+        "batch_id": {
+          "$ref": "defs.json#/$defs/attempt_id",
+          "description": "On a ticket's records of a batch: the attempt_id of the batch record."
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "On the batch record: the number of tickets."
         }
       },
       "additionalProperties": false,

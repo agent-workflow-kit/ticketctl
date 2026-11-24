@@ -54,7 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from . import fieldload, selection, writeflow
+from . import bulk, fieldload, selection, writeflow
 from .errors import TicketctlError
 from .flags import Globals
 from .gateway import Gateway
@@ -384,3 +384,29 @@ def sprint_add(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
 
 def sprint_remove(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
     return _run(g, a, remove=True)
+
+
+def _run_many(g: Globals, a: argparse.Namespace, *, remove: bool) -> dict[str, Any]:
+    """``sprint add-many`` and ``sprint remove-many``: one ``SprintAction`` per key under the
+    batch driver (``bulk.py``, D-46); each ticket is a complete single run of the same action."""
+    rt: Runtime = load_runtime(g)
+    refs = bulk.collect_refs(rt, a.keys, a.keys_file)
+    cap = bulk.cap_for(rt, a.max_tickets)
+    site, keys = bulk.resolve_keys(rt, refs, cap=cap, site_flag=g.site)
+    sprint = None if remove else a.sprint
+    return bulk.execute_batch(
+        rt,
+        site,
+        lambda key: SprintAction(key, sprint=sprint, board=a.board, remove=remove),
+        keys,
+        action="sprint_remove" if remove else "sprint_add",
+        seams=make_seams(),
+    )
+
+
+def sprint_add_many(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
+    return _run_many(g, a, remove=False)
+
+
+def sprint_remove_many(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
+    return _run_many(g, a, remove=True)

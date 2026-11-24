@@ -39,6 +39,8 @@ STEP_CHARS = 200
 OVERRIDE_LINE = (
     "escalation override is ON: hooks that ask for review will be overridden by this answer"
 )
+BATCH_TICKET_LINES = 12
+BATCH_LINE_CHARS = 200
 PREFIX = "| "
 _MARKER = re.compile(r"<U\+[0-9A-F]{4,6}>|<redacted>")
 
@@ -272,3 +274,70 @@ def _brief_prop(value: Any) -> str:
         except (TypeError, ValueError):
             return "(value)"
     return _single(str(value), BRIEF_CHARS)
+
+
+def _join(value: Any) -> str:
+    """A list of strings as one line (``none`` when empty); anything else as ``_brief`` shows it."""
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return "; ".join(render(v, body=False) for v in value) or "none"
+    return _brief(value)
+
+
+def _ticket_lines(index: int, count: int, ticket: dict[str, Any]) -> list[str]:
+    """One ticket of a batch: its key, its steps, each change as ``current -> new`` and its
+    warnings, every line cut to 200 characters and the whole to 12 lines."""
+    head = f"ticket {index} of {count}: {_single(str(ticket.get('key')), 80)}"
+    steps = ticket.get("steps") or []
+    if not steps:
+        return [head + " (unchanged)"]
+    lines = [head]
+    for step in steps:
+        props = " ".join(
+            f"{_single(k, 40)}={_brief_prop(v)}" for k, v in step.items() if k != "kind"
+        )
+        lines.append(f"  step: {step.get('kind')} {props}".rstrip())
+    for change in ticket.get("changes") or []:
+        old, new = _join(change.get("from")), _join(change.get("to"))
+        lines.append(f"  change {change.get('name')}: {old} -> {new}")
+    lines.extend(f"  warning: {code}" for code in ticket.get("warnings") or [])
+    cut = [_single(line, BATCH_LINE_CHARS) for line in lines]
+    if len(cut) > BATCH_TICKET_LINES:
+        left = len(cut) - (BATCH_TICKET_LINES - 1)
+        cut = [*cut[: BATCH_TICKET_LINES - 1], f"  [... {left} more lines]"]
+    return cut
+
+
+def compose_batch(
+    plan: dict[str, Any],
+    *,
+    override: bool = False,
+    hook_names: Sequence[str] = (),
+    early_hooks: bool = False,
+) -> str:
+    """The dialog text of a batch plan (``bulk.py``): the count, the combined hash and every
+    ticket (none is left out; the batch size is capped by the configuration)."""
+    tickets = [t for t in plan.get("tickets") or [] if isinstance(t, dict)]
+    count, changing = len(tickets), sum(1 for t in tickets if t.get("steps"))
+    action, site = _single(plan.get("action", "?"), 40), _single(plan.get("site", "?"), 80)
+    out = [
+        f"ticketctl: confirm {action} on {count} tickets of {site} "
+        f"({changing} to change, {count - changing} unchanged)",
+        f"actor: {_single(plan.get('actor', '?'), 120)}",
+        f"plan sha256 of the whole batch: {_single(plan.get('plan_sha256', '?'), 64)}",
+        "",
+    ]
+    for i, ticket in enumerate(tickets, 1):
+        out.extend(_ticket_lines(i, count, ticket))
+    out.append("")
+    out.append("one answer covers every ticket above; they are written one at a time, in this")
+    out.append("order, and the run stops at the first ticket that fails")
+    if early_hooks:
+        out.append("hooks placed before this question have run; other pre- hooks run per ticket")
+        out.append("after your answer and can still stop the batch")
+    else:
+        out.append("pre- hooks run per ticket after your answer and can still stop the batch")
+    if override:
+        out.append(OVERRIDE_LINE)
+        names = list(dict.fromkeys(hook_names))
+        out.append("hooks covered: " + (", ".join(_single(n, 80) for n in names) or "none"))
+    return "\n".join(out)

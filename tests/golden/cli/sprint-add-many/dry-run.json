@@ -1,0 +1,72 @@
+{
+  "action": "sprint_add",
+  "actor": "auto:unknown",
+  "changing": 2,
+  "count": 3,
+  "plan_sha256": "689a693a3d5cf92ea634ccfa0262daff1d8c159441415df48b2e951e8cd6d50a",
+  "site": "main",
+  "tickets": [
+    {
+      "action": "sprint_add",
+      "actor": "auto:unknown",
+      "changes": [
+        {
+          "from": [],
+          "name": "sprints",
+          "to": [
+            "2: Sprint two"
+          ]
+        }
+      ],
+      "dedupe_key": null,
+      "dedupe_match": null,
+      "key": "DEMO-1",
+      "plan_sha256": "aa450ce08b05a00469badf7c665773842a58251bbd2f3f96904d21562dd39e39",
+      "site": "main",
+      "steps": [
+        {
+          "kind": "sprint_add",
+          "sprint": "2"
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "action": "sprint_add",
+      "actor": "auto:unknown",
+      "changes": [],
+      "dedupe_key": null,
+      "dedupe_match": null,
+      "key": "DEMO-2",
+      "plan_sha256": "638a4a9c61970c26eb80df3ea267ef501a6ab3e758b144a2abe13683b8ef6561",
+      "site": "main",
+      "steps": [],
+      "warnings": []
+    },
+    {
+      "action": "sprint_add",
+      "actor": "auto:unknown",
+      "changes": [
+        {
+          "from": [],
+          "name": "sprints",
+          "to": [
+            "2: Sprint two"
+          ]
+        }
+      ],
+      "dedupe_key": null,
+      "dedupe_match": null,
+      "key": "DEMO-4",
+      "plan_sha256": "cf7dfa44bb2e96664e10be4bc425bb418b3ecffc9790ab2e902afc19cfdc245a",
+      "site": "main",
+      "steps": [
+        {
+          "kind": "sprint_add",
+          "sprint": "2"
+        }
+      ],
+      "warnings": []
+    }
+  ]
+}

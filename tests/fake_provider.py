@@ -180,7 +180,9 @@ class Fault:
     body: str = "Service Unavailable"
     delay_s: float = 0.0
     retry_after: int | str | None = None
+    skip: int = 0  # let this many matching requests through first (a fault at the Nth call)
     hits: int = 0
+    seen: int = 0
 
     def __post_init__(self) -> None:
         if self.kind not in FAULT_KINDS:
@@ -191,7 +193,12 @@ class Fault:
             return False
         if self.method is not None and self.method != method:
             return False
-        return self.path is None or re.search(self.path, path) is not None
+        if self.path is not None and re.search(self.path, path) is None:
+            return False
+        if self.seen < self.skip:
+            self.seen += 1
+            return False
+        return True
 
 
 @dataclass

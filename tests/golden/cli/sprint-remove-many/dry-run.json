@@ -1,0 +1,46 @@
+{
+  "action": "sprint_remove",
+  "actor": "auto:unknown",
+  "changing": 1,
+  "count": 2,
+  "plan_sha256": "ff47c44ae05bf42e84c9ce015c3afe7cf5d44b97ffa85bc3c10c8920ac79aee4",
+  "site": "main",
+  "tickets": [
+    {
+      "action": "sprint_remove",
+      "actor": "auto:unknown",
+      "changes": [],
+      "dedupe_key": null,
+      "dedupe_match": null,
+      "key": "DEMO-1",
+      "plan_sha256": "62c1d2190139d25d8242149948f1a03131eaa708a3e17ada2edbe0dfb1ee3dae",
+      "site": "main",
+      "steps": [],
+      "warnings": []
+    },
+    {
+      "action": "sprint_remove",
+      "actor": "auto:unknown",
+      "changes": [
+        {
+          "from": [
+            "2: Sprint two"
+          ],
+          "name": "sprints",
+          "to": []
+        }
+      ],
+      "dedupe_key": null,
+      "dedupe_match": null,
+      "key": "DEMO-2",
+      "plan_sha256": "42bea0977084258c3f4e74dd15ace5861d2b16c99aac29641cf3a5b433400159",
+      "site": "main",
+      "steps": [
+        {
+          "kind": "sprint_remove"
+        }
+      ],
+      "warnings": []
+    }
+  ]
+}

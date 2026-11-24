@@ -100,6 +100,8 @@ limits:
   body_chars: 30000
   # Longest Retry-After honored; also bounded by the remaining command time. Default: 60s.
   retry_after_max: 60s
+  # Most tickets one `sprint add-many` or `sprint remove-many` run accepts (1 to 200); `--max-tickets` can only lower it for one run. Default: 50.
+  bulk_max: 50
 
 # Hooks per kind of write: pre-/post- for transition, comment, create, update, sprint and link.
 # Each is an ordered list of {cmd, timeout, async, placement}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only; placement (after_confirm by default, or before_confirm) is for pre- hooks only and runs the hook before the confirmation dialog instead of after the answer.

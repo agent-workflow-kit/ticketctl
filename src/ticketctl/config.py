@@ -433,6 +433,7 @@ def _no_control_ascii(value: str) -> str:
 class Limits(_Model):
     body_chars: Annotated[int, Field(ge=1, le=32767)] = 30000
     retry_after_max: CacheDuration = timedelta(seconds=60)
+    bulk_max: Annotated[int, Field(ge=1, le=200)] = 50
 
 
 class Hook(_Model):

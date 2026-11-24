@@ -17,6 +17,7 @@ from typing import Any
 from . import (
     attachmentcmd,
     browsecmd,
+    bulk,
     changelogcmd,
     commentcmd,
     commentedit,
@@ -281,6 +282,28 @@ def _sprint_remove(p: argparse.ArgumentParser) -> None:
     _add(p, "--board")
 
 
+def _many(p: argparse.ArgumentParser) -> None:
+    """The key list and the cap of a batch (`sprint add-many|remove-many`)."""
+    p.description = (
+        "Apply the single-ticket command to several tickets of one site under one plan and one "
+        "confirmation (at most limits.bulk_max keys, default 50); tickets run one at a time and "
+        "the run stops at the first failure."
+    )
+    _add(p, "keys", metavar="KEY", nargs="*", help="ticket keys or browse URLs (or --keys-file)")
+    _add(p, "--keys-file", metavar="PATH", help="one key per line; - reads stdin")
+    _add(p, "--max-tickets", type=count_arg, metavar="N", help="lower the cap for this run")
+    _add(p, "--board")
+
+
+def _sprint_add_many(p: argparse.ArgumentParser) -> None:
+    _many(p)
+    _add(p, "--sprint", type=sprint_selector_arg, metavar="open|next|ID")
+
+
+def _sprint_remove_many(p: argparse.ArgumentParser) -> None:
+    _many(p)
+
+
 def _link(p: argparse.ArgumentParser) -> None:
     _key(p)
     _add(p, "--type", required=True, type=transitioncmd.name_arg, help="the link type's name")
@@ -490,6 +513,22 @@ def _specs() -> list[CommandSpec]:
             sprintcmd.sprint_remove,
             _sprint_remove,
             writeflow.human,
+        ),
+        CommandSpec(
+            ("sprint", "add-many"),
+            w,
+            "add several tickets to a sprint",
+            sprintcmd.sprint_add_many,
+            _sprint_add_many,
+            bulk.human,
+        ),
+        CommandSpec(
+            ("sprint", "remove-many"),
+            w,
+            "move several tickets to the backlog",
+            sprintcmd.sprint_remove_many,
+            _sprint_remove_many,
+            bulk.human,
         ),
         CommandSpec(
             ("link", "add"), w, "link two tickets", linkcmd.link_add, _link, writeflow.human
