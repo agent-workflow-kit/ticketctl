@@ -37,6 +37,8 @@ EXAMPLE_FILE = "config.example.yaml"
 NO_DEFAULT = object()
 # Schemas that belong to no single command: shared output shapes.
 SHARED_CLI = {"plan", "result", "error"}
+# Commands that print nothing (a full-screen view): no `--json` shape, so no schema and no golden.
+INTERACTIVE = {"browse"}
 
 
 @dataclass(frozen=True)
@@ -352,7 +354,7 @@ def check_commands(r: Repo) -> None:
     doc_tops = {title.split()[0] for title in dp.subheadings(r.interface, "Commands", 3)}
     registry_tops = {path[0] for path in REGISTRY}
     dp.assert_same("interface command headings", doc_tops, "the command registry", registry_tops)
-    stems = {"-".join(path) for path in REGISTRY}
+    stems = {"-".join(path) for path in REGISTRY} - INTERACTIVE
     dp.assert_same(
         "schemas/cli (commands)", r.cli_stems() - SHARED_CLI, "the command registry", stems
     )

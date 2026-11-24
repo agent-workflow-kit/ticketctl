@@ -519,6 +519,33 @@ Takes exactly one key; callers loop. One plan, one result, one audit pair and on
 
 Prints audit records as JSON lines on stdout: `--since <ts>` (bare dates are UTC) and `--after-seq <n>` (ANDed), `--to <path>`. With `--to` the file is created per [Input files](#input-files) and an existing file exits 20 `already_exists`; without it nothing is created. `--json` has no extra effect. A line that is not a JSON object with `v == 1` is skipped with one warning; other lines are not validated against the schema, so records written by a later minor version pass. Each record carries `seq`: a `v == 1` line whose `seq` is not an integer from 1 to 2**53 is skipped too. Also skipped and counted in the same warning: a line that is not valid UTF-8 or not JSON (a raw NUL byte included, and `NaN` or an infinity anywhere), a record nested deeper than 12 levels or with more than 100000 nodes, and, with `--since`, a record whose `ts` is missing or is not a timestamp (a record excluded by `--after-seq` is not counted). With `--since`, a `ts` is compared by instant, so a fraction of a second or an offset form is read as the time it names. With `--to` the records go to the file and stdout stays empty. The file is read without the flock up to the size seen when it was opened, so records appended meanwhile wait for the next run (`--after-seq`); a last line with no newline (a torn tail or a write in flight), of any length, is neither printed nor warned about, and a terminated line over 64 KiB is skipped. Every string is sanitized and scrubbed again on output (a number that equals a token value is written as the string `<redacted>`), stdout and `--to` receive the same bytes, and a configuration that does not load never stops an export. If stdout cannot be written the export stops: a closed pipe exits 141 with nothing printed, any other write error exits 1 `internal`. Schema `schemas/cli/export.json` (each line is one audit record).
 
+### `browse`
+
+An interactive, read-only, full-screen view of a search, for a person at a terminal. The query form and the filters are those of [`search`](#search) (`--query`, `--jql-file`, `--jql`, the structured flags, `--text`, `--text-file`, `--order-by` and the same offline rules, so a run with no query and no filter is exit 2 `missing_option`); `--limit` is the size of one page (default 50, at most 500). `--fields`, `--count` and `--cursor` do not exist on `browse` (a flag of `search` only is exit 2 `invalid_argument`, as for any unknown flag). `--json` is exit 2 `invalid_argument` ("browse prints no JSON"), because there is no result to print: use `search --json`. `--verbose` is exit 2 `invalid_argument` too, because stderr is the screen; the write-only global flags are refused as on every read command.
+
+`browse` is a thin layer over the read commands and never makes a request of its own. The list is `search` (the first page is read before the screen starts, so a bad query, configuration or credential is the usual error envelope and exit code on stderr, and no screen is drawn); a ticket opens in three panes, each the plain-text output of an existing command for that key: `get KEY` (the ticket), `comments KEY` and `changelog KEY` (the newest 20 entries of each, newest first). All of them run through the same configuration, site selection, gateway, credentials, caps, sanitizer and request log as the command line, and a pane is read with the ticket's own `site`. Warnings that those commands would print on stderr are not shown (the screen owns the terminal). A read that fails after the screen has started (a later page, a pane) is one line in the status bar (`error: <code>: <message>`, sanitized and cut to 300 characters) and the view stays as it was; pressing the pane's number tries again.
+
+It performs no write of any kind: it imports no write command, no key reaches one, and nothing is sent that `search`, `get`, `comments` and `changelog` would not send (the only POST requests are the three documented read POSTs of `search`). It therefore works with [read-only mode](#read-only-mode) on, writes no audit record, takes no lock, and runs no hook. The request log and the caches are written as for any read.
+
+| Keys | Action |
+|---|---|
+| `j`, `k`, Down, Up | move the selection, or scroll a pane by one line |
+| PgDn, PgUp | move or scroll by a page |
+| `g`, `G`, Home, End | first and last (`G` in the list reads every remaining page, up to the cap) |
+| Enter, `l`, Right | open the selected ticket |
+| `1`, `2`, `3` | the ticket, comments or history pane |
+| `q`, `h`, Left | back to the list; from the list, quit |
+| `r` | run the search again |
+| `?` | help |
+
+Moving down past the last ticket reads the next page with the search's own cursor. The list holds at most 2000 tickets (a status line says so and no further page is read), a pane at most 5000 lines, one line at most 2000 characters before it is wrapped to the screen, and a row 500 characters.
+
+Every text drawn is untrusted provider text. Besides the sanitizer that the commands apply, the viewer runs each text through the output sanitizer again (control, invisible and escape characters become `<U+XXXX>` markers, and the output scrub applies), turns tabs into spaces, measures the width in terminal cells (wide characters count two, combining marks none) and cuts every line to the screen, so no byte of a ticket reaches the terminal as a control sequence. A terminal too small to draw shows only `terminal too small`.
+
+`browse` needs a terminal. If stdin or stdout is not a terminal, `TERM` is unset, empty or `dumb`, the Python `curses` module is missing or it cannot read the terminal's description, the command exits 2 `invalid_argument` with a one-line message ("browse needs a terminal: ...") and no traceback, before any request. There is no fallback output: use `search` or `get`. SIGINT (Ctrl-C) restores the terminal and ends the process with exit 130 and the line `ticketctl: interrupted`; a closed terminal ends the loop. Exit 0 is a normal quit and prints nothing on stdout. There is no schema (nothing is printed).
+
+Not in this version (deferred): searching or filtering inside the view, editing the query, sprint and board views, an attachment pane, mouse input and any write.
+
 ## Global flags
 
 `--json`, `--config <path>`, `--site <name>`, `--verbose`, `--quiet`, `--timeout <duration>` (the duration grammar, 1 s to 24 h), `--dry-run` (writes), `--yes` (writes; always needs `--expect-plan`), `--expect-plan <sha256>`, `--actor <string>`, `--decision-id <id>` (repeatable), `--override-escalation[=<scope>]` (human-only, see [Human actions](#human-actions); the scope is `ticketctl`), `--hook <name>=<command>` (repeatable, in addition to configured hooks), `--version`. `--quiet` suppresses non-error stderr (not the confirmation dialog); `--verbose` prints extra diagnostics (rate limits, retries) on stderr and never headers; both together exit 2 `invalid_combination`. A value that can carry untrusted text is accepted as a file or stdin, never only as argv (design guide §4.1): bodies, titles, JQL, text filters and `--set` rich-text values. At most one `-` source per command (exit 2 `stdin_conflict`). `--config <file>` loads only that file (no drop-ins). A time setting takes the duration grammar under [Config](#config).
@@ -623,7 +650,7 @@ None: ticketctl creates no long-lived objects and stores none. (The `tc-` label 
 
 ## TUI
 
-None in 0.x.
+None in 0.x. From 1.x the one terminal view is [`browse`](#browse): read-only, built on the standard library's `curses`, and a layer over the read commands. ticketctl has no other interactive screen (the confirmation dialog of a write is a prompt, not a TUI).
 
 ## Files
 
