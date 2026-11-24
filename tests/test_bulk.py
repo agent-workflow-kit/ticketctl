@@ -225,10 +225,10 @@ def test_keys_of_two_sites_are_refused(cli: Cli) -> None:
         f"    token_env: {SITE_ENV_VAR}\n    allow_http: true\n"
     )
     cli.config.write_text(
-        f"sites:\n  main:\n{site}    projects: [DEMO]\n  other:\n{site}    projects: [OTHR]\n"
+        f"sites:\n  main:\n{site}    projects: [DEMO]\n  other:\n{site}    projects: [AB]\n"
     )
     cli.config.chmod(0o600)
-    code, env = cli.doc("--dry-run", *ADD, "DEMO-1", "OTHR-1", "--sprint", "2")
+    code, env = cli.doc("--dry-run", *ADD, "DEMO-1", "AB-1", "--sprint", "2")
     assert code == 22 and env["error"]["reason"] == "mixed_sites"
 
 

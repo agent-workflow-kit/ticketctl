@@ -616,8 +616,13 @@ def test_audit_enums_match_the_schema() -> None:
     defs = schema("defs.json")["$defs"]
     assert list(audit.RESULTS) == s["properties"]["result"]["enum"]
     assert list(audit.ACTOR_SOURCES) == s["properties"]["actor_source"]["enum"]
-    assert list(audit.STEP_KINDS) == defs["step_kind"]["enum"]
-    assert list(audit.ACTIONS) == defs["action"]["enum"]
+    # the batch record adds `bulk` to the plan's step kinds and actions (defs audit_*)
+    assert list(audit.STEP_KINDS) == [*defs["step_kind"]["enum"], "bulk"]
+    assert list(audit.ACTIONS) == [*defs["action"]["enum"], "bulk"]
+    assert defs["audit_step_kind"]["oneOf"] == [{"$ref": "#/$defs/step_kind"}, {"const": "bulk"}]
+    assert defs["audit_action"]["oneOf"] == [{"$ref": "#/$defs/action"}, {"const": "bulk"}]
+    assert s["properties"]["step_kind"] == {"$ref": "defs.json#/$defs/audit_step_kind"}
+    assert s["properties"]["action"] == {"$ref": "defs.json#/$defs/audit_action"}
     assert list(audit.HOOK_NAMES) == defs["hook_name"]["enum"]
     assert list(audit.ERROR_CODES) == defs["error_code"]["enum"]
     assert audit.TS.pattern == defs["ts"]["pattern"]

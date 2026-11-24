@@ -179,7 +179,13 @@ def check_plan_enums(r: Repo) -> None:
     kinds = dp.capture(body, r"\{kind: ([a-z_|]+)", "the step kinds").split("|")
     dp.assert_same("interface step kinds", kinds, "defs.json step_kind", r.enum("step_kind"))
     dp.assert_same("interface step kinds", kinds, "plan.STEP_KINDS", plan.STEP_KINDS)
-    dp.assert_same("interface step kinds", kinds, "audit.STEP_KINDS", audit.STEP_KINDS)
+    # audit adds `bulk`, the batch record's step kind, to the plan's
+    dp.assert_same(
+        "interface step kinds",
+        kinds,
+        "audit.STEP_KINDS",
+        [k for k in audit.STEP_KINDS if k != "bulk"],
+    )
     sentence = dp.capture(
         body,
         r"(?i)(?:the |these )?action names are (.*?) \((?:the )?hooks use",
@@ -1227,7 +1233,7 @@ README_MUTATIONS = [
         "TICKETCTL_LIVE",
     ),
     ("readme_flags", "transition KEY --to STATUS", "transition KEY --too STATUS", "--too"),
-    ("readme_flags", "--sprint open|next|ID", "--sprint open|next|latest|ID", "--sprint"),
+    ("readme_flags", "KEY --sprint open|next|ID", "KEY --sprint open|next|x|ID", "--sprint"),
     ("readme_flags", "--query my_open --json", "--query my_open --jsonx", "--jsonx"),
     ("readme_flags", "`--dry-run`", "`--dry-runx`", "--dry-runx"),
     ("readme_flags", "Stateless: a small", "Stateless (default timeout 300s): a small", "timeout"),

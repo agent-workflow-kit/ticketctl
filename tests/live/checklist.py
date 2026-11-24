@@ -519,6 +519,24 @@ ITEMS: tuple[Item, ...] = (
         "unchanged), then attachment-download of the printed id and compares the bytes, and "
         "tries a file just over the site's limit if it is below 10 MiB",
     ),
+    Item(
+        "W25",
+        "#44",
+        "sprint add-many and sprint remove-many: a batch of several tickets run one at a time "
+        "through the single-ticket calls (POST agile/1.0/sprint/{id}/issue or backlog/issue, "
+        "one ticket per call) lands each ticket exactly as a single run does; a run of up to "
+        "50 sequential calls is not throttled to the point of a 429 the gateway will not wait "
+        "for (the exit is then 12 `rate_limited` or `partial`, never a resend); a ticket that "
+        "the provider refuses (a sub-task, a ticket outside the board) stops the batch with the "
+        "earlier tickets kept and the later ones not run; a re-run after a stop is unchanged "
+        "for the tickets that landed",
+        HUMAN,
+        why="the write suite uses one or two tickets and a batch needs several: a human makes "
+        "three or four test tickets, runs sprint add-many --dry-run, then with --yes "
+        "--expect-plan, then again (every ticket unchanged), then sprint remove-many; to see a "
+        "stop, include a ticket the board refuses (a sub-task) as the second key and reads the "
+        "result's tickets and the audit records joined on inputs.batch_id",
+    ),
 )
 
 
