@@ -124,28 +124,42 @@ def read_upload(path: str) -> tuple[str, bytes]:
 # --- the ticket's attachments ------------------------------------------------------------------
 
 
-def parse_attachments(fields: dict[str, Any]) -> list[dict[str, Any]]:
-    """The readable entries of ``fields.attachment``: ``{id, filename, size, mime}`` (raw text).
+class Listing:
+    """What was read of ``fields.attachment``.
+
+    ``items`` are the readable entries of the first ``MAX_ATTACHMENTS``; ``truncated`` is true when
+    the list was longer (the rest was not looked at); ``unreadable`` holds the names of entries with
+    a valid id and a text name but no usable size.
+    """
+
+    def __init__(self) -> None:
+        self.items: list[dict[str, Any]] = []
+        self.truncated = False
+        self.unreadable: set[str] = set()
+
+
+def scan_attachments(fields: dict[str, Any]) -> Listing:
+    """Read ``fields.attachment`` into a :class:`Listing` (a non-list is ``provider_changed``).
 
     An entry that is not an object with a valid id, a text name and a non-negative integer size is
-    dropped (it cannot be the file asked for). A field that is not a list is exit 12
-    ``provider_changed``.
+    not an item (it cannot be the file asked for); one with a valid id and a text name only lacks a
+    size, and its name goes to ``unreadable``.
     """
     raw = fields.get("attachment")
     if not isinstance(raw, list):
         raise TicketctlError("provider_changed", "the provider answered no attachment list")
-    out: list[dict[str, Any]] = []
+    listing = Listing()
+    listing.truncated = len(raw) > MAX_ATTACHMENTS
+    out = listing.items
     for item in raw[:MAX_ATTACHMENTS]:
         if not isinstance(item, dict):
             continue
         aid, name, size, mime = (item.get(k) for k in ("id", "filename", "size", "mimeType"))
-        if (
-            GRAMMARS["numeric_id"].matches(aid)
-            and isinstance(name, str)
-            and isinstance(size, int)
-            and not isinstance(size, bool)
-            and size >= 0
-        ):
+        sized = isinstance(size, int) and not isinstance(size, bool) and size >= 0
+        if GRAMMARS["numeric_id"].matches(aid) and isinstance(name, str) and not sized:
+            listing.unreadable.add(name)
+            continue
+        if GRAMMARS["numeric_id"].matches(aid) and isinstance(name, str) and sized:
             out.append(
                 {
                     "id": aid,
@@ -154,7 +168,12 @@ def parse_attachments(fields: dict[str, Any]) -> list[dict[str, Any]]:
                     "mime": mime if isinstance(mime, str) else "",
                 }
             )
-    return out
+    return listing
+
+
+def parse_attachments(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """The readable entries of ``fields.attachment``: ``{id, filename, size, mime}`` (raw text)."""
+    return scan_attachments(fields).items
 
 
 def fetch_content(gw: Any, attachment_id: str) -> bytes:
@@ -193,6 +212,8 @@ class AttachmentAddAction:
         self.digest = ""
 
     def prepare(self, pc: PrepareContext) -> None:
+        # the file name goes out as the multipart file name, which the body check does not see
+        pc.check_secrets(os.path.basename(self.path))
         self.file_name, self.data = read_upload(self.path)
         # a secret is judged on the bytes read as Latin-1 (every byte is one character)
         pc.check_secrets(self.data.decode("latin-1"))
@@ -203,7 +224,20 @@ class AttachmentAddAction:
 
     def reduce(self, ctx: Context, *, fresh: bool) -> Planned:
         fields = commentcmd.read_ticket(ctx, self.key, extra_fields="attachment")
-        existing = self._identical(ctx, parse_attachments(fields))
+        listing = scan_attachments(fields)
+        if listing.truncated:
+            raise TicketctlError(
+                "lookup_incomplete",
+                f"the ticket has more than {MAX_ATTACHMENTS} attachments, "
+                "so it cannot be proven that none is this file",
+            )
+        if self.file_name in listing.unreadable:
+            raise TicketctlError(
+                "lookup_incomplete",
+                "an attachment with this name has no readable size, "
+                "so it cannot be proven that none is this file",
+            )
+        existing = self._identical(ctx, listing.items)
         size = len(self.data)
         shown = f"{self.file_name} ({size} bytes, sha256 {self.digest})"
         raw_status = fields.get("status")
@@ -288,7 +322,14 @@ def attachment_download(g: Globals, a: argparse.Namespace) -> dict[str, Any]:
         fields = res.data.get("fields") if isinstance(res.data, dict) else None
         if not isinstance(fields, dict):
             raise TicketctlError("provider_changed", "the provider answered no ticket fields")
-        item = next((x for x in parse_attachments(fields) if x["id"] == wanted), None)
+        listing = scan_attachments(fields)
+        item = next((x for x in listing.items if x["id"] == wanted), None)
+        if item is None and listing.truncated:
+            raise TicketctlError(
+                "lookup_incomplete",
+                f"the ticket has more than {MAX_ATTACHMENTS} attachments and the id is not among "
+                "the first ones, so it cannot be told whether it is on the ticket",
+            )
         if item is None:
             raise TicketctlError(
                 "not_found", "the attachment is not on that ticket, or you have no permission"

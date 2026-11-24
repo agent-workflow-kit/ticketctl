@@ -14,7 +14,7 @@ import pytest
 from tests.fake_provider import ATTACHMENT_LIMIT, SITE_TOKEN, FakeProvider, Fault
 from tests.golden import assert_golden, validator
 from tests.test_comment import ATTEMPT, SITE_ENV_VAR, Cli
-from ticketctl import attachmentcmd, hooks
+from ticketctl import attachmentcmd, exportcmd, hooks
 from ticketctl.errors import TicketctlError
 from ticketctl.gateway import HookRun
 from ticketctl.writeflow import Seams
@@ -671,3 +671,106 @@ def test_parse_attachments_drops_what_it_cannot_trust() -> None:
     with pytest.raises(TicketctlError) as exc:
         attachmentcmd.parse_attachments({"attachment": None})
     assert exc.value.code == "provider_changed"
+
+
+# --- review round 1 ----------------------------------------------------------------------------
+
+
+def fill_attachments(cli: Cli, count: int, key: str = KEY) -> list[str]:
+    return [cli.fake.attach(key, f"f{i}.bin", b"x") for i in range(count)]
+
+
+def test_add_with_a_list_past_the_cap_cannot_prove_absence(cli: Cli) -> None:
+    fill_attachments(cli, attachmentcmd.MAX_ATTACHMENTS + 1)
+    code, env = add(cli, make_file(cli, "late.bin", b"x"))
+    assert (code, env["error"]["code"]) == (12, "lookup_incomplete")
+    assert posts(cli) == []
+
+
+def test_add_with_exactly_the_cap_of_attachments_still_works(cli: Cli) -> None:
+    fill_attachments(cli, attachmentcmd.MAX_ATTACHMENTS)
+    code, result = add(cli, make_file(cli, "late.bin", b"x"))
+    assert code == 0 and result["result"] == "ok"
+
+
+def test_download_of_an_id_past_the_cap_is_lookup_incomplete_never_not_found(cli: Cli) -> None:
+    ids = fill_attachments(cli, attachmentcmd.MAX_ATTACHMENTS + 1)
+    dest = cli.root / "out" / "late.bin"
+    code, env = download(cli, ids[-1], dest)
+    assert (code, env["error"]["code"]) == (12, "lookup_incomplete")
+    code, env = download(cli, "99999", dest)
+    assert (code, env["error"]["code"]) == (12, "lookup_incomplete")
+    assert not dest.exists() and content_gets(cli) == []
+    code, result = download(cli, ids[0], dest)  # an id inside the window still downloads
+    assert code == 0 and dest.read_bytes() == b"x"
+
+
+def test_a_same_named_entry_with_an_unreadable_size_cannot_prove_absence(cli: Cli) -> None:
+    cli.fake.attach(KEY, "report.bin", BINARY)
+    attachments(cli)[0]["size"] = "unknown"
+    code, env = add(cli, make_file(cli))
+    assert (code, env["error"]["code"]) == (12, "lookup_incomplete")
+    assert posts(cli) == []
+
+
+def test_an_unreadable_size_under_another_name_does_not_block(cli: Cli) -> None:
+    cli.fake.attach(KEY, "other.bin", BINARY)
+    attachments(cli)[0]["size"] = None
+    code, result = add(cli, make_file(cli))
+    assert code == 0 and result["result"] == "ok"
+
+
+def test_download_picks_the_second_of_several_attachments(cli: Cli) -> None:
+    first = cli.fake.attach(KEY, "one.bin", b"first-bytes")
+    second = cli.fake.attach(KEY, "two.bin", b"second-bytes")
+    dest = cli.root / "out" / "two.bin"
+    code, result = download(cli, second, dest)
+    assert code == 0, result
+    assert dest.read_bytes() == b"second-bytes" and result["id"] == second
+    assert result["name"] == "two.bin" and first != second
+    code, env = download(cli, "99999", cli.root / "out" / "none.bin")
+    assert (code, env["error"]["code"]) == (10, "not_found")
+    assert [c.path.rsplit("/", 1)[-1] for c in content_gets(cli)] == [second]
+
+
+def test_a_fifo_and_a_directory_are_refused_as_not_regular_files(cli: Cli) -> None:
+    fifo = cli.root / "files" / "pipe.bin"
+    os.mkfifo(fifo)
+    for path in (fifo, cli.root / "files"):
+        env = refused(cli, path)
+        assert "not a regular file" in env["error"]["message"]
+
+
+def test_the_parent_directory_of_the_target_must_be_owned_by_the_caller(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aid = cli.fake.attach(KEY, "a.bin", b"x")
+    monkeypatch.setattr(exportcmd, "_euid", lambda: os.geteuid() + 1)
+    dest = cli.root / "out" / "a.bin"
+    code, env = download(cli, aid, dest)
+    assert (code, env["error"]["reason"]) == (22, "invalid_file")
+    assert not dest.exists()
+
+
+def test_a_path_that_appears_before_the_open_is_refused_and_kept(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aid = cli.fake.attach(KEY, "a.bin", b"new-bytes")
+    dest = cli.root / "out" / "race.bin"
+    real = attachmentcmd.fetch_content
+
+    def racing(gw: Any, attachment_id: str) -> bytes:
+        dest.write_bytes(b"first writer")  # after the early check, before the O_EXCL open
+        return real(gw, attachment_id)
+
+    monkeypatch.setattr(attachmentcmd, "fetch_content", racing)
+    code, env = download(cli, aid, dest)
+    assert (code, env["error"]["code"]) == (20, "already_exists")
+    assert dest.read_bytes() == b"first writer"
+
+
+def test_a_file_name_that_holds_the_token_is_refused(cli: Cli) -> None:
+    path = make_file(cli, f"{SITE_TOKEN}.txt", b"harmless")
+    code, env = cli.doc("--dry-run", "attachment-add", KEY, "--file", str(path))
+    assert (code, env["error"]["reason"]) == (22, "secret_in_body")
+    assert SITE_TOKEN not in json.dumps(env) and posts(cli) == []
