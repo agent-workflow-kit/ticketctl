@@ -17,6 +17,7 @@
   "cli/link-add.json": "5816e149c389ffddda4450f5266ec7dc2e9cd210098edb8af659eb1684fe0987",
   "cli/link-remove.json": "c7388b7828e2bf8a55d9953d7ab47899cd3048a1987114b486dcb2f24c7a9a30",
   "cli/plan.json": "a4242b4cb686a675c42facf334bff9f80f403d8ee2787accaf81ed32a0ee118f",
+  "cli/resolution-backfill.json": "86ac22b74a6397c499529ed8115219ff0beddd57535ce499741ff988a06a9e79",
   "cli/result.json": "72f328ac44478601eb9f8e7f01541ae6bbcb7049796a6c2c46cbf02a4da9db7e",
   "cli/search.json": "67621ad9ae3f614be959bab73c1920aa1f320d215b37108e08c58f6a28b30591",
   "cli/sites-resolve.json": "9036f33f373fc0301a95071ecef39947306f3dbbff62697e0cce5e5cd689c4b0",
@@ -37,6 +38,7 @@
   "hooks/post-comment.json": "7bf5e55ccad2e1edfefa09948f578deba2a10656e7238b96df5302980432ffb2",
   "hooks/post-create.json": "cf37cb9dca3f2ba18bc6e017906228774578b1dec3330548a95fca833e09bcae",
   "hooks/post-link.json": "44b5ef42b4a5b33e763ff02442f770fb591256775ba8e624b982add8fbeed15f",
+  "hooks/post-resolution-backfill.json": "636fa3d89580ebb4980a823f87b4f066624e7bd23b9737c4d34a4a98052b06b2",
   "hooks/post-sprint.json": "90697077f8884a664720e452a310d36fa3760a2ad9937539cdffdb5dc0076919",
   "hooks/post-transition.json": "cefdbf3e6f14c87d84aecafa9e600f39fc494818818ed4d54496c07001302dce",
   "hooks/post-update.json": "7d77266a1e9c5bb2d04fe8a8fce5d936ab7007694e5d334fb97df94cc12be361",
@@ -46,6 +48,7 @@
   "hooks/pre-comment.json": "141495f99256955810ac836f09ac23596383ceab607002252f67c361318e49ed",
   "hooks/pre-create.json": "2e8ff9b5fbfefab1aff56a3c89d3b5bdf8378945adf56bfa0ec954916677a4ac",
   "hooks/pre-link.json": "ad2f5b431155274749af933310f93de9834ae4f30a72af1b4850a64d3aef5b1d",
+  "hooks/pre-resolution-backfill.json": "e7ced6d8aecb2207ce54228f8b1c577c1e6c2c46edb06f553414b1b3af2c4ebb",
   "hooks/pre-sprint.json": "8baa141616c934f3e431bc6db0d848831cc3c9702b364573e41182ec6021386d",
   "hooks/pre-transition.json": "c52d96a9de4862d6d604702459ce83550df92fd3aedcaed0cbc81c2fe242c6d3",
   "hooks/pre-update.json": "b61b4ea3ee978f3073de6e7634e66b7840f7b80e217582160d36af38e875b3df"

@@ -1,0 +1,32 @@
+{
+  "tool": "ticketctl",
+  "hook": "pre-resolution-backfill",
+  "object_type": "ticket",
+  "object_id": "DEMO-7",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "auto:unknown",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "resolution_backfill",
+    "steps": [
+      "set_resolution"
+    ],
+    "plan_sha256": "83b5717ee92f0e19a334b1bebdcd1260e37a1f4bdf2672c55ea4c0b547b69184",
+    "current_status": {
+      "name": "Done",
+      "category": "done"
+    },
+    "resolution": "Won't Do"
+  },
+  "body": [],
+  "ticket": {
+    "type": "Task",
+    "subtask": false,
+    "status": "Done",
+    "priority": "Medium",
+    "assignee_account_id": null,
+    "assignee_is_me": false
+  }
+}

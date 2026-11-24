@@ -117,6 +117,7 @@ SURFACE = [
     ["comment-delete", "AB-1", "7"],
     ["attachment-add", "AB-1", "--file", "f.bin"],
     ["attachment-download", "AB-1", "7", "--to", "out.bin"],
+    ["resolution-backfill", "AB-1", "--resolution", "Done"],
     ["create", "--project", "AB", "--type", "Task", "--title", "t"],
     ["update", "AB-1", "--title", "t"],
     ["sprint", "add", "AB-1", "--sprint", "open"],
