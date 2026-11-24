@@ -114,6 +114,8 @@
         "update",
         "sprint_add",
         "sprint_remove",
+        "link_add",
+        "link_remove",
         "comment_edit",
         "comment_delete",
         "attachment_add"
@@ -128,6 +130,8 @@
         "create",
         "sprint_add",
         "sprint_remove",
+        "add_link",
+        "remove_link",
         "edit_comment",
         "delete_comment",
         "add_attachment"
@@ -145,6 +149,8 @@
         "post-update",
         "pre-sprint",
         "post-sprint",
+        "pre-link",
+        "post-link",
         "pre-comment-edit",
         "post-comment-edit",
         "pre-comment-delete",
@@ -627,6 +633,26 @@
         "type": {
           "type": "string",
           "maxLength": 256
+        },
+        "link_type": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "add_link and remove_link: the link type's name."
+        },
+        "direction": {
+          "enum": [
+            "inward",
+            "outward"
+          ],
+          "description": "add_link and remove_link: relative to the ticket, as in the ticket object's links."
+        },
+        "other": {
+          "$ref": "#/$defs/key",
+          "description": "add_link and remove_link: the ticket at the other end."
+        },
+        "link_id": {
+          "$ref": "#/$defs/provider_id",
+          "description": "remove_link: the provider's id of the link."
         },
         "comment_id": {
           "$ref": "#/$defs/provider_id"

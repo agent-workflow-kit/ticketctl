@@ -25,6 +25,7 @@ from . import (
     fieldscmd,
     getcmd,
     handlers,
+    linkcmd,
     searchcmd,
     sprintcmd,
     sprintscmd,
@@ -266,6 +267,21 @@ def _sprint_remove(p: argparse.ArgumentParser) -> None:
     _add(p, "--board")
 
 
+def _link(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "--type", required=True, type=transitioncmd.name_arg, help="the link type's name")
+    _add(
+        p,
+        "--direction",
+        required=True,
+        type=linkcmd.direction_arg,
+        metavar="inward|outward",
+        help="relative to KEY, as in the ticket object's links: outward means KEY is the source "
+        "(KEY blocks OTHER), inward that KEY is the target (KEY is blocked by OTHER)",
+    )
+    _add(p, "--other", required=True, metavar="KEY", help="the ticket at the other end")
+
+
 def _specs() -> list[CommandSpec]:
     r, w = READ, WRITE
     return [
@@ -452,6 +468,17 @@ def _specs() -> list[CommandSpec]:
             "move a ticket to the backlog",
             sprintcmd.sprint_remove,
             _sprint_remove,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("link", "add"), w, "link two tickets", linkcmd.link_add, _link, writeflow.human
+        ),
+        CommandSpec(
+            ("link", "remove"),
+            w,
+            "remove a link between two tickets",
+            linkcmd.link_remove,
+            _link,
             writeflow.human,
         ),
     ]

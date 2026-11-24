@@ -715,6 +715,7 @@ class FakeProvider:
         self._next_id = 10000
         self._next_comment = 20000
         self._next_attachment = 30000
+        self._next_link = 30000
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._served = 0
@@ -1119,6 +1120,9 @@ class FakeProvider:
         r("POST", api + f"/issue/{key}/transitions", self._transition)
         r("GET", api + f"/issue/{key}/comment", self._comments)
         r("POST", api + f"/issue/{key}/comment", self._add_comment)
+        r("GET", api + "/issueLinkType", self._link_types)
+        r("POST", api + "/issueLink", self._add_link)
+        r("DELETE", api + r"/issueLink/([^/]+)", self._delete_link)
         r("GET", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
         r("PUT", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
         r("DELETE", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
@@ -2208,6 +2212,65 @@ class FakeProvider:
         if call.one("redirect") != "false":  # the real endpoint answers 303 to a media host
             return Out(303, None, {"Location": "https://media.example.test/blob/" + aid})
         return Out(200, a["_content"])
+
+    LINK_TYPES = (
+        {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+        {"id": "10001", "name": "Relates", "inward": "relates to", "outward": "relates to"},
+    )
+
+    def _link_types(self, call: Call) -> Out:
+        return Out(200, {"issueLinkTypes": [dict(t) for t in self.LINK_TYPES]})
+
+    def _link_side(self, t: Ticket) -> dict[str, Any]:
+        return {
+            "key": t.key,
+            "id": str(t.id),
+            "fields": {"summary": t.summary, "status": self._status_obj(t.status)},
+        }
+
+    def _add_link(self, call: Call) -> Out:
+        """``POST issueLink``: 201 with an empty body; both tickets gain the link, one id."""
+        body = self._need_body(call)
+        kind = body.get("type")
+        known = next(
+            (
+                x
+                for x in self.LINK_TYPES
+                if isinstance(kind, dict) and x["name"] == kind.get("name")
+            ),
+            None,
+        )
+        sides = {}
+        for name in ("inwardIssue", "outwardIssue"):
+            side = body.get(name)
+            if not isinstance(side, dict) or not isinstance(side.get("key"), str):
+                raise ProviderError(400, ["The issue link request is invalid."])
+            sides[name] = self._ticket(side["key"])
+        if known is None:
+            raise ProviderError(404, ["No issue link type with name found."])
+        if sides["inwardIssue"] is sides["outwardIssue"]:
+            raise ProviderError(400, ["Can not link an issue to itself."])
+        lid = str(self._next_link)
+        self._next_link += 1
+        kind_obj = {k: known[k] for k in ("id", "name", "inward", "outward")}
+        sides["outwardIssue"].links.append(
+            {"id": lid, "type": kind_obj, "inwardIssue": self._link_side(sides["inwardIssue"])}
+        )
+        sides["inwardIssue"].links.append(
+            {"id": lid, "type": kind_obj, "outwardIssue": self._link_side(sides["outwardIssue"])}
+        )
+        for t in sides.values():
+            t.updated = self.now
+        return Out(201, None, applied=True)
+
+    def _delete_link(self, call: Call, lid: str) -> Out:
+        found = [t for t in self.tickets.values() if any(x.get("id") == lid for x in t.links)]
+        if not found:
+            raise ProviderError(404, ["No issue link with id found."])
+        for t in found:
+            t.links[:] = [x for x in t.links if x.get("id") != lid]
+            t.updated = self.now
+        return Out(204, None, applied=True)
 
     def _one_comment(self, call: Call, key: str, cid: str) -> Out:
         """Read, update or delete one comment; only the author may change it (403 otherwise)."""

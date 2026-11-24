@@ -13,7 +13,7 @@ L1 (primitive). Works fully standalone.
 ## What it does
 
 - Reads tickets as a provider-neutral object (status with category, estimate, sprints, parent, links, a computed `blocked` flag, Markdown text) and searches them with named queries, structured filters or a raw JQL query that stands alone, validating every query first so a typo is an error rather than an empty list.
-- Writes (`transition`, `comment`, `comment-edit`, `comment-delete`, `attachment-add`, `create`, `update`, `sprint add|remove`) share one flow: an idempotency check first, a plan with a hash, `--dry-run`, one confirmation (a decline is exit 20), per-kind hooks, a lock and stale-ticket check and an audit record pair. There is no pending-confirmation store: a non-interactive write without `--yes` exits 13 and the calling tool records the pending confirmation.
+- Writes (`transition`, `comment`, `comment-edit`, `comment-delete`, `attachment-add`, `create`, `update`, `sprint add|remove`, `link add|remove`; `link remove` deletes any link of the named type, direction and ticket, whoever made it) share one flow: an idempotency check first, a plan with a hash, `--dry-run`, one confirmation (a decline is exit 20), per-kind hooks, a lock and stale-ticket check and an audit record pair. There is no pending-confirmation store: a non-interactive write without `--yes` exits 13 and the calling tool records the pending confirmation.
 - Text goes in as Markdown from a file or stdin and is converted to Atlassian's rich-text format; no wiki markup, mention or card is ever created from text.
 - Field mappings (story points, acceptance criteria, sprint and so on), named queries and organization rules are config, never code.
 - Stateless: a small cache, `audit.jsonl` and `log.jsonl`.
@@ -26,6 +26,7 @@ Finalized in [docs/interface.md](docs/interface.md#commands).
 ticketctl whoami | get KEY... | search | comments KEY | changelog KEY | transitions KEY | sprints | sprints resolve open|next | fields | sites | validate
 ticketctl transition KEY --to STATUS | comment KEY --body-file F | comment-edit KEY ID --body-file F | comment-delete KEY ID | attachment-add KEY --file F | create --title T --body-file F | update KEY --set k=v
 ticketctl sprint add KEY --sprint open|next|ID | sprint remove KEY
+ticketctl link add KEY --type NAME --direction inward|outward --other KEY | link remove KEY (same options)
 ticketctl attachment-download KEY ID --to PATH
 ticketctl export
 ```
@@ -70,6 +71,7 @@ One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the 
 | create | `pre-create`, `post-create` |
 | update | `pre-update`, `post-update` |
 | sprint add and remove | `pre-sprint`, `post-sprint` |
+| link add and remove | `pre-link`, `post-link` |
 
 ## Environment
 

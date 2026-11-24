@@ -26,7 +26,7 @@ MAX_DECISION_IDS = 16
 NUMERIC_ID_RE = GRAMMARS["numeric_id"].pattern
 SHA256_RE = GRAMMARS["sha256"].pattern
 HOOK_NAME_RE = re.compile(
-    r"(?:pre|post)-(?:transition|comment-edit|comment-delete|comment|attachment-add|create|update|sprint)"
+    r"(?:pre|post)-(?:transition|comment-edit|comment-delete|comment|attachment-add|create|update|sprint|link)"
 )
 TIMEOUT_MIN = timedelta(seconds=1)
 TIMEOUT_MAX = timedelta(hours=24)

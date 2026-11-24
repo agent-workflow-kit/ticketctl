@@ -1,0 +1,28 @@
+{
+  "action": "link_remove",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": [
+        "Blocks: DEMO-2 blocks DEMO-3"
+      ],
+      "name": "links",
+      "to": []
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "ee7002f939fb5c70f95acb8f8d3fad08f6714adb4a24ac267cb5b355b957bc30",
+  "site": "main",
+  "steps": [
+    {
+      "direction": "outward",
+      "kind": "remove_link",
+      "link_id": "30000",
+      "link_type": "Blocks",
+      "other": "DEMO-3"
+    }
+  ],
+  "warnings": []
+}

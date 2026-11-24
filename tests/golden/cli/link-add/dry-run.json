@@ -1,0 +1,27 @@
+{
+  "action": "link_add",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": [],
+      "name": "links",
+      "to": [
+        "Blocks: DEMO-2 blocks DEMO-3"
+      ]
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "e84a978a530f470c31c36b04a5fbc0ae345f145aa96eee97c24b77675a118866",
+  "site": "main",
+  "steps": [
+    {
+      "direction": "outward",
+      "kind": "add_link",
+      "link_type": "Blocks",
+      "other": "DEMO-3"
+    }
+  ],
+  "warnings": []
+}
