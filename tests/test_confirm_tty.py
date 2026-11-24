@@ -296,6 +296,14 @@ def test_the_dialog_precedes_the_prompt_and_control_characters_are_markers(tmp_p
     assert not re.search(rb"\x1b|\x07", out.split(PROMPT)[0])
 
 
+@pytest.mark.parametrize("early", [True, False])
+def test_the_dialog_says_whether_hooks_ran_before_the_question(tmp_path: Path, early: bool) -> None:
+    s = Session(tmp_path, early_hooks=early).run(b"n\n")
+    said = b"hooks placed before this question have run" in s.out
+    assert said is early
+    assert (b"pre- hooks run after your answer" in s.out) is not early
+
+
 def test_the_prompt_text_holds_no_environment_value(tmp_path: Path) -> None:
     s = Session(tmp_path).run(b"n\n")
     assert str(tmp_path).encode() not in s.out

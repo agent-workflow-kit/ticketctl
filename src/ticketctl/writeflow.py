@@ -17,13 +17,19 @@ Order, with the guarantees the tests pin:
    and ``action.check`` (the ``--if-status`` and provider-context checks) is not even called.
    Then the plan and its hash are built and ``--expect-plan`` is compared.
 4. **Dry-run** returns the plan after step 3's reduce and check: it ignores ``--expect-plan`` and
-   ``--yes``, takes no lock, writes no audit and runs no hook.
+   ``--yes``, takes no lock, writes no audit and runs no hook, unless ``--run-hooks`` asks for the
+   ``pre-`` hooks (both placements, in the real order, with ``TICKETCTL_DRY_RUN=1``; no dialog,
+   lock, audit, ``post-`` hook or write).
+5a. **Early hooks:** the ``pre-`` hooks with ``placement: before_confirm`` run here, before the
+   dialog (``Hooks.before_confirm``); a veto is exit 11, an escalation is exit 13 unless
+   ``--override-escalation``, and the decision ids they return join the later steps.
 5. **Confirm:** an interactive run (never an ``auto:`` actor, whatever the seam says) shows the
    dialog of ``confirm_tty`` on ``/dev/tty``, or ``Seams.confirm`` when a test supplies one; a
    decline is exit 20 ``declined``. A non-interactive run without ``--yes``, or one whose
    terminal cannot be opened, is exit 13 ``confirmation_required``.
-6. **Pre hooks** through ``Seams.hooks`` (``ticketctl.hooks.HookRunner`` unless a test substitutes
-   it): a veto is exit 11, an escalation is exit 13 unless ``--override-escalation``.
+6. **Pre hooks** (the ``after_confirm`` ones) through ``Seams.hooks``
+   (``ticketctl.hooks.HookRunner`` unless a test substitutes it): a veto is exit 11, an
+   escalation is exit 13 unless ``--override-escalation``.
 7. **Lock and fresh check:** with a dedupe key ``Seams.lock`` is taken (#32), the action reads
    again, and a hash that differs from the held plan is exit 20 ``stale_ticket`` with the new plan
    (no steps left is ``unchanged``). The steps that run are the held plan's.
@@ -404,9 +410,12 @@ class Hooks(Protocol):
         info: PostInfo,
     ) -> None: ...
 
-    # Optional: ``before_confirm(plan, planned, attempt_id, decision_ids) -> HookResult`` runs the
-    # ``pre-`` hooks placed before the confirmation (same contract as ``pre``). The engine runs
-    # nothing for an implementation without it.
+    def before_confirm(
+        self, plan: dict[str, Any], planned: Planned, attempt_id: str, decision_ids: list[str]
+    ) -> HookResult:
+        """Run the ``pre-`` hooks placed before the confirmation (same contract as ``pre``);
+        return an empty ``HookResult`` when none is configured."""
+        ...
 
 
 def _new_attempt_id() -> str:
@@ -515,15 +524,16 @@ def hooks_digest(rt: Runtime, action: str) -> str:
     entries: list[dict[str, Any]] = []
     for phase in ("pre", "post"):
         for hook in rt.config.hooks.get(f"{phase}-{family}", []):
-            entries.append(
-                {
-                    "name": f"{phase}-{family}",
-                    "cmd": hook.cmd,
-                    "timeout": int(hook.timeout.total_seconds()),
-                    "async": hook.async_,
-                    "source": "config",
-                }
-            )
+            entry: dict[str, Any] = {
+                "name": f"{phase}-{family}",
+                "cmd": hook.cmd,
+                "timeout": int(hook.timeout.total_seconds()),
+                "async": hook.async_,
+                "source": "config",
+            }
+            if phase == "pre" and hook.placement == "before_confirm":
+                entry["placement"] = hook.placement  # the default adds nothing: digests keep
+            entries.append(entry)
     for spec in rt.g.hooks:
         name, _, cmd = spec.partition("=")
         if name.endswith(f"-{family}"):
@@ -798,9 +808,7 @@ class _Run:
     ) -> _Gate:
         """The ``pre-`` hooks of one placement: ``early`` is before the confirmation. A veto
         carries the plan, whichever placement and whether or not the run is a dry run."""
-        run = getattr(self.hooks, "before_confirm", None) if early else self.hooks.pre
-        if run is None:  # a Hooks implementation that predates the placement
-            return _Gate()
+        run = self.hooks.before_confirm if early else self.hooks.pre
         try:
             result = run(plan, planned, ctx.attempt_id, decision_ids)
         except TicketctlError as err:

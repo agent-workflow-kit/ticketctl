@@ -23,8 +23,9 @@ required fact is refused rather than sent short.
 The environment is the tool's minus every configured ``token_env`` and ``email_env`` variable (of
 every site, not only the selected one) and minus any variable whose value contains a configured
 token value,
-plus ``TICKETCTL_HOOK``, ``TICKETCTL_ID`` and ``TICKETCTL_OBJECT_TYPE``. Allowlist, not mask: the
-child gets nothing else added. Working directory is the caller's.
+plus ``TICKETCTL_HOOK``, ``TICKETCTL_ID`` and ``TICKETCTL_OBJECT_TYPE`` (and ``TICKETCTL_DRY_RUN=1``
+for a ``pre-`` hook that ``--dry-run --run-hooks`` runs; an inherited value is never passed on).
+Allowlist, not mask: the child gets nothing else added. Working directory is the caller's.
 """
 
 from __future__ import annotations

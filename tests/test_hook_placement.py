@@ -16,8 +16,10 @@ from tests import hook_support
 from tests.fake_provider import FakeProvider
 from tests.golden import validator
 from tests.hook_support import PidRegistry
+from tests.test_confirm_engine import _run_real, terminal
 from tests.test_hooks import HComment, HTransition, Rig, details, new
 from tests.test_writeflow import World
+from ticketctl import writeflow
 from ticketctl.errors import TicketctlError
 from ticketctl.writeflow import Seams
 
@@ -363,3 +365,135 @@ def test_run_hooks_on_a_read_command_is_refused() -> None:
     with pytest.raises(TicketctlError) as info:
         flags.check_globals(g, "read", "get", resolve_actor=False)
     assert (info.value.exit, info.value.reason) == (2, "invalid_argument")
+
+
+def test_a_flag_hook_runs_in_a_dry_run_after_the_configured_ones(rig: Rig, world: World) -> None:
+    config(rig, pre_transition=[(rig.hook(), AFTER), (rig.hook(), BEFORE)])
+    flag = rig.hook()
+    world.run(new(), dry_run=True, run_hooks=True, hooks=[f"pre-transition={flag}"])
+    calls = rig.calls()
+    assert [c["n"] for c in calls] == [2, 1, 3]  # the flag hook is the third, as in a real run
+    assert all(c["env"]["TICKETCTL_DRY_RUN"] == "1" for c in calls)
+
+
+def test_late_dry_run_hooks_get_the_early_hooks_decision_ids(rig: Rig, world: World) -> None:
+    config(
+        rig,
+        pre_transition=[
+            (rig.hook(out='{"decision_id": "early.1"}'), BEFORE),
+            (rig.hook(), AFTER),
+        ],
+    )
+    world.run(new(), dry_run=True, run_hooks=True, decision_ids=["cli.1"])
+    early, late = (c["payload"] for c in rig.calls())
+    assert early["decision_ids"] == ["cli.1"]
+    assert late["decision_ids"] == ["cli.1", "early.1"]
+
+
+def test_a_late_veto_in_a_dry_run_after_an_early_hook_passed(rig: Rig, world: World) -> None:
+    config(
+        rig,
+        pre_transition=[
+            (rig.hook(out='{"decision_id": "early.1"}'), BEFORE),
+            (rig.hook(exit=1, err="late no"), AFTER),
+        ],
+    )
+    err = world.fail(new(), dry_run=True, run_hooks=True)
+    assert (err.exit, err.code) == (11, "vetoed") and "dry run" in err.message
+    assert [c["n"] for c in rig.calls()] == [1, 2]
+    assert details(err)["hook_stderr"] == "late no"
+    assert details(err)["decision_ids"] == ["early.1"]
+    assert details(err)["plan"]["plan_sha256"] == world.hash_of(new())
+    assert world.writes() == [] and world.records() == []
+
+
+def test_a_late_escalation_in_a_dry_run_is_reported_after_every_hook_ran(
+    rig: Rig, world: World
+) -> None:
+    config(
+        rig,
+        pre_transition=[
+            (rig.hook(), BEFORE),
+            (rig.hook(exit=13, out='{"decision_id": "esc.1"}'), AFTER),
+            (rig.hook(), AFTER),
+        ],
+    )
+    err = world.fail(new(), dry_run=True, run_hooks=True)
+    assert (err.exit, err.code) == (13, "escalated")
+    assert details(err)["escalated_hooks"] == ["pre-transition"]
+    assert details(err)["decision_ids"] == ["esc.1"]
+    assert [c["n"] for c in rig.calls()] == [1, 2, 3]  # an after-confirm escalation stops nothing
+    plan = world.run(new(), dry_run=True, run_hooks=True, override_escalation="ticketctl")
+    assert plan["plan_sha256"] == details(err)["plan"]["plan_sha256"]
+    assert world.writes() == [] and world.records() == []
+
+
+def test_a_real_run_veto_does_not_say_dry_run(rig: Rig, world: World) -> None:
+    config(rig, pre_transition=[(rig.hook(exit=1), BEFORE)])
+    assert "dry run" not in world.fail(new(), seams=Dialog(rig).seams()).message
+    config(rig, pre_transition=[(rig.hook(exit=1), AFTER)])
+    assert "dry run" not in world.fail(new(), seams=Dialog(rig).seams()).message
+
+
+# ---------------------------------------------------------------------------------------------
+# What the real dialog says (the real runner, the real dialog on a pty)
+# ---------------------------------------------------------------------------------------------
+
+EARLY_LINE = "hooks placed before this question have run"
+LATE_LINE = "pre- hooks run after your answer"
+
+
+def test_the_real_dialog_says_the_early_hook_ran_when_one_did(
+    rig: Rig,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config(rig, pre_transition=[(rig.hook(), BEFORE)])
+    with terminal(monkeypatch, b"y\n"):
+        out = _run_real(world, new())
+    assert out["result"] == "ok"
+    err = capsys.readouterr().err
+    assert EARLY_LINE in err and LATE_LINE not in err
+
+
+def test_the_real_dialog_does_not_claim_early_hooks_when_none_is_configured_early(
+    rig: Rig,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config(rig, pre_transition=[(rig.hook(), AFTER)])
+    with terminal(monkeypatch, b"y\n"):
+        _run_real(world, new())
+    err = capsys.readouterr().err
+    assert LATE_LINE in err and EARLY_LINE not in err
+
+
+def test_the_real_dialog_does_not_claim_early_hooks_with_no_hooks_at_all(
+    rig: Rig,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with terminal(monkeypatch, b"y\n"):
+        _run_real(world, new())
+    err = capsys.readouterr().err
+    assert LATE_LINE in err and EARLY_LINE not in err
+
+
+# ---------------------------------------------------------------------------------------------
+# The hooks digest
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_hooks_digest_changes_only_when_a_gate_moves_before_the_confirmation(
+    rig: Rig, world: World
+) -> None:
+    cmd = rig.hook()
+    config(rig, pre_transition=[(cmd, "")])
+    default = writeflow.hooks_digest(world.rt(), "transition")
+    config(rig, pre_transition=[(cmd, AFTER)])
+    assert writeflow.hooks_digest(world.rt(), "transition") == default  # byte-identical
+    config(rig, pre_transition=[(cmd, BEFORE)])
+    assert writeflow.hooks_digest(world.rt(), "transition") != default
