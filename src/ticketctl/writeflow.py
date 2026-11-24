@@ -65,7 +65,7 @@ from .attribution import Format, Kind, RichText
 from .dedupe import bucket_lock
 from .errors import TicketctlError, from_exception, read_only_error, usage_error
 from .flags import Globals
-from .gateway import Deadline, Gateway, Response, Target
+from .gateway import Deadline, Gateway, Response, Target, Upload
 from .plan import Planned, Step, build_plan, canonical_bytes
 from .runtime import Runtime, for_site, open_gateway
 from .sanitize import GRAMMARS, add_secrets, ensure_no_secret, sanitize_field
@@ -145,10 +145,17 @@ class WriteGateway:
         query: str = "",
         body: object | None = None,
         write: bool | None = None,
+        upload: Upload | None = None,
+        binary: bool = False,
     ) -> Response:
         check_outbound(body, body_chars=self._body_chars)
+        extra: dict[str, Any] = {}  # only what is set, so a fake gateway needs no new parameter
+        if upload is not None:
+            extra["upload"] = upload
+        if binary:
+            extra["binary"] = True
         return self._gw.request(
-            method, path, template=template, query=query, body=body, write=write
+            method, path, template=template, query=query, body=body, write=write, **extra
         )
 
 
