@@ -124,6 +124,18 @@ These need the real test site and are shared with the live suite; run them once 
 | L3 | A real `--dry-run` write and its apply | `ticketctl ... --dry-run transition KEY --to NAME`, then `ticketctl ... --yes --expect-plan HASH transition KEY --to NAME` on the throwaway ticket | Exit 0 both times; the audit holds `attempted` and `ok`, the `actor_source` is `default` (no terminal) or `tty` (from a terminal) | none |
 | L4 | A `post-create` hook after an unknown outcome gets a null `object_id` | Configure a `post-create` hook that writes `$TICKETCTL_ID` and its stdin to a file in `$TC_SCRATCH`; run a `create` with `--timeout 1` against a site made slow (or kill the network at the moment of the send), so the audit holds an `unknown` outcome | The hook ran with an empty `TICKETCTL_ID` and `"object_id": null` in its payload | CI (fake) |
 
+## 8. `browse` (the terminal viewer)
+
+`browse` needs a real terminal, so these checks are by hand. Use a search on the throwaway site: `ticketctl --config ... browse --project PROJ`. The viewer is read-only, so nothing here changes a ticket. The curses calls are covered on a pseudo-terminal in CI (the screen draws, `q` quits, Ctrl-C and Ctrl-\\ restore the terminal and end with exit 130); what no test sees is a real terminal emulator.
+
+| ID | Check | Command | Expected | Linux |
+|---|---|---|---|---|
+| B1 | The screen draws and `q` quits | `ticketctl ... browse --project PROJ`, then `j`, Enter, `2`, `3`, `q`, `q` | A list with the first ticket marked `>`, the three panes in turn, and the shell prompt back with the normal screen restored (no leftover text, the cursor visible); exit 0, nothing on stdout | sim (a pty) |
+| B2 | A resize redraws | Start `browse`, open a ticket with a long pane, then drag the terminal window narrower, wider, very small (under 12 columns) and back | The text re-wraps at once, a very small window shows only `terminal too small`, nothing is torn, and scrolling still ends at the last line | none |
+| B3 | A closed terminal ends the viewer | Start `browse` inside `tmux` or `screen`, then close the pane or window (or `kill -HUP` the terminal's shell by its exact pid) | The `ticketctl` process ends by itself within a second or two: no spinning at full CPU (`top` shows it gone) and no traceback in a log; repeat with the terminal emulator window closed with the mouse | sim (the input end) |
+| B4 | Ctrl-C and Ctrl-\\ restore the terminal | Start `browse` and press Ctrl-C; start it again and press Ctrl-\\ | Both: the normal screen is back, the line `ticketctl: interrupted` is printed, `echo $?` is 130, and the terminal echoes what you type (no `stty sane` needed) | CI (a pty) |
+| B5 | A paste of hostile text is not a risk | On the throwaway site, open a ticket whose summary or comment holds an escape sequence (type one with `printf` into a test ticket) | The escape is shown as `<U+001B>`; the window title, colours and cursor are not changed | CI (fake provider) |
+
 ## Results
 
 Add one row per run. Use the date of the run, the operating system and its version, the Python version and the file system of `TC_SCRATCH` and `XDG_STATE_HOME`. Never record a host name, a user name, a site, a project key or a ticket key. A failure keeps its ID, what happened and a link to the issue that tracks it.

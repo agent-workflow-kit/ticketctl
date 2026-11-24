@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any
 
-from . import createcmd, searchcmd, setspec, updatecmd
+from . import browsecmd, createcmd, searchcmd, setspec, updatecmd
 from .commands import REGISTRY, WRITE, CommandSpec
 from .errors import (
     TicketctlError,
@@ -132,6 +132,8 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         _one_of_key_or_project(ns)
     elif spec.path == ("search",):
         searchcmd.check_offline(ns)
+    elif spec.path == ("browse",):
+        searchcmd.check_offline(browsecmd.search_namespace(ns, None))
     elif spec.path == ("update",):
         updatecmd.check_offline(ns)
     elif spec.path == ("create",):
