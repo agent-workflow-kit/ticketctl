@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/sprint-add-many.json",
+  "title": "sprint add-many --json",
+  "description": "Exit 0 only: the batch result (complete), or the combined plan with --dry-run. A batch that did not complete prints the error envelope, with the batch result under details.result.",
+  "oneOf": [
+    {
+      "$ref": "../defs.json#/$defs/bulk_result"
+    },
+    {
+      "$ref": "../defs.json#/$defs/bulk_plan"
+    }
+  ]
+}

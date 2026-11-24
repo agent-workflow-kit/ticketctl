@@ -128,8 +128,13 @@ def confirm(
     timeout_s: float = PROMPT_TIMEOUT_S,
     opener: Callable[[], int] | None = None,
     stderr: Any = None,
+    text: str | None = None,
 ) -> bool:
-    """Show the dialog and read the answer from ``/dev/tty``; True only when accepted."""
+    """Show the dialog and read the answer from ``/dev/tty``; True only when accepted.
+
+    ``text`` is a dialog composed by the caller (a batch, ``confirm_dialog.compose_batch``)
+    instead of the single-plan one.
+    """
     if str(plan.get("actor", "")).startswith("auto:"):
         raise ConfirmUnavailable("an automatic actor cannot be confirmed")
     if not flags.stderr_is_tty():
@@ -140,9 +145,10 @@ def confirm(
             select.select([fd], [], [], 0)  # select cannot wait on a descriptor of 1024 or more
         except ValueError:
             raise ConfirmUnavailable("the terminal descriptor is out of range") from None
-        text = compose(
-            plan, shown, override=override, hook_names=hook_names, early_hooks=early_hooks
-        )
+        if text is None:
+            text = compose(
+                plan, shown, override=override, hook_names=hook_names, early_hooks=early_hooks
+            )
         output.write(stderr if stderr is not None else sys.stderr, text)
         _flush_input(fd)  # type-ahead typed before the prompt never answers it
         _say(fd, PROMPT)

@@ -448,6 +448,7 @@ class Seams:
     hooks: Hooks | None = None  # None: the real runner (ticketctl.hooks.HookRunner)
     lock: Callable[[Planned, Context], AbstractContextManager[None]] = bucket_lock
     attempt_id: Callable[[], str] = _new_attempt_id
+    batch_id: str | None = None  # a batch's attempt_id: added to this run's audit inputs
 
 
 # --------------------------------------------------------------------------------------------
@@ -575,6 +576,7 @@ class _Audit:
         plan_sha256: str,
         decision_ids: list[str],
         config_hashes: list[str],
+        batch_id: str | None = None,
     ) -> None:
         rt = ctx.rt
         site = rt.config.sites[ctx.site]
@@ -599,6 +601,8 @@ class _Audit:
             "cli_hooks": cli_hook_names(rt),
             "token_env": site.token_env,
         }
+        if batch_id is not None:  # only a ticket of a batch carries it
+            self.inputs["batch_id"] = batch_id
         self.stdin_tty = _stdin_tty()
 
     def append(
@@ -630,6 +634,88 @@ class _Audit:
         if reason is not None:
             record["reason"] = reason
         audit.append_audit(self.rt.state_dir, record)
+
+
+class BatchAudit:
+    """The record pair of a batch (``bulk.py``): ``attempted`` before the first ticket runs, then
+    one outcome. ``action`` and ``step_kind`` are ``bulk``, ``target.key`` is null and the tickets'
+    own records join on ``inputs.batch_id`` (this record's ``attempt_id``)."""
+
+    def __init__(
+        self,
+        rt: Runtime,
+        site: str,
+        action: str,
+        batch_id: str,
+        plan_sha256: str,
+        size: int,
+    ) -> None:
+        cfg = rt.config.sites[site]
+        self.rt = rt
+        self.site = site
+        self.batch_id = batch_id
+        self.inputs: dict[str, Any] = {
+            "plan_sha256": plan_sha256,
+            "bodies": [],
+            "dedupe_key": None,
+            "override_escalation": rt.g.override_escalation,
+            "config": {
+                "path": rt.g.config,
+                "files_sha256": _config_file_hashes(rt),
+                "sha256": rt.config_sha256(),
+            },
+            "hooks_sha256": hooks_digest(rt, action),
+            "site_host": Target.from_site(
+                site, cfg, rt.env, rt.config.limits.retry_after_max.total_seconds()
+            ).host_port,
+            "cli_hooks": cli_hook_names(rt),
+            "token_env": cfg.token_env,
+            "batch_size": size,
+        }
+        self.stdin_tty = _stdin_tty()
+        self.action = action
+
+    def _append(self, result: str, changed: bool | None, reason: str | None) -> None:
+        g = self.rt.g
+        record: dict[str, Any] = {
+            "attempt_id": self.batch_id,
+            "step": 1,
+            "step_kind": "bulk",
+            "actor": g.resolved_actor,
+            "actor_source": g.actor_source or "default",
+            "stdin_tty": self.stdin_tty,
+            "decision_id": list(g.decision_ids),
+            "target": {"site": self.site, "key": None},
+            "action": "bulk",
+            "inputs": self.inputs,
+            "result": result,
+            "provider_ids": [],
+            "changed": changed,
+        }
+        if reason is not None:
+            record["reason"] = reason
+        audit.append_audit(self.rt.state_dir, record)
+
+    def attempted(self) -> None:
+        """Raises the ``audit_failed`` error (exit 1, nothing sent) when the append fails."""
+        try:
+            self._append("attempted", None, None)
+        except Exception as exc:  # noqa: BLE001 - no audit, no send
+            why = exc.reason if isinstance(exc, StateError) else type(exc).__name__
+            raise TicketctlError(
+                "internal",
+                f"the audit record could not be written ({why}); nothing was sent",
+                reason="audit_failed",
+            ) from None
+
+    def outcome(self, result: str, changed: bool | None, reason: str | None) -> bool:
+        """True when the outcome record was written (a failure only warns)."""
+        try:
+            self._append(result, changed, reason)
+        except Exception:  # noqa: BLE001 - the tickets' writes stand; the caller adds a warning
+            self.rt.warn("warning: the audit outcome record could not be written")
+            return False
+        return True
 
 
 # --------------------------------------------------------------------------------------------
@@ -665,7 +751,31 @@ def execute(
         return _Run(rt, site, action, seams or Seams()).run()
 
 
-def _real_hooks(rt: Runtime) -> Hooks:
+@dataclass
+class Preplan:
+    """One ticket planned for a batch: its plan object, the held ``Planned`` (for the dialog and
+    the hook replay) and what the early hooks decided. ``attempt_id`` is the id the ticket's own
+    run must use so the hooks, the audit and the result all name one attempt."""
+
+    plan: dict[str, Any]
+    planned: Planned
+    attempt_id: str
+    early_decision_ids: list[str]
+    early_ran: bool
+
+
+def preplan(
+    rt: Runtime, site: str, action: WriteAction, seams: Seams | None = None, *, hooks: bool = True
+) -> Preplan:
+    """Plan ``action`` for a batch (see ``_Run.preplan``): the read-only guard of ``execute``
+    applies, and every refusal is the error the single run would raise at that point."""
+    if rt.config.read_only and not rt.g.dry_run:
+        raise read_only_error()
+    with for_site(site):
+        return _Run(rt, site, action, seams or Seams()).preplan(hooks=hooks)
+
+
+def real_hooks(rt: Runtime) -> Hooks:
     from .hooks import HookRunner  # hooks.py imports this module
 
     return HookRunner(rt)
@@ -678,7 +788,7 @@ class _Run:
         self.site = site
         self.action = action
         self.seams = seams
-        self.hooks = seams.hooks if seams.hooks is not None else _real_hooks(rt)
+        self.hooks = seams.hooks if seams.hooks is not None else real_hooks(rt)
         self.audit_incomplete = False
         self.extra_warnings: list[str] = []
         self.config_hashes: list[str] | OSError = []
@@ -686,6 +796,24 @@ class _Run:
 
     # ------------------------------------------------------------------------------------
     def run(self) -> dict[str, Any]:
+        return self._flow(self._open())
+
+    def preplan(self, *, hooks: bool) -> Preplan:
+        """Steps 1 to 3 and, with ``hooks``, the ``before_confirm`` hooks of step 5a: what a batch
+        needs from each ticket before its one confirmation. Nothing is sent, locked or audited."""
+        ctx = self._open()
+        planned, plan = self._read(ctx, fresh=False)
+        decision_ids, cut = _decision_list(self.g.decision_ids)
+        self._note_truncated(cut)
+        early = _Gate()
+        if hooks and planned.steps:
+            with self._deadline_paused():
+                early = self._run_hooks(ctx, plan, planned, decision_ids, early=True)
+                ids, _ = _decision_list(self.g.decision_ids, early.decision_ids)
+                self._escalation_gate(plan, ids, early.escalated)
+        return Preplan(plan, planned, ctx.attempt_id, early.decision_ids, early.ran)
+
+    def _open(self) -> Context:
         g = self.g
         actor = g.resolved_actor
         if actor is None:
@@ -720,7 +848,7 @@ class _Run:
             self.rt, self.site, wgw, me, actor, g.actor_source or "default", attempt_id,
             self.action.name,
         )  # fmt: skip
-        return self._flow(ctx)
+        return ctx
 
     def _flag_rules(self) -> None:
         g = self.g
@@ -954,7 +1082,10 @@ class _Run:
         try:
             if isinstance(self.config_hashes, OSError):
                 raise self.config_hashes
-            log = _Audit(ctx, self.action.name, planned, plan_sha, decision_ids, self.config_hashes)
+            log = _Audit(
+                ctx, self.action.name, planned, plan_sha, decision_ids, self.config_hashes,
+                batch_id=self.seams.batch_id,
+            )  # fmt: skip
         except Exception as exc:  # noqa: BLE001 - no audit, no send
             return _Outcome(None, self._audit_failed(exc), None)
         done: list[dict[str, str]] = []

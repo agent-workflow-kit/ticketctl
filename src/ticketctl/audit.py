@@ -78,11 +78,13 @@ RESULTS = ("attempted", "ok", "failed", "partial", "unknown")
 ACTOR_SOURCES = ("flag", "tty", "default")
 STEP_KINDS = (
     "assign", "transition", "set_fields", "add_comment", "create", "sprint_add", "sprint_remove",
-    "add_link", "remove_link", "edit_comment", "delete_comment", "add_attachment", "set_resolution",
+    "add_link", "remove_link", "edit_comment", "delete_comment", "add_attachment",
+    "set_resolution", "bulk",
 )  # fmt: skip
 ACTIONS = (
     "transition", "comment", "create", "update", "sprint_add", "sprint_remove", "link_add",
     "link_remove", "comment_edit", "comment_delete", "attachment_add", "resolution_backfill",
+    "bulk",
 )  # fmt: skip
 HOOK_NAMES = (
     "pre-transition", "post-transition", "pre-comment", "post-comment", "pre-create",
@@ -109,7 +111,7 @@ AUDIT_KEYS = (
 AUDIT_REQUIRED = tuple(k for k in AUDIT_KEYS if k != "reason")
 INPUTS_KEYS = (
     "plan_sha256", "bodies", "dedupe_key", "override_escalation", "config", "hooks_sha256",
-    "site_host", "cli_hooks", "token_env",
+    "site_host", "cli_hooks", "token_env", "batch_id", "batch_size",
 )  # fmt: skip
 INPUTS_REQUIRED = (
     "plan_sha256", "override_escalation", "config", "hooks_sha256", "site_host", "cli_hooks",
@@ -215,6 +217,10 @@ def _validate_inputs(value: object) -> None:
     if len(set(hooks)) != len(hooks):
         raise _bad("inputs.cli_hooks")
     _text(inputs["token_env"], TOKEN_ENV, "inputs.token_env")
+    if "batch_id" in inputs:
+        _text(inputs["batch_id"], ATTEMPT_ID, "inputs.batch_id")
+    if "batch_size" in inputs and not _is_int(inputs["batch_size"], 1, 200):
+        raise _bad("inputs.batch_size")
 
 
 def _validate_audit(record: Mapping[str, object]) -> None:

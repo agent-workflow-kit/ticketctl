@@ -36,7 +36,7 @@ from .sanitize import format_traceback
 
 DESCRIPTION = "Normalized ticket access (Jira first; other providers later)."
 # Options whose value `-` reads stdin; `--set` and `--field` take `name=-`.
-STDIN_FILE_OPTIONS = ("body_file", "title_file", "jql_file", "text_file")
+STDIN_FILE_OPTIONS = ("body_file", "title_file", "jql_file", "text_file", "keys_file")
 STDIN_SET_OPTIONS = ("set", "field")
 
 
@@ -142,6 +142,10 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         raise usage_error("missing_option", "sprint add needs --sprint open|next|<id>")
     elif spec.path == ("sprint", "remove") and ns.sprint is not None:
         raise usage_error("invalid_combination", "sprint remove takes no --sprint")
+    elif spec.path == ("sprint", "add-many") and ns.sprint is None:
+        raise usage_error("missing_option", "sprint add-many needs --sprint open|next|<id>")
+    if spec.path[-1:] in (("add-many",), ("remove-many",)) and g.run_hooks:
+        raise usage_error("invalid_combination", "--run-hooks is not supported for a batch")
     if spec.path in (("create",), ("update",), ("transition",)):
         flag = "--field" if spec.path == ("transition",) else "--set"
         setspec.check_offline(spec.path[0], getattr(ns, flag[2:]), flag)

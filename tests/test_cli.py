@@ -123,6 +123,8 @@ SURFACE = [
     ["update", "AB-1", "--title", "t"],
     ["sprint", "add", "AB-1", "--sprint", "open"],
     ["sprint", "remove", "AB-1"],
+    ["sprint", "add-many", "AB-1", "AB-2", "--sprint", "open"],
+    ["sprint", "remove-many", "AB-1", "AB-2"],
     ["link", "add", "AB-1", *LINK],
     ["link", "remove", "AB-1", *LINK],
 ]

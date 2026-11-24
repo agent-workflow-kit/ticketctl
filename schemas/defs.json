@@ -1423,10 +1423,24 @@
           "x-untrusted": true
         },
         "plan": {
-          "$ref": "#/$defs/plan"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/plan"
+            },
+            {
+              "$ref": "#/$defs/bulk_plan"
+            }
+          ]
         },
         "result": {
-          "$ref": "#/$defs/result"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/result"
+            },
+            {
+              "$ref": "#/$defs/bulk_result"
+            }
+          ]
         },
         "hook": {
           "$ref": "#/$defs/hook_name"
@@ -2017,6 +2031,224 @@
         "created",
         "items"
       ]
+    },
+    "audit_action": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/action"
+        },
+        {
+          "const": "bulk"
+        }
+      ],
+      "description": "An audit record's action: a write action, or bulk for the batch record of sprint add-many and sprint remove-many."
+    },
+    "audit_step_kind": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/step_kind"
+        },
+        {
+          "const": "bulk"
+        }
+      ],
+      "description": "An audit record's step kind: a plan step kind, or bulk for the batch record."
+    },
+    "bulk_action": {
+      "enum": [
+        "sprint_add",
+        "sprint_remove"
+      ],
+      "description": "The actions a batch can run."
+    },
+    "bulk_plan": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/bulk_action"
+        },
+        "site": {
+          "$ref": "#/$defs/site_name"
+        },
+        "actor": {
+          "$ref": "#/$defs/actor"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "changing": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200,
+          "description": "The tickets whose plan has steps."
+        },
+        "tickets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/plan"
+          },
+          "description": "Each ticket's own plan object, in the order given; one with empty steps is unchanged."
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "site",
+        "actor",
+        "count",
+        "changing",
+        "tickets",
+        "plan_sha256"
+      ],
+      "description": "The combined plan of sprint add-many and sprint remove-many. plan_sha256 is the sha256 of the canonical JSON of {v: 1, bulk: true, action, site, tickets: [{key, plan_sha256}]}."
+    },
+    "bulk_result": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/bulk_action"
+        },
+        "site": {
+          "$ref": "#/$defs/site_name"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "true when no ticket is failed, outcome_unknown or not_run; the only case of exit 0."
+        },
+        "changed": {
+          "type": "boolean",
+          "description": "true when any ticket's provider write landed."
+        },
+        "counts": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 200
+            },
+            "unchanged": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 200
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 200
+            },
+            "outcome_unknown": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 200
+            },
+            "not_run": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 200
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "ok",
+            "unchanged",
+            "failed",
+            "outcome_unknown",
+            "not_run"
+          ]
+        },
+        "tickets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/key"
+              },
+              "status": {
+                "enum": [
+                  "ok",
+                  "unchanged",
+                  "failed",
+                  "outcome_unknown",
+                  "not_run"
+                ]
+              },
+              "result": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/result"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "error": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/error_body"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "result",
+              "error"
+            ]
+          }
+        },
+        "attempt_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/attempt_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "site",
+        "count",
+        "plan_sha256",
+        "complete",
+        "changed",
+        "counts",
+        "tickets",
+        "attempt_id",
+        "warnings"
+      ],
+      "description": "The outcome of sprint add-many and sprint remove-many: exit 0 only when complete. Otherwise it is printed in details.result of an exit 12 envelope. status ok: a write landed; unchanged: nothing was sent; failed: a definite error (error); outcome_unknown: the write may have landed and is never resent; not_run: stopped by an earlier failure. result is the single-ticket result object for ok and unchanged."
     }
   }
 }

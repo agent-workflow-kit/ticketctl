@@ -88,6 +88,13 @@
           "$ref": "#/$defs/duration_or_zero",
           "default": "60s",
           "description": "Longest Retry-After honored; also bounded by the remaining command time. At most 365d (loader check)."
+        },
+        "bulk_max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50,
+          "description": "Most tickets one sprint add-many or sprint remove-many run accepts; --max-tickets can only lower it for one run."
         }
       },
       "additionalProperties": false
