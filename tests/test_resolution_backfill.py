@@ -50,7 +50,8 @@ def stored(cli: Cli, key: str = KEY) -> str | None:
 
 
 def with_default(cli: Cli, name: str = "Done") -> None:
-    cli.config.write_text(cli.config.read_text() + f"    transitions:\n      default_resolution: {name}\n")
+    extra = f"    transitions:\n      default_resolution: {name}\n"
+    cli.config.write_text(cli.config.read_text() + extra)
 
 
 # --- the write -------------------------------------------------------------------------------
@@ -292,7 +293,9 @@ def test_a_secret_in_the_name_is_refused(cli: Cli) -> None:
 # --- unreadable provider data --------------------------------------------------------------------
 
 
-def _alter(cli: Cli, monkeypatch: pytest.MonkeyPatch, mutate: Callable[[dict[str, Any]], None]) -> None:
+def _alter(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch, mutate: Callable[[dict[str, Any]], None]
+) -> None:
     original = cli.fake._issue_json
 
     def issue_json(*a: Any, **k: Any) -> dict[str, Any]:
@@ -325,9 +328,7 @@ def test_an_unreadable_resolution_or_status_is_provider_changed_never_none(
     assert cli.writes() == []
 
 
-def test_an_unknown_status_category_is_not_done(
-    cli: Cli, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_unknown_status_category_is_not_done(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:
     def undefined(f: dict[str, Any]) -> None:
         f["status"]["statusCategory"]["key"] = "undefined"
 
@@ -475,6 +476,7 @@ def test_a_lowercase_key_and_the_site_flag_are_accepted(cli: Cli) -> None:
 
 
 def test_an_auto_actor_and_a_human_actor_plan_the_same_hash(cli: Cli) -> None:
-    a = cli.doc("--actor", "auto:bot", "--dry-run", "resolution-backfill", KEY, "--resolution", "Done")
-    b = cli.doc("--actor", "human:me", "--dry-run", "resolution-backfill", KEY, "--resolution", "Done")
+    tail = ["--dry-run", "resolution-backfill", KEY, "--resolution", "Done"]
+    a = cli.doc("--actor", "auto:bot", *tail)
+    b = cli.doc("--actor", "human:me", *tail)
     assert a[1]["plan_sha256"] == b[1]["plan_sha256"]
