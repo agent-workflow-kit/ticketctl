@@ -1,0 +1,36 @@
+{
+  "tool": "ticketctl",
+  "hook": "pre-attachment-add",
+  "object_type": "ticket",
+  "object_id": "DEMO-2",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "auto:unknown",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "attachment_add",
+    "steps": [
+      "add_attachment"
+    ],
+    "plan_sha256": "3a28a78c7c53131bfb6345192e3794fc77c3f5cc9a2efaac308f28e2d6be9421",
+    "current_status": {
+      "name": "In Progress",
+      "category": "indeterminate"
+    }
+  },
+  "body": [
+    {
+      "sha256": "db231752a61f1c21e37591ecb5bd5bdc56ff50aa2ec95584570ff0432e609387",
+      "bytes": 289
+    }
+  ],
+  "ticket": {
+    "type": "Task",
+    "subtask": false,
+    "status": "In Progress",
+    "priority": "Medium",
+    "assignee_account_id": "acct-0001",
+    "assignee_is_me": true
+  }
+}

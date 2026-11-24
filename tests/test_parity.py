@@ -956,8 +956,8 @@ DOC_MUTATIONS = [
     ),
     (
         "plan_enums",
-        "`link_add`, `link_remove`, `comment_edit` and `comment_delete` (hooks use",
-        "`link_add`, `comment_edit` and `comment_delete` (hooks use",
+        "`link_add`, `link_remove`, `comment_edit`, `comment_delete` and `attachment_add` (hooks",
+        "`link_add`, `comment_edit`, `comment_delete` and `attachment_add` (hooks",
         "link_remove",
     ),
     (
@@ -968,8 +968,8 @@ DOC_MUTATIONS = [
     ),
     (
         "plan_enums",
-        "|sprint_add|sprint_remove|add_link|remove_link|edit_comment|delete_comment, ...}",
-        "|sprint_add|sprint_remove|add_link|edit_comment|delete_comment, ...}",
+        "|add_link|remove_link|edit_comment|delete_comment|add_attachment, ...}",
+        "|add_link|edit_comment|delete_comment|add_attachment, ...}",
         "remove_link",
     ),
     (

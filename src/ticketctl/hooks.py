@@ -61,6 +61,7 @@ PLAN_KEYS: dict[str, tuple[str, ...]] = {
     "link": ("current_status",),
     "comment-edit": ("current_status", "comment_id"),
     "comment-delete": ("current_status", "comment_id"),
+    "attachment-add": ("current_status",),
 }
 STATUS_CATEGORIES = ("new", "indeterminate", "done")
 SPRINT_STATES = ("future", "active", "closed")

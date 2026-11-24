@@ -53,6 +53,7 @@ WRITE_CASES: dict[tuple[str, ...], list[str]] = {
     ("comment",): ["comment", "DEMO-1", "--body", "hello"],
     ("comment-edit",): ["comment-edit", "DEMO-1", "1", "--body", "hello"],
     ("comment-delete",): ["comment-delete", "DEMO-1", "1"],
+    ("attachment-add",): ["attachment-add", "DEMO-1", "--file", "f.bin"],
     ("create",): ["create", "--project", "DEMO", "--type", "Task", "--title", "t"],
     ("update",): ["update", "DEMO-1", "--title", "new"],
     ("sprint", "add"): ["sprint", "add", "DEMO-1", "--sprint", "1"],

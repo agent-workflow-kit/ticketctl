@@ -1,0 +1,24 @@
+{
+  "action": "attachment_add",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": null,
+      "name": "attachment",
+      "to": "report.bin (289 bytes, sha256 db231752a61f1c21e37591ecb5bd5bdc56ff50aa2ec95584570ff0432e609387)"
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "2641be5590f4bb8bda98eb91f422ba294c55f4a5f2426f0392b9e7c2514c3776",
+  "site": "main",
+  "steps": [
+    {
+      "file_bytes": 289,
+      "file_sha256": "db231752a61f1c21e37591ecb5bd5bdc56ff50aa2ec95584570ff0432e609387",
+      "kind": "add_attachment"
+    }
+  ],
+  "warnings": []
+}

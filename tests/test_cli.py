@@ -115,6 +115,8 @@ SURFACE = [
     ["comment", "AB-1", "--body", "hi"],
     ["comment-edit", "AB-1", "7", "--body", "hi"],
     ["comment-delete", "AB-1", "7"],
+    ["attachment-add", "AB-1", "--file", "f.bin"],
+    ["attachment-download", "AB-1", "7", "--to", "out.bin"],
     ["create", "--project", "AB", "--type", "Task", "--title", "t"],
     ["update", "AB-1", "--title", "t"],
     ["sprint", "add", "AB-1", "--sprint", "open"],

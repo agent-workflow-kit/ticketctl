@@ -242,6 +242,10 @@ def _remove_if_ours(pfd: int, name: str, fd: int) -> None:
         pass
 
 
+create_new_file = _create_target  # also used by `attachment-download --to`
+remove_if_ours = _remove_if_ours
+
+
 def _write_file(fd: int, pfd: int, name: str, make_chunks: Callable[[], Iterator[str]]) -> None:
     try:
         for chunk in make_chunks():

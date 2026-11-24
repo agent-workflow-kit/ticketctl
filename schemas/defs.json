@@ -70,7 +70,7 @@
     "numeric_id": {
       "type": "string",
       "pattern": "^[0-9]{1,18}$",
-      "description": "Transition, sprint and board ids."
+      "description": "Transition, sprint, board and attachment ids."
     },
     "warning_code": {
       "enum": [
@@ -117,7 +117,8 @@
         "link_add",
         "link_remove",
         "comment_edit",
-        "comment_delete"
+        "comment_delete",
+        "attachment_add"
       ]
     },
     "step_kind": {
@@ -132,7 +133,8 @@
         "add_link",
         "remove_link",
         "edit_comment",
-        "delete_comment"
+        "delete_comment",
+        "add_attachment"
       ]
     },
     "hook_name": {
@@ -152,7 +154,9 @@
         "pre-comment-edit",
         "post-comment-edit",
         "pre-comment-delete",
-        "post-comment-delete"
+        "post-comment-delete",
+        "pre-attachment-add",
+        "post-attachment-add"
       ]
     },
     "error_code": {
@@ -652,6 +656,13 @@
         },
         "comment_id": {
           "$ref": "#/$defs/provider_id"
+        },
+        "file_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "file_bytes": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
@@ -845,6 +856,10 @@
             }
           ]
         },
+        "attachment_id": {
+          "$ref": "#/$defs/numeric_id",
+          "description": "attachment-add only: the id of the attachment that was uploaded, or, for an unchanged result, the identical one that already exists. Absent for every other command."
+        },
         "attempt_id": {
           "oneOf": [
             {
@@ -878,7 +893,7 @@
         "decision_ids",
         "warnings"
       ],
-      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. key and url are null only when a create landed and the provider's answer held no valid key. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back."
+      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. key and url are null only when a create landed and the provider's answer held no valid key. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back. attachment_id is present only for attachment-add."
     },
     "error_body": {
       "type": "object",

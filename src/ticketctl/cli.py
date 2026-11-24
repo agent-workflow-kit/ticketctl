@@ -124,6 +124,10 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         _exactly_one(ns, "body", "body_file", "--body and --body-file")
         if ns.format == "adf" and ns.body_file is None:
             raise usage_error("invalid_combination", "--format adf needs --body-file")
+    elif spec.path == ("attachment-add",) and ns.file is None:
+        raise usage_error("missing_option", "attachment-add needs --file")
+    elif spec.path == ("attachment-download",) and ns.to is None:
+        raise usage_error("missing_option", "attachment-download needs --to")
     elif spec.path == ("sites", "resolve"):
         _one_of_key_or_project(ns)
     elif spec.path == ("search",):
