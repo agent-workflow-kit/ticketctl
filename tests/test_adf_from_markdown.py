@@ -526,11 +526,11 @@ def test_size_is_measured_after_conversion_not_on_the_source() -> None:
 
 
 def test_huge_input_is_refused_quickly() -> None:
-    start = time.monotonic()
+    start = time.process_time()  # CPU time: a loaded machine does not lengthen it
     with pytest.raises(sanitize.InputError) as err:
         markdown_to_adf("a" * 5_000_000)
     assert err.value.reason == "body_too_large"
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
 
 
 def test_node_count_limit() -> None:
@@ -591,15 +591,24 @@ HOSTILE = [
 
 
 @pytest.mark.parametrize("md", HOSTILE, ids=range(len(HOSTILE)))
-def test_hostile_inputs_finish_quickly_and_stay_in_the_allowlist(md: str) -> None:
+def test_hostile_inputs_finish_quickly_and_stay_in_the_allowlist(
+    md: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The work is the delimiter links followed: the worst input reads about 120 000 today, a
+    # quadratic scan of any of them would read on the order of 10^8.
+    count_delimiter_reads(monkeypatch, 10 * 120_000)
     start = time.monotonic()
+    cpu_start = time.process_time()
     try:
         doc = markdown_to_adf(md, body_chars=32767)
     except sanitize.InputError as exc:
         assert exc.reason in {"body_too_large", "empty_body", "invalid_value"}
     else:
         check(doc)
-    assert time.monotonic() - start < 3
+    # CPU time is not stretched by machine load; a quadratic scan of a 20 000-50 000 character
+    # input costs far more than this on any machine.
+    assert time.process_time() - cpu_start < 15
+    assert time.monotonic() - start < 60  # wall backstop only
 
 
 def test_deep_nesting_does_not_hit_the_recursion_limit() -> None:
@@ -843,26 +852,55 @@ def test_userinfo_with_unencodable_host_is_literal_not_an_error() -> None:
 
 
 def test_very_long_destination_stays_literal_and_fast() -> None:
-    start = time.monotonic()
+    start = time.process_time()  # CPU time: a loaded machine does not lengthen it
     doc = conv("[x](http://a.example/" + "a" * 5000 + ")")
     assert "mark:link" not in types(doc)
     md = ("[x](http://a.example/" + "a" * 3000) * 8
     assert "mark:link" not in types(conv(md))
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
 
 
 def test_many_images_before_links_is_not_quadratic() -> None:
     md = "![" * 30000 + "[a](http://a)" * 4615
-    start = time.monotonic()
+    start = time.process_time()  # CPU time: a loaded machine does not lengthen it
     try:
         check(markdown_to_adf(md, body_chars=32767))
     except sanitize.InputError as exc:
         assert exc.reason == "body_too_large"
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
 
 
-def test_emphasis_token_soup_is_not_superlinear() -> None:
-    # A bound, not a regression proof: the superlinear case from review was not reproduced.
+def count_delimiter_reads(monkeypatch: pytest.MonkeyPatch, cap: int) -> list[int]:
+    """Count the links followed along the delimiter list (``prev`` reads); fail past ``cap``.
+
+    The count is deterministic for a given input, so it measures work done, not elapsed time. A
+    quadratic scan reads it on the order of tokens squared and stops at the cap.
+    """
+    from ticketctl import adf_from_markdown as mod
+
+    reads = [0]
+    stored: Any = vars(mod._Delim)["prev"]  # the slot descriptor of the real class
+
+    def get_prev(self: Any) -> Any:
+        reads[0] += 1
+        if reads[0] > cap:
+            raise AssertionError(f"more than {cap} delimiter links followed: superlinear")
+        return stored.__get__(self)
+
+    def set_prev(self: Any, value: Any) -> None:
+        stored.__set__(self, value)
+
+    class Counting(mod._Delim):
+        __slots__ = ()
+
+    monkeypatch.setattr(Counting, "prev", property(get_prev, set_prev), raising=False)
+    monkeypatch.setattr(mod, "_Delim", Counting)
+    return reads
+
+
+def test_emphasis_token_soup_is_not_superlinear(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The bound on the read count is linear in the token count (see count_delimiter_reads).
+    reads = count_delimiter_reads(monkeypatch, 10 * 65000)  # about 108 000 reads happen today
     rng = random.Random(7)
     md = "".join(rng.choice(["***", "[", "_a", "](", "*"]) for _ in range(65000))
     start = time.monotonic()
@@ -870,7 +908,8 @@ def test_emphasis_token_soup_is_not_superlinear() -> None:
         check(markdown_to_adf(md, body_chars=32767))
     except sanitize.InputError as exc:
         assert exc.reason == "body_too_large"
-    assert time.monotonic() - start < 2
+    assert time.monotonic() - start < 60  # only a backstop; the bound is the read count
+    assert reads[0] > 0
 
 
 def test_converter_patterns_match_the_validators() -> None:

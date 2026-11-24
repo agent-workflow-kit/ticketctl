@@ -50,7 +50,8 @@ AMBIGUOUS = [
     pytest.param(Fault("status", status=502), id="502"),
     pytest.param(Fault("status", status=503, after_apply=True), id="503"),
     pytest.param(Fault("status", status=504), id="504"),
-    pytest.param(Fault("slow", delay_s=3.0, after_apply=True), id="slower-than-read-timeout"),
+    # The delay only has to outlast the read timeout; the fake wakes it when the test ends.
+    pytest.param(Fault("slow", delay_s=60.0, after_apply=True), id="slower-than-read-timeout"),
 ]
 
 
@@ -92,6 +93,11 @@ def test_every_ambiguous_single_step_write_is_unknown_and_never_resent(
 def test_every_ambiguous_second_step_is_partial_with_unknown_and_not_resent(
     world: World, fault: Fault
 ) -> None:
+    if fault.kind == "slow":
+        # The first step (assign) must finish inside the read timeout or it is the unknown one and
+        # the result is not partial. On a loaded machine 1 s is not enough for a local request,
+        # so give the read a wide margin; the second step's delay is far longer than that.
+        world.write_config("    timeouts:\n      read: 6s\n")
     hooks = Hooks()
     world.fake.inject(arm(fault))
     held = world.hash_of(two_steps())

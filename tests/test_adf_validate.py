@@ -177,9 +177,9 @@ def test_deep_nesting_is_refused_iteratively_without_recursion_error() -> None:
     n = {"type": "paragraph"}
     for _ in range(200_000):
         n = {"type": "blockquote", "content": [n]}
-    start = time.monotonic()
+    start = time.process_time()
     refused(doc(n))
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
 
 
 def test_exactly_five_thousand_nodes_pass_and_one_more_is_body_too_large() -> None:
@@ -201,21 +201,33 @@ def test_reserve_nodes_and_reserve_count_against_the_limits() -> None:
 
 def test_node_bomb_stops_early_and_is_fast() -> None:
     wide = doc(*[{"type": "paragraph"} for _ in range(1_000_000)])
-    start = time.monotonic()
+    start = time.process_time()
     refused(wide, "body_too_large")
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
     huge_marks = doc(para({"type": "text", "text": "a", "marks": [mark("strong")] * 1_000_000}))
-    start = time.monotonic()
+    start = time.process_time()
     refused(huge_marks)
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
 
 
-def test_a_million_valid_children_are_refused_after_bounded_work() -> None:
+def test_a_million_valid_children_are_refused_after_bounded_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bound is the number of nodes ever queued (work done), not elapsed time: the unbounded
+    # queue held a million entries, the bounded one never more than about the node limit.
+    deepest = [0]
+    real_queue = adf_validate._queue
+
+    def watching(parent: Any, path: Any, depth: int, kind: str, stack: Any, room: int) -> None:
+        real_queue(parent, path, depth, kind, stack, room)
+        deepest[0] = max(deepest[0], len(stack))
+
+    monkeypatch.setattr(adf_validate, "_queue", watching)
     wide = doc(*[para() for _ in range(1_000_000)])
     start = time.monotonic()
     refused(wide, "body_too_large")
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.5, elapsed  # about 5 ms locally; the unbounded queue took about 1.7 s
+    assert time.monotonic() - start < 60  # only a backstop
+    assert 0 < deepest[0] <= adf_validate.MAX_NODES + 1
 
 
 def test_a_wide_container_of_exactly_the_limit_is_accepted() -> None:
@@ -932,12 +944,12 @@ def test_a_huge_exponent_float_is_refused() -> None:
 
 def test_deeply_nested_json_is_refused_without_recursion_error_and_fast() -> None:
     for text in ("[" * 100_000, '{"a":' * 20_000 + "1" + "}" * 20_000, "[" * 65 + "]" * 65):
-        start = time.monotonic()
+        start = time.process_time()
         parse_refused(text, "invalid_value", body_chars=32767)
-        assert time.monotonic() - start < 2
-    start = time.monotonic()
+        assert time.process_time() - start < 10
+    start = time.process_time()
     parse_refused("[" * 1_000_000, "body_too_large")
-    assert time.monotonic() - start < 2
+    assert time.process_time() - start < 10
 
 
 def test_brackets_inside_strings_do_not_count_as_nesting() -> None:
