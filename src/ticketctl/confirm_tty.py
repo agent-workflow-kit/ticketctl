@@ -124,6 +124,7 @@ def confirm(
     *,
     override: bool = False,
     hook_names: Sequence[str] = (),
+    early_hooks: bool = False,
     timeout_s: float = PROMPT_TIMEOUT_S,
     opener: Callable[[], int] | None = None,
     stderr: Any = None,
@@ -139,7 +140,9 @@ def confirm(
             select.select([fd], [], [], 0)  # select cannot wait on a descriptor of 1024 or more
         except ValueError:
             raise ConfirmUnavailable("the terminal descriptor is out of range") from None
-        text = compose(plan, shown, override=override, hook_names=hook_names)
+        text = compose(
+            plan, shown, override=override, hook_names=hook_names, early_hooks=early_hooks
+        )
         output.write(stderr if stderr is not None else sys.stderr, text)
         _flush_input(fd)  # type-ahead typed before the prompt never answers it
         _say(fd, PROMPT)

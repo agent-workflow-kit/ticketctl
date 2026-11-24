@@ -1191,7 +1191,7 @@ EXAMPLE_MUTATIONS = [
     ("#   pre-transition:\n", "#   pre-transitionx:\n", "pre-transitionx"),
     (
         '# hooks:\n#   pre-transition:\n#     - cmd: "my-policy-check --stdin-json"\n'
-        "#       timeout: 30\n#   post-comment:\n"
+        "#       timeout: 30\n#       placement: before_confirm\n#   post-comment:\n"
         '#     - cmd: "my-notifier --stdin-json"\n#       async: true\n',
         "",
         "commented hooks",

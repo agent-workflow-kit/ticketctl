@@ -102,7 +102,7 @@ limits:
   retry_after_max: 60s
 
 # Hooks per kind of write: pre-/post- for transition, comment, create, update, sprint and link.
-# Each is an ordered list of {cmd, timeout, async}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only.
+# Each is an ordered list of {cmd, timeout, async, placement}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only; placement (after_confirm by default, or before_confirm) is for pre- hooks only and runs the hook before the confirmation dialog instead of after the answer.
 # A hook runs as `/bin/sh -c <cmd>` with the payload on stdin; exit 13 escalates, any other non-zero exit or a timeout vetoes a pre- hook, and a post- hook failure is only a warning. An async hook is detached and has no timeout enforced.
 # Default: {}.
 hooks: {}
@@ -110,6 +110,7 @@ hooks: {}
 #   pre-transition:
 #     - cmd: "my-policy-check --stdin-json"
 #       timeout: 30
+#       placement: before_confirm
 #   post-comment:
 #     - cmd: "my-notifier --stdin-json"
 #       async: true
