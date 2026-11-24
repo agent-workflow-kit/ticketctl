@@ -787,3 +787,43 @@ def test_a_hook_command_with_control_characters_or_too_long_is_refused(command: 
 )
 def test_ordinary_hook_commands_are_accepted(command: str) -> None:
     assert flags._hook(f"pre-comment={command}") == f"pre-comment={command}"  # noqa: SLF001
+
+
+def _link_payload(links: object) -> dict[str, Any]:
+    planned = _planned(**{**FACTS, "links": links})
+    return hooks.build_payload("pre-link", _plan("link_add"), planned, "0123456789abcdef", [])
+
+
+GOOD_LINK = {"type": "Blocks", "direction": "inward", "key": "DEMO-3"}
+
+
+def test_a_link_payload_copies_only_the_three_link_fields() -> None:
+    payload = _link_payload([{**GOOD_LINK, "summary": "secret ticket text"}])
+    assert payload["links"] == [GOOD_LINK]
+    validator("hooks/pre-link.json").validate(payload)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        "text",
+        [],
+        ["x"],
+        [{**GOOD_LINK, "type": ""}],
+        [{**GOOD_LINK, "type": 5}],
+        [{**GOOD_LINK, "type": "T" * (hooks.NAME_CAP + 1)}],
+        [{**GOOD_LINK, "direction": "sideways"}],
+        [{**GOOD_LINK, "direction": None}],
+        [{**GOOD_LINK, "key": "not a key"}],
+        [GOOD_LINK] * (hooks.MAX_LINKS + 1),
+    ],
+)
+def test_a_link_payload_with_a_bad_fact_is_refused(bad: object) -> None:
+    with pytest.raises(TicketctlError):
+        _link_payload(bad)
+
+
+def test_a_link_payload_of_the_most_links_and_the_longest_type_is_accepted() -> None:
+    longest = {**GOOD_LINK, "type": "T" * hooks.NAME_CAP}
+    assert len(_link_payload([longest] * hooks.MAX_LINKS)["links"]) == hooks.MAX_LINKS

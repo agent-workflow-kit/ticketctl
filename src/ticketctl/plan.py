@@ -31,12 +31,12 @@ if TYPE_CHECKING:
 
 HASH_VERSION = 1
 ACTIONS = (
-    "transition", "comment", "create", "update", "sprint_add", "sprint_remove", "comment_edit",
-    "comment_delete",
+    "transition", "comment", "create", "update", "sprint_add", "sprint_remove", "link_add",
+    "link_remove", "comment_edit", "comment_delete",
 )  # fmt: skip
 STEP_KINDS = (
     "assign", "transition", "set_fields", "add_comment", "create", "sprint_add", "sprint_remove",
-    "edit_comment", "delete_comment",
+    "add_link", "remove_link", "edit_comment", "delete_comment",
 )  # fmt: skip
 WARNINGS = (
     "closed_ticket", "assign_added", "other_sprints_dropped", "sprint_moved", "body_near_limit",
@@ -51,6 +51,8 @@ STEP_PROPS: dict[str, frozenset[str]] = {
     "create": frozenset({"project", "type", "body_sha256", "body_bytes"}),
     "sprint_add": frozenset({"sprint"}),
     "sprint_remove": frozenset({"sprint"}),
+    "add_link": frozenset({"link_type", "direction", "other"}),
+    "remove_link": frozenset({"link_type", "direction", "other", "link_id"}),
     "edit_comment": frozenset({"comment_id", "body_sha256", "body_bytes"}),
     "delete_comment": frozenset({"comment_id"}),
 }

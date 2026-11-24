@@ -950,11 +950,35 @@ DOC_MUTATIONS = [
     ("plan_enums", "{kind: assign|transition|", "{kind: assign|", "transition"),
     (
         "plan_enums",
-        "`sprint_add`, `sprint_remove`, `comment_edit`",
-        "`sprint_remove`, `comment_edit`",
+        "`sprint_add`, `sprint_remove`, `link_add`",
+        "`sprint_remove`, `link_add`",
         "sprint_add",
     ),
-    ("hook_names", "`pre-sprint`, `post-sprint`. Reads", "`pre-sprint`. Reads", "post-sprint"),
+    (
+        "plan_enums",
+        "`link_add`, `link_remove`, `comment_edit` and `comment_delete` (hooks use",
+        "`link_add`, `comment_edit` and `comment_delete` (hooks use",
+        "link_remove",
+    ),
+    (
+        "plan_enums",
+        "`link_remove`, `comment_edit`",
+        "`link_remove`, `comment_editx`",
+        "comment_edit",
+    ),
+    (
+        "plan_enums",
+        "|sprint_add|sprint_remove|add_link|remove_link|edit_comment|delete_comment, ...}",
+        "|sprint_add|sprint_remove|add_link|edit_comment|delete_comment, ...}",
+        "remove_link",
+    ),
+    (
+        "hook_names",
+        "`pre-sprint`, `post-sprint`, `pre-link`",
+        "`pre-sprint`, `pre-link`",
+        "post-sprint",
+    ),
+    ("hook_names", "`pre-link`, `post-link` (", "`pre-link` (", "post-link"),
     (
         "result_vocabularies",
         "| `attempted`, `ok`, `failed`, `partial`, `unknown` |",
