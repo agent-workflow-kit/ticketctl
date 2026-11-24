@@ -2,8 +2,11 @@
 
 It is a thin layer. Every request is made by the existing read handlers (``searchcmd.search``,
 ``getcmd.get``, ``commentscmd.comments`` and ``changelogcmd.changelog``) through the same
-configuration and gateway as the command line; this module never opens a connection, imports no
-write command and has no key that reaches one (``ACTIONS`` is the closed list of what a key can do).
+configuration and gateway as the command line; this module never opens a connection of its own and
+directly imports no write command (only those four read handlers; ``RuntimeSource.pane`` also
+late-imports ``.cli`` to build the argument parser). Read-only is guaranteed by the closed
+``ACTIONS`` set (the only things a key can do) and by every handler being a read, not by the import
+list alone.
 
 The code is split so that nothing but ``draw`` and ``run_screen`` touches a terminal:
 
@@ -45,6 +48,8 @@ MAX_MESSAGE_CHARS = 300
 PANE_ENTRIES = 20  # comments and history entries read for a ticket
 
 PANES = ("ticket", "comments", "history")
+
+NOT_LOADED = ["(not loaded: press the pane's number to try again)"]
 
 # What a key can do. Every action is a view change or a read; there is no write action.
 ACTIONS = frozenset(
@@ -182,7 +187,9 @@ class Browser:
         self.message = ""
         self.show_help = False
         self.done = False
+        self.capped = False  # the list was cut at MAX_TICKETS and more tickets exist
         self._panes: dict[tuple[str, str], list[str]] = {}
+        self._memo: tuple[list[str], int, list[str]] | None = None  # wrapped lines of one pane
         self._take(first_page, replace=True)
 
     # data ------------------------------------------------------------------------------------
@@ -191,19 +198,25 @@ class Browser:
         if replace:
             self.tickets = []
             self.selected = 0
+            self.capped = False
             self._panes.clear()
+            self._memo = None
         known = {t.get("key") for t in self.tickets}
         for t in incoming:
+            if t.get("key") in known:
+                continue
             if len(self.tickets) >= MAX_TICKETS:
+                self.capped = True  # a ticket of this page does not fit
                 break
-            if t.get("key") not in known:
-                self.tickets.append(t)
-                known.add(t.get("key"))
+            self.tickets.append(t)
+            known.add(t.get("key"))
         cursor = page.get("next")
         self.next_cursor = cursor if isinstance(cursor, str) else None
         if len(self.tickets) >= MAX_TICKETS and self.next_cursor is not None:
-            self.message = f"list limit reached ({MAX_TICKETS} tickets)"
+            self.capped = True
             self.next_cursor = None
+        if self.capped:
+            self.message = f"list limit reached ({MAX_TICKETS} tickets)"
 
     def _read(self, what: str, call: Callable[[], Any]) -> Any | None:
         """Run one read; a failure becomes the status message and the state stays as it was."""
@@ -253,7 +266,7 @@ class Browser:
     def _lines(self) -> list[str]:
         held = self._panes.get(self._pane_key())
         if held is None:
-            return ["(not loaded: press the pane's number to try again)"]
+            return NOT_LOADED
         return held
 
     # keys ------------------------------------------------------------------------------------
@@ -275,7 +288,7 @@ class Browser:
         elif self.mode == "list":
             self._list_action(action, rows)
         else:
-            self._detail_action(action, rows, size[1])
+            self._detail_action(action, max(1, size[0] - 2), size[1])  # the body height of view()
         if self.mode == "detail" and action in (
             "open",
             "pane_ticket",
@@ -330,9 +343,14 @@ class Browser:
 
     # drawing ---------------------------------------------------------------------------------
     def _wrapped(self, width: int) -> list[str]:
+        """The shown pane wrapped to ``width``; held until the pane text or the width changes."""
+        lines = self._lines()
+        if self._memo is not None and self._memo[0] is lines and self._memo[1] == width:
+            return self._memo[2]
         out: list[str] = []
-        for line in self._lines():
+        for line in lines:
             out.extend(wrap(line, width))
+        self._memo = (lines, width, out)
         return out
 
     def view(self, rows: int, cols: int) -> list[str]:
@@ -357,7 +375,8 @@ class Browser:
         total = len(self.tickets)
         more = "+" if self.next_cursor is not None else ""
         position = self.selected + 1 if total else 0
-        title = f"ticketctl browse   {position}/{total}{more}"
+        limit = " (limit)" if self.capped else ""
+        title = f"ticketctl browse   {position}/{total}{more}{limit}"
         if not total:
             return title, ["no tickets"]
         top = max(0, min(self.selected - body_rows // 2, total - body_rows))
@@ -425,13 +444,19 @@ def key_actions(curses_module: Any) -> dict[int, str]:
 
 
 def draw(window: Any, lines: Sequence[str], rows: int, cols: int, curses_module: Any) -> None:
-    """Paint ``lines`` (already sanitized and cut to the width); a failing cell is ignored."""
+    """Paint ``lines`` (already sanitized and cut to the width).
+
+    The one error that is ignored is the library's refusal to write the bottom-right cell: a line
+    on the last row that reaches the last column. Any other failure surfaces.
+    """
     window.erase()
     for y, line in enumerate(lines[:rows]):
         try:
             window.addstr(y, 0, line)
         except curses_module.error:
-            pass  # writing the last cell of the last row raises after drawing; nothing to do
+            if y == rows - 1 and display_width(line) >= cols - 1:
+                continue  # curses draws the text, then fails to move the cursor past the corner
+            raise
     window.refresh()
 
 
@@ -458,19 +483,53 @@ def run_loop(window: Any, browser: Browser, curses_module: Any) -> None:
             browser.handle(action, (rows, cols))
 
 
-def run_screen(browser: Browser) -> None:
-    """Start curses around the loop; the terminal is restored on every exit."""
-    import curses
+def _interrupt(signum: int, frame: Any) -> None:
+    """The SIGQUIT handler of the screen: end like Ctrl-C, so the terminal is restored first."""
+    raise KeyboardInterrupt
+
+
+def run_screen(browser: Browser, curses_module: Any = None) -> None:
+    """Start curses around the loop; the terminal is restored on every exit.
+
+    Ctrl-C (SIGINT) and Ctrl-\\ (SIGQUIT, handled here and put back afterwards) raise
+    ``KeyboardInterrupt`` out of the loop, so ``curses.wrapper`` ends the screen first. A
+    ``curses.error`` of the teardown after the loop ended (a closed terminal that refuses the
+    reset) is a clean end; the same error before that surfaces.
+    """
+    import signal
+
+    if curses_module is None:
+        import curses as real_curses
+
+        curses_module = real_curses
+    curses: Any = curses_module
+    finished = False
 
     def main(window: Any) -> None:
+        nonlocal finished
         try:
             curses.curs_set(0)
         except curses.error:
             pass
         window.keypad(True)
         run_loop(window, browser, curses)
+        finished = True
 
-    curses.wrapper(main)
+    quit_signal = getattr(signal, "SIGQUIT", None)
+    previous = None
+    if quit_signal is not None:
+        try:
+            previous = signal.signal(quit_signal, _interrupt)
+        except ValueError:  # not the main thread: the handler cannot be set
+            quit_signal = None
+    try:
+        curses.wrapper(main)
+    except curses.error:
+        if not finished:
+            raise
+    finally:
+        if quit_signal is not None:
+            signal.signal(quit_signal, previous if previous is not None else signal.SIG_DFL)
 
 
 # --------------------------------------------------------------------------------------------

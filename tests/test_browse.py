@@ -10,18 +10,20 @@ from __future__ import annotations
 import ast
 import curses
 import json
+import signal
 import unicodedata
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests.fake_provider import SITE_EMAIL, SITE_TOKEN, FakeProvider
+from tests.fake_provider import ME_ACCOUNT, SITE_EMAIL, SITE_TOKEN, FakeProvider
 from tests.golden import validator
-from ticketctl import browsecmd
+from ticketctl import browsecmd, commentscmd, getcmd
 from ticketctl.browsecmd import ACTIONS, MAX_TICKETS, Browser
-from ticketctl.cli import main
+from ticketctl.cli import build_parser, main
 from ticketctl.errors import TicketctlError
+from ticketctl.flags import extract_globals
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -137,6 +139,30 @@ def test_the_list_is_capped_and_says_so() -> None:
     assert len(b.tickets) == MAX_TICKETS
     assert b.next_cursor is None
     assert "limit" in screen(b)[-1]
+    assert f"{MAX_TICKETS}/{MAX_TICKETS} (limit)" in screen(b)[0]
+
+
+def test_the_cap_stays_in_the_title_after_open_back_and_a_message_change() -> None:
+    pages = [[ticket(i) for i in range(p * 500, p * 500 + 500)] for p in range(6)]
+    b, source = make(pages)
+    press(b, "bottom", "open", "back")
+    assert b.message == "" and "(limit)" in screen(b)[0]
+    source.fail = TicketctlError("unavailable", "x")
+    press(b, "open", "pane_comments")
+    assert "unavailable" in b.message
+    press(b, "back")
+    assert b.message == "" and "(limit)" in screen(b)[0]
+
+
+def test_reload_forgets_the_cap_and_a_short_list_never_shows_it() -> None:
+    pages = [[ticket(i) for i in range(p * 500, p * 500 + 500)] for p in range(6)]
+    b, source = make(pages)
+    press(b, "bottom")
+    assert b.capped
+    source.pages = [[ticket(1), ticket(2)]]
+    press(b, "reload")
+    assert not b.capped and "(limit)" not in screen(b)[0]
+    assert "(limit)" not in make([[ticket(1)]])[0].view(*SIZE)[0]
 
 
 def test_a_failed_next_page_is_a_message_and_the_list_stays() -> None:
@@ -215,13 +241,33 @@ def test_scrolling_a_long_pane_is_clamped_at_both_ends() -> None:
     press(b, "open", "up")
     assert b.scroll == 0
     press(b, "bottom")
-    assert b.scroll == 100 - (24 - 3)
+    assert b.scroll == 100 - (24 - 2)  # the body is rows - 2 lines: title and status bar
     press(b, "down", "page_down")
-    assert b.scroll == 100 - (24 - 3)
+    assert b.scroll == 100 - (24 - 2)
     last = screen(b)[-2]
     assert last == "line 99"
     press(b, "page_up", "top")
     assert b.scroll == 0 and screen(b)[1] == "line 0"
+
+
+def test_the_last_scroll_position_is_the_largest_one_that_still_moves_up() -> None:
+    b, source = make([[ticket(1)]])
+    source.text["ticket"] = "\n".join(f"line {i}" for i in range(100))
+    press(b, "open", "bottom")
+    at_end = screen(b)
+    shown = [x for x in at_end[1:-1] if x]
+    assert shown[0] == "line 78" and shown[-1] == "line 99" and len(shown) == 22
+    press(b, "up")  # one line back must change the screen (it did not when the end was off by one)
+    assert screen(b) != at_end and screen(b)[1] == "line 77"
+    press(b, "down", "down")  # and the end is not passed
+    assert screen(b) == at_end
+
+
+def test_a_pane_that_just_fits_does_not_scroll() -> None:
+    b, source = make([[ticket(1)]])
+    source.text["ticket"] = "\n".join(f"line {i}" for i in range(22))  # 24 rows - 2
+    press(b, "open", "bottom", "page_down", "down")
+    assert b.scroll == 0
 
 
 def test_long_lines_wrap_and_a_pane_is_capped() -> None:
@@ -345,20 +391,129 @@ def test_an_unknown_action_is_refused() -> None:
         b.handle("transition", SIZE)
 
 
+FORBIDDEN_MODULES = {
+    # the write commands and what they run on
+    "writeflow", "transitioncmd", "commentcmd", "commentedit", "createcmd", "updatecmd",
+    "sprintcmd", "linkcmd", "attachmentcmd", "audit", "hooks", "plan", "dedupe", "commands",
+    "handlers", "provider", "jira",
+    # one way in: the gateway is reached only through the read handlers
+    "gateway", "cli",
+    # no network or process code of its own
+    "http", "urllib", "socket", "ssl", "subprocess", "requests", "importlib", "ctypes",
+}  # fmt: skip
+# The only imports allowed although forbidden above: (qualified function, module). The parser
+# is built where it is used because cli imports the command registry that imports this module.
+ALLOWED_LATE_IMPORTS = {("RuntimeSource.pane", "cli")}
+FORBIDDEN_OS_CALLS = ("system", "popen", "exec", "spawn", "fork", "posix_spawn")
+
+
+def import_violations(source: str) -> list[str]:
+    """What in ``source`` imports a forbidden module or starts a process (see the lists above)."""
+    found: list[str] = []
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        here = ".".join(scope)
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            if isinstance(node, ast.Import):
+                paths = [a.name for a in node.names]
+            else:
+                base = node.module or ""
+                paths = [base, *(f"{base}.{a.name}".strip(".") for a in node.names)]
+            for path in paths:
+                bad = FORBIDDEN_MODULES & set(path.split("."))
+                for module in sorted(bad):
+                    if (here, module) not in ALLOWED_LATE_IMPORTS:
+                        found.append(f"import {path} in {here or '<module>'}")
+            if isinstance(node, ast.ImportFrom) and node.module == "os":
+                found.extend(
+                    f"from os import {a.name}"
+                    for a in node.names
+                    if a.name.startswith(FORBIDDEN_OS_CALLS)
+                )
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "__import__":
+                found.append("__import__ call")
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "os"
+                and func.attr.startswith(FORBIDDEN_OS_CALLS)
+            ):
+                found.append(f"os.{func.attr} call")
+        inner = scope
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            inner = (*scope, node.name)
+        for child in ast.iter_child_nodes(node):
+            visit(child, inner)
+
+    visit(ast.parse(source), ())
+    return found
+
+
 def test_the_browse_module_imports_no_write_command_and_no_network_code() -> None:
-    tree = ast.parse((ROOT / "src" / "ticketctl" / "browsecmd.py").read_text())
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            imported |= {a.name for a in node.names} | {node.module or ""}
-        elif isinstance(node, ast.Import):
-            imported |= {a.name for a in node.names}
-    forbidden = {
-        "writeflow", "transitioncmd", "commentcmd", "commentedit", "createcmd", "updatecmd",
-        "sprintcmd", "linkcmd", "attachmentcmd", "gateway", "http", "http.client", "urllib",
-        "socket", "subprocess", "requests",
-    }  # fmt: skip
-    assert not (imported & forbidden), imported & forbidden
+    source = (ROOT / "src" / "ticketctl" / "browsecmd.py").read_text()
+    assert import_violations(source) == []
+
+
+def test_the_late_cli_import_is_the_one_allowed_and_exists() -> None:
+    # The allowlist is not dead: the documented late import is really there.
+    source = (ROOT / "src" / "ticketctl" / "browsecmd.py").read_text()
+    assert "from .cli import build_parser" in source
+    assert (
+        import_violations("class RuntimeSource:\n    def pane(self):\n        from .cli import x\n")
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import ticketctl.writeflow",
+        "from ticketctl import transitioncmd",
+        "from .transitioncmd import transition",
+        "from . import commands",
+        "import urllib.request",
+        "from urllib import request",
+        "import http.client",
+        "import ssl",
+        "import importlib",
+        "from importlib import import_module",
+        "import subprocess",
+        "import socket",
+        "from .gateway import open_gateway",
+        "from .cli import build_parser",  # at the top of the module
+        "def other():\n    from .cli import build_parser",  # a lazy import elsewhere
+        "class RuntimeSource:\n    def search(self):\n        from .cli import x",
+        "class Other:\n    def pane(self):\n        from .cli import x",
+        "def f():\n    import urllib.request",
+        "__import__('subprocess')",
+        "def f():\n    __import__('x')",
+        "import os\nos.system('x')",
+        "import os\nos.popen('x')",
+        "import os\nos.execv('x', [])",
+        "import os\nos.execvp('x', [])",
+        "import os\nos.spawnl(0, 'x')",
+        "from os import system",
+        "from os import execv",
+    ],
+)
+def test_the_import_checker_flags_each_forbidden_form(source: str) -> None:
+    assert import_violations(source) != [], source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nos.environ.get('x')",
+        "from . import changelogcmd, commentscmd, getcmd, searchcmd",
+        "import curses",
+        "from .sanitize import render",
+        "import argparse, copy, dataclasses, sys, unicodedata",
+    ],
+)
+def test_the_import_checker_passes_the_allowed_forms(source: str) -> None:
+    assert import_violations(source) == [], source
 
 
 def test_help_is_a_toggle_and_any_key_closes_it() -> None:
@@ -382,6 +537,10 @@ class FakeWindow:
         self.frames: list[list[str]] = []
         self._rows: dict[int, str] = {}
         self.refreshes = 0
+        self.keypad_calls: list[bool] = []
+
+    def keypad(self, flag: bool) -> None:
+        self.keypad_calls.append(flag)
 
     def getmaxyx(self) -> tuple[int, int]:
         return self.size
@@ -425,11 +584,28 @@ def test_an_unknown_key_is_ignored() -> None:
     assert b.done and b.mode == "list"
 
 
-def test_a_cell_that_cannot_be_written_is_ignored() -> None:
+def test_the_bottom_right_cell_that_curses_cannot_write_is_ignored() -> None:
     b, _ = make([[ticket(1)]])
-    w = FakeWindow([ord("q")], fail_cells=True)
+    # 16 columns: the status line "? help   q quit" is 15 cells, reaching the last column.
+    w = FakeWindow([ord("q")], size=(6, 16), fail_cells=True)
     browsecmd.run_loop(w, b, curses)
-    assert b.done
+    assert b.done and w.frames
+
+
+def test_any_other_curses_failure_surfaces() -> None:
+    last_row_short = FakeWindow([], size=(6, 80), fail_cells=True)  # the line does not reach it
+    with pytest.raises(curses.error):
+        browsecmd.draw(last_row_short, ["a", "b", "c", "d", "e", "short"], 6, 80, curses)
+
+    class FailsEarlyRow(FakeWindow):
+        def addstr(self, y: int, x: int, text: str) -> None:
+            if y == 0:
+                raise curses.error("not the corner")
+            super().addstr(y, x, text)
+
+    with pytest.raises(curses.error):
+        browsecmd.draw(FailsEarlyRow([], size=(6, 16)), ["x" * 15] * 6, 6, 16, curses)
+    assert FakeWindow([]).refreshes == 0
 
 
 def test_a_slow_read_repaints_with_a_message_first() -> None:
@@ -670,10 +846,12 @@ def test_a_first_page_failure_is_the_usual_envelope_before_any_screen(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen = scripted(monkeypatch, [])
-    code, out, err = rig.run("--json", "browse", "--project", "DEMO")
-    assert code == 2  # --json is refused
     code, out, err = rig.run("browse", "--jql", "this is not jql ((")
-    assert code != 0 and seen == [] and "error:" in err
+    assert seen == [] and out == ""
+    assert code == 22 and err.startswith("ticketctl: error: invalid_request [invalid_query]:"), (
+        code,
+        err,
+    )
 
 
 def test_a_bad_token_is_an_error_exit_not_a_screen(
@@ -706,12 +884,20 @@ class Source:
         return pane
 
 source = Source()
-browsecmd.run_screen(browsecmd.Browser(source, source.search(None)))
+try:
+    browsecmd.run_screen(browsecmd.Browser(source, source.search(None)))
+except KeyboardInterrupt:  # what the command turns into exit 130
+    sys.exit(130)
 """
 
+RMCUP = b"\x1b[?1049l"  # the xterm sequence that leaves the alternate screen
 
-def test_the_real_curses_screen_draws_and_quits_on_a_pty(tmp_path: Path) -> None:
-    """A smoke test on a real pty: the key is typed first, so nothing depends on timing."""
+
+def run_on_pty(tmp_path: Path, *, before: bytes = b"", after: bytes = b"") -> tuple[int, bytes]:
+    """Run CHILD on a pty: ``before`` is typed first, ``after`` once the screen is drawn.
+
+    Every wait is a ``select`` bounded to 20 s; a child that hangs is killed by its exact pid.
+    """
     import os
     import pty
     import select
@@ -721,32 +907,533 @@ def test_the_real_curses_screen_draws_and_quits_on_a_pty(tmp_path: Path) -> None
         "TERM": "xterm",
         "HOME": str(tmp_path),
         "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
-        "PATH": "",
-        "PYTHONPATH": str(ROOT / "src"),
+        "PATH": "",  # no ambient program can be started by the child
+        "PYTHONPATH": str(ROOT / "src"),  # honored: the child runs without -I
     }
     pid, fd = pty.fork()
     if pid == 0:  # the child: curses runs on the pty slave
         try:
-            os.execve(sys.executable, [sys.executable, "-I", "-c", CHILD], env)
+            os.execve(sys.executable, [sys.executable, "-c", CHILD], env)
         finally:
             os._exit(127)
-    os.write(fd, b"q")
+    if before:
+        os.write(fd, before)
     output = b""
-    while True:
-        ready, _, _ = select.select([fd], [], [], 20)
-        if not ready:
-            os.waitpid(pid, os.WNOHANG)
-            pytest.fail("the viewer did not finish after `q`")
-        try:
-            chunk = os.read(fd, 65536)
-        except OSError:  # the slave closed: the child is done
-            break
-        if not chunk:
-            break
-        output += chunk
+    sent = not after
+    try:
+        while True:
+            ready, _, _ = select.select([fd], [], [], 20)
+            if not ready:
+                pytest.fail(f"the viewer did not respond within 20 s: {output[-300:]!r}")
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:  # the slave closed: the child is done
+                break
+            if not chunk:
+                break
+            output += chunk
+            if not sent and b"AB-1" in output:
+                os.write(fd, after)
+                sent = True
+    except BaseException:
+        os.kill(pid, signal.SIGKILL)  # the pid captured above, never a pattern
+        os.waitpid(pid, 0)
+        raise
+    finally:
+        os.close(fd)
     _, status = os.waitpid(pid, 0)
-    os.close(fd)
-    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, output[-500:]
+    assert os.WIFEXITED(status), (status, output[-500:])
+    return os.WEXITSTATUS(status), output
+
+
+def test_the_real_curses_screen_draws_and_quits_on_a_pty(tmp_path: Path) -> None:
+    """A smoke test on a real pty: the key is typed first, so nothing depends on timing."""
+    code, output = run_on_pty(tmp_path, before=b"q")
+    assert code == 0, output[-500:]
     assert b"AB-1" in output and b"ticketctl browse" in output
     assert b"<U+001B>" in output  # the escape in the title was made visible, not sent
     assert b"\x1b[31mticket" not in output
+    assert RMCUP in output
+
+
+def test_ctrl_c_on_a_pty_restores_the_terminal_and_ends_with_130(tmp_path: Path) -> None:
+    code, output = run_on_pty(tmp_path, after=b"\x03")
+    assert code == 130, output[-500:]
+    assert RMCUP in output
+    assert b"Traceback" not in output
+
+
+def test_ctrl_backslash_on_a_pty_restores_the_terminal_and_does_not_hang(tmp_path: Path) -> None:
+    code, output = run_on_pty(tmp_path, after=b"\x1c")  # SIGQUIT
+    assert code == 130, output[-500:]
+    assert RMCUP in output and b"Traceback" not in output
+
+
+# --- round 1 of the review: pass-through, limits, restore, hostile fields --------------------
+
+
+def config_text(sites: dict[str, FakeProvider], projects: dict[str, str], default: str) -> str:
+    lines = [f"default_site: {default}", "sites:"]
+    for name, provider in sites.items():
+        lines += [
+            f"  {name}:",
+            f"    url: {provider.url}",
+            f"    email: {SITE_EMAIL}",
+            f"    token_env: {TOKEN_VAR}",
+            "    allow_http: true",
+            f"    projects: [{projects[name]}]",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def runtime_source(config: Path, *argv: str) -> browsecmd.RuntimeSource:
+    g, _ = extract_globals(["--config", str(config)])
+    ns = build_parser().parse_args(["browse", "--project", "DEMO", *argv])
+    return browsecmd.RuntimeSource(g, ns)
+
+
+@pytest.fixture
+def two_sites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeProvider, fake_factory: Any
+) -> tuple[Path, FakeProvider, FakeProvider]:
+    other = fake_factory(None)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv(TOKEN_VAR, SITE_TOKEN)
+    monkeypatch.delenv("TICKETCTL_READ_ONLY", raising=False)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        config_text({"main": fake, "other": other}, {"main": "DEMO", "other": "OTH"}, "main")
+    )
+    config.chmod(0o600)
+    return config, fake, other
+
+
+def test_a_pane_is_read_from_the_site_of_the_ticket_not_the_default(
+    two_sites: tuple[Path, FakeProvider, FakeProvider],
+) -> None:
+    config, main_site, other_site = two_sites
+    source = runtime_source(config)
+    text = source.pane("ticket", {"key": "DEMO-2", "site": "other"})
+    assert "DEMO-2" in text
+    assert other_site.calls and main_site.calls == []  # nothing reached the default site
+    for pane in ("comments", "history"):
+        source.pane(pane, {"key": "DEMO-2", "site": "other"})
+    assert main_site.calls == []
+    source.pane("ticket", {"key": "DEMO-2", "site": "main"})
+    assert main_site.calls  # and the ticket's own site is the one that is used
+
+
+@pytest.mark.parametrize("key", ["--help", "-x", "--", "-"])
+def test_a_key_that_looks_like_a_flag_reaches_the_handler_as_one_positional(
+    key: str, two_sites: tuple[Path, FakeProvider, FakeProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, main_site, _ = two_sites
+    seen: list[Any] = []
+    real = getcmd.get
+
+    def spy(g: Any, a: Any) -> Any:
+        seen.append(a)
+        return real(g, a)
+
+    monkeypatch.setattr(getcmd, "get", spy)
+    source = runtime_source(config)
+    b = Browser(source, {"tickets": [{"key": key, "site": "main"}], "next": None})
+    press(b, "open")  # must neither exit the process nor print help
+    assert b.mode == "detail" and not b.done
+    assert [a.keys for a in seen] == [[key]]
+    assert "error:" in b.message and main_site.calls == []  # refused as a key, nothing sent
+
+
+def test_the_comment_and_history_reads_ask_for_the_newest_twenty(
+    two_sites: tuple[Path, FakeProvider, FakeProvider], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, main_site, _ = two_sites
+    args: list[Any] = []
+    real = commentscmd.comments
+
+    def spy(g: Any, a: Any) -> Any:
+        args.append(a)
+        return real(g, a)
+
+    monkeypatch.setattr(commentscmd, "comments", spy)
+    source = runtime_source(config)
+    source.pane("comments", {"key": "DEMO-1", "site": "main"})
+    (a,) = args
+    assert (a.key, a.limit, a.newest_first) == ("DEMO-1", browsecmd.PANE_ENTRIES, True)
+    sent = [c for c in main_site.calls if c.path.endswith("/issue/DEMO-1/comment")]
+    assert sent and {c.one("orderBy") for c in sent} == {"-created"}
+
+
+def test_a_session_sends_no_count_request_for_a_page(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripted(monkeypatch, ["down", "down", "bottom", "reload"])
+    code, _, _ = rig.run("browse", "--project", "DEMO", "--limit", "1")
+    assert code == 0
+    paths = [c.path for c in rig.fake.calls]
+    assert paths.count("/rest/api/3/search/jql") >= 4  # pages of one ticket, then the reload
+    assert not [p for p in paths if "count" in p]
+
+
+def runtime_session(rig: Rig) -> browsecmd.RuntimeSource:
+    return runtime_source(rig.config)
+
+
+def add_comments(fake: FakeProvider, key: str, n: int) -> None:
+    for i in range(n):
+        when = fake.now
+        fake.tickets[key].comments.append(
+            {
+                "id": str(40000 + i),
+                "author": fake._user(ME_ACCOUNT),  # noqa: SLF001
+                "updateAuthor": fake._user(ME_ACCOUNT),  # noqa: SLF001
+                "body": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c"}]}],
+                },
+                "_created": when,
+                "_updated": when,
+                "properties": {},
+                "jsdPublic": True,
+            }
+        )
+
+
+@pytest.mark.parametrize(("n", "shown", "more"), [(19, 19, False), (20, 20, False), (21, 20, True)])
+def test_a_pane_holds_at_most_the_newest_twenty_entries(
+    rig: Rig, n: int, shown: int, more: bool
+) -> None:
+    assert browsecmd.PANE_ENTRIES == 20
+    add_comments(rig.fake, "DEMO-1", n)
+    for i in range(n):
+        rig.fake.add_history("DEMO-1", rig.fake.history_item("summary", f"a{i}", f"b{i}"))
+    source = runtime_session(rig)
+    ticket_ = {"key": "DEMO-1", "site": "main"}
+    for pane, noun in (("comments", "comments"), ("history", "entries")):
+        first = source.pane(pane, ticket_).split("\n")[0]
+        expected = f"DEMO-1: {shown} of {n} {noun}" + (", more" if more else "")
+        assert first == expected, first
+
+
+# the pane limits at N - 1, N and N + 1 -----------------------------------------------------
+
+
+def paged(total: int, size: int) -> list[list[dict[str, Any]]]:
+    keys = [ticket(i) for i in range(total)]
+    return [keys[i : i + size] for i in range(0, total, size)] or [[]]
+
+
+@pytest.mark.parametrize("size", [500, 999])
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+@pytest.mark.parametrize("how", ["down", "bottom"])
+def test_the_ticket_cap_at_one_less_exactly_and_one_more(how: str, delta: int, size: int) -> None:
+    total = MAX_TICKETS + delta
+    b, _ = make(paged(total, size))
+    if how == "bottom":
+        press(b, "bottom")
+    else:
+        press(b, *["down"] * (total + 3))
+    assert len(b.tickets) == min(total, MAX_TICKETS)
+    assert b.capped is (delta > 0)
+    assert b.next_cursor is None
+    assert ("(limit)" in screen(b)[0]) is (delta > 0)
+    assert b.selected == len(b.tickets) - 1
+
+
+def test_the_pane_line_cap_at_one_less_exactly_and_one_more() -> None:
+    n = browsecmd.MAX_PANE_LINES
+    for count in (n - 1, n):
+        lines = browsecmd.clean_lines("\n".join(["x"] * count))
+        assert len(lines) == count and "not shown" not in lines[-1]
+    lines = browsecmd.clean_lines("\n".join(["x"] * (n + 1)))
+    assert len(lines) == n + 1 and lines[:n] == ["x"] * n and "not shown" in lines[-1]
+
+
+def test_a_line_is_cut_at_the_line_cap() -> None:
+    n = browsecmd.MAX_LINE_CHARS
+    assert [len(browsecmd.clean_lines("a" * c)[0]) for c in (n - 1, n, n + 1)] == [n - 1, n, n]
+
+
+def test_a_pane_text_is_cut_at_the_character_cap() -> None:
+    n = browsecmd.MAX_PANE_CHARS
+    for chars, kept in ((n - 1, True), (n, True), (n + 1, False)):
+        text = "a" * (chars - 2) + "\nb"
+        assert len(text) == chars
+        assert ("b" in browsecmd.clean_lines(text)) is kept, chars
+
+
+def test_a_row_is_cut_at_the_row_cap() -> None:
+    n = browsecmd.MAX_ROW_CHARS
+    rows = [
+        browsecmd.ticket_row({"key": "K", "title": "t" * (total - 3)})
+        for total in (n - 1, n, n + 1)
+    ]
+    assert [len(r) for r in rows] == [n - 1, n, n]
+
+
+def test_a_status_message_is_cut_at_the_message_cap() -> None:
+    n = browsecmd.MAX_MESSAGE_CHARS
+    b, source = make([[ticket(1)], [ticket(2)]], fail=TicketctlError("unavailable", "m"))
+    press(b, "down")
+    prefix = len(b.message) - 1  # "error: unavailable...: " around the one-character message
+    lengths = []
+    for total in (n - 1, n, n + 1):
+        source.fail = TicketctlError("unavailable", "m" * (total - prefix))
+        press(b, "down")
+        lengths.append(len(b.message))
+    assert lengths == [n - 1, n, n]
+    assert len(screen(b, (24, n + 50))[-1]) == n
+
+
+# hostile text in the other fields, in every frame --------------------------------------------
+
+
+def frames_are_clean(w: FakeWindow) -> None:
+    assert w.frames
+    for frame in w.frames:
+        for line in frame:
+            assert not bad(line), line
+            assert browsecmd.display_width(line) <= w.size[1] - 1
+
+
+@pytest.mark.parametrize("field", ["key", "status", "site"])
+@pytest.mark.parametrize("text", HOSTILE)
+def test_hostile_ticket_fields_never_reach_a_frame_or_the_busy_message(
+    field: str, text: str
+) -> None:
+    t = ticket(1)
+    if field == "key":
+        t["key"] = text
+    elif field == "status":
+        t["status"] = {"name": text, "category": "new"}
+    else:
+        t["site"] = text
+    b, _ = make([[t]])
+    w = FakeWindow([ord("l"), ord("2"), ord("3"), ord("q"), ord("q")])
+    browsecmd.run_loop(w, b, curses)
+    frames_are_clean(w)
+    assert any(frame[-1].startswith("reading ") for frame in w.frames)  # the busy frame is covered
+
+
+@pytest.mark.parametrize("text", HOSTILE)
+def test_a_hostile_footer_alone_is_sanitized(text: str) -> None:
+    b, _ = make([[ticket(1)]])
+    b.message = text
+    for size in [(24, 80), (5, 13), (60, 200)]:
+        for line in screen(b, size):
+            assert not bad(line)
+
+
+@pytest.mark.parametrize("text", HOSTILE)
+def test_a_hostile_error_alone_is_sanitized_in_every_frame(text: str) -> None:
+    b, source = make([[ticket(1)], [ticket(2)]], fail=TicketctlError("rejected", text))
+    w = FakeWindow([ord("j"), ord("l"), ord("2"), ord("q"), ord("q")])
+    browsecmd.run_loop(w, b, curses)
+    frames_are_clean(w)
+    assert any("error:" in frame[-1] for frame in w.frames)
+    b, source = make([[ticket(1)]])
+    source.fail = RuntimeError(text)  # an unexpected exception shows its class only
+    press(b, "open")
+    assert not [c for line in screen(b) for c in bad(line)]
+
+
+# --- the restore of the terminal and the interrupt -------------------------------------------
+
+
+class ScreenCurses:
+    """A stand-in for the curses module as ``run_screen`` uses it."""
+
+    error = curses.error
+
+    def __init__(
+        self, window: FakeWindow, *, cursor_fails: bool = False, teardown_fails: bool = False
+    ) -> None:
+        self.window = window
+        self.cursor_fails = cursor_fails
+        self.teardown_fails = teardown_fails
+        self.cursor_calls: list[int] = []
+        self.restored = 0
+        self.quit_handler: Any = None
+
+    def curs_set(self, visibility: int) -> None:
+        self.cursor_calls.append(visibility)
+        if self.cursor_fails:
+            raise curses.error("this terminal has no cursor control")
+
+    def wrapper(self, func: Any) -> Any:
+        self.quit_handler = signal.getsignal(signal.SIGQUIT)
+        try:
+            return func(self.window)
+        finally:
+            self.restored += 1  # endwin
+            if self.teardown_fails:
+                raise curses.error("nocbreak() returned ERR")
+
+
+class Interrupting(FakeWindow):
+    def getch(self) -> int:
+        raise KeyboardInterrupt
+
+
+def test_the_screen_starts_with_keypad_on_and_survives_a_terminal_with_no_cursor_control() -> None:
+    b, _ = make([[ticket(1)]])
+    w = FakeWindow([ord("q")])
+    fake_curses = ScreenCurses(w, cursor_fails=True)
+    browsecmd.run_screen(b, fake_curses)
+    assert w.keypad_calls == [True] and fake_curses.cursor_calls == [0]
+    assert b.done and fake_curses.restored == 1
+
+
+def test_an_interrupt_in_the_loop_restores_the_terminal_and_propagates() -> None:
+    b, _ = make([[ticket(1)]])
+    fake_curses = ScreenCurses(Interrupting([]))
+    with pytest.raises(KeyboardInterrupt):
+        browsecmd.run_screen(b, fake_curses)
+    assert fake_curses.restored == 1
+
+
+def test_an_interrupt_in_a_read_restores_the_terminal_and_propagates() -> None:
+    b, source = make([[ticket(1)]])
+    source.fail = KeyboardInterrupt()
+    fake_curses = ScreenCurses(FakeWindow([ord("l")]))
+    with pytest.raises(KeyboardInterrupt):
+        browsecmd.run_screen(b, fake_curses)
+    assert fake_curses.restored == 1
+
+
+def test_any_other_exception_in_the_loop_restores_the_terminal_too() -> None:
+    b, _ = make([[ticket(1)]])
+
+    def boom(action: str, size: tuple[int, int]) -> None:
+        raise RuntimeError("from the loop")
+
+    b.handle = boom  # type: ignore[method-assign]
+    fake_curses = ScreenCurses(FakeWindow([ord("j")]))
+    with pytest.raises(RuntimeError, match="from the loop"):
+        browsecmd.run_screen(b, fake_curses)
+    assert fake_curses.restored == 1
+
+
+def test_ctrl_c_in_a_pane_read_is_exit_130_through_the_command(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripted(monkeypatch, ["open"])
+
+    def interrupted(self: Any, pane: str, ticket_: Any) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(browsecmd.RuntimeSource, "pane", interrupted)
+    code, out, err = rig.run("browse", "--project", "DEMO")
+    assert (code, out, err) == (130, "", "ticketctl: interrupted\n")
+
+
+def test_ctrl_c_in_the_key_loop_is_exit_130_through_the_command(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(browsecmd, "require_terminal", lambda env: None)
+    real = browsecmd.run_screen
+    holder: list[ScreenCurses] = []
+
+    def screen_with_interrupt(browser: Browser) -> None:
+        holder.append(ScreenCurses(Interrupting([])))
+        real(browser, holder[0])
+
+    monkeypatch.setattr(browsecmd, "run_screen", screen_with_interrupt)
+    code, out, err = rig.run("browse", "--project", "DEMO")
+    assert (code, out, err) == (130, "", "ticketctl: interrupted\n")
+    assert holder[0].restored == 1
+
+
+def test_sigquit_is_handled_during_the_screen_and_the_old_handler_comes_back() -> None:
+    sentinel = lambda signum, frame: None  # noqa: E731
+    old = signal.signal(signal.SIGQUIT, sentinel)
+    try:
+        b, _ = make([[ticket(1)]])
+        fake_curses = ScreenCurses(FakeWindow([ord("q")]))
+        browsecmd.run_screen(b, fake_curses)
+        assert fake_curses.quit_handler is browsecmd._interrupt  # noqa: SLF001
+        assert signal.getsignal(signal.SIGQUIT) is sentinel
+        # the handler ends the loop like Ctrl-C, and is put back on that path too
+        b, _ = make([[ticket(1)]])
+        fake_curses = ScreenCurses(Interrupting([]))
+        with pytest.raises(KeyboardInterrupt):
+            browsecmd.run_screen(b, fake_curses)
+        assert signal.getsignal(signal.SIGQUIT) is sentinel
+        with pytest.raises(KeyboardInterrupt):
+            browsecmd._interrupt(signal.SIGQUIT, None)  # noqa: SLF001
+    finally:
+        signal.signal(signal.SIGQUIT, old)
+
+
+@pytest.mark.parametrize("keys", [[], [ord("q")]])
+def test_a_teardown_error_after_the_loop_ended_is_a_clean_end(keys: list[int]) -> None:
+    b, _ = make([[ticket(1)]])
+    fake_curses = ScreenCurses(FakeWindow(keys), teardown_fails=True)
+    browsecmd.run_screen(b, fake_curses)  # no exception: the input ended or the user quit
+    assert fake_curses.restored == 1
+
+
+def test_a_curses_error_before_the_loop_ended_still_surfaces() -> None:
+    b, _ = make([[ticket(1)]])
+
+    class Failing(FakeWindow):
+        def getch(self) -> int:
+            raise curses.error("getch failed")
+
+    with pytest.raises(curses.error):
+        browsecmd.run_screen(b, ScreenCurses(Failing([]), teardown_fails=True))
+
+
+# --- reload and the wrap memo ----------------------------------------------------------------
+
+
+def test_reload_drops_the_held_panes_so_a_reopened_ticket_is_read_again() -> None:
+    b, source = make([[ticket(1)]])
+    press(b, "open", "back")
+    assert source.panes == [("ticket", "AB-1")]
+    press(b, "reload", "open")
+    assert source.panes == [("ticket", "AB-1")] * 2
+
+
+def test_a_pane_is_wrapped_once_for_several_views_and_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b, source = make([[ticket(1)]])
+    source.text["ticket"] = "\n".join(f"line {i}" for i in range(100))
+    calls: list[str] = []
+    real = browsecmd.wrap
+
+    def counting(text: str, width: int) -> list[str]:
+        calls.append(text)
+        return real(text, width)
+
+    monkeypatch.setattr(browsecmd, "wrap", counting)
+    press(b, "open")
+    screen(b)
+    first = len(calls)
+    assert first == 100
+    screen(b)
+    screen(b)
+    press(b, "down")  # a key that scrolls
+    screen(b)
+    assert len(calls) == first
+    press(b, "pane_comments")  # another pane has its own text: it is wrapped, once
+    screen(b)
+    screen(b)
+    assert len(calls) == first + 1
+    press(b, "pane_ticket")
+    screen(b)
+    assert len(calls) == first + 1 + 100  # back to the first pane: wrapped again, then held
+    screen(b, (24, 60))  # a different width is a different wrap
+    assert len(calls) == first + 1 + 200
+
+
+def test_a_changed_pane_text_is_wrapped_again() -> None:
+    b, source = make([[ticket(1)]])
+    source.text["ticket"] = "first text"
+    press(b, "open")
+    assert "first text" in screen(b)[1]
+    source.text["ticket"] = "second text"
+    press(b, "reload", "open")
+    assert "second text" in screen(b)[1] and "first text" not in screen(b)[1]
