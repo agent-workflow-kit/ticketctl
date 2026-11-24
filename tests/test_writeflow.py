@@ -130,6 +130,11 @@ class Hooks:
             raise self.veto
         return HookResult(list(self.ids), list(self.escalate))
 
+    def before_confirm(
+        self, plan: dict[str, Any], planned: Planned, attempt_id: str, decision_ids: list[str]
+    ) -> HookResult:
+        return HookResult()  # no hook is placed before the confirmation
+
     def post(self, plan, planned, attempt_id, decision_ids, info: PostInfo) -> None:
         self.post_calls.append(info)
         if self.post_raises:

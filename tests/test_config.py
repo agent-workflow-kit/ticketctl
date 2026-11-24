@@ -577,6 +577,36 @@ def test_post_hook_may_be_async_pre_hook_may_not(home: Home) -> None:
     )
 
 
+def test_pre_hook_placement_defaults_to_after_confirm_and_accepts_before_confirm(
+    home: Home,
+) -> None:
+    home.main(
+        MINIMAL
+        + "hooks:\n  pre-update:\n    - cmd: a\n    - cmd: b\n      placement: before_confirm\n"
+        "    - cmd: c\n      placement: after_confirm\n"
+    )
+    placements = [h.placement for h in home.load().config.hooks["pre-update"]]
+    assert placements == ["after_confirm", "before_confirm", "after_confirm"]
+
+
+@pytest.mark.parametrize("value", ["sometime", "''", "true", "Before_Confirm", "null"])
+def test_pre_hook_placement_rejects_other_values(home: Home, value: str) -> None:
+    expect_error(
+        home,
+        MINIMAL + f"hooks:\n  pre-update:\n    - cmd: x\n      placement: {value}\n",
+        "hooks.pre-update[0].placement",
+    )
+
+
+@pytest.mark.parametrize("value", ["before_confirm", "after_confirm"])
+def test_a_post_hook_has_no_placement(home: Home, value: str) -> None:
+    expect_error(
+        home,
+        MINIMAL + f"hooks:\n  post-update:\n    - cmd: x\n      placement: {value}\n",
+        "hooks.post-update[0].placement",
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "seconds"),
     [("1", 1), ("600", 600), ("'10s'", 10), ("'2m'", 120), ("'10m'", 600), ("'3000ms'", 3)],

@@ -59,7 +59,7 @@ uv tool install git+https://github.com/agent-workflow-kit/ticketctl
 
 ## Hooks
 
-One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the confirmation and can veto (exit 11) or escalate (exit 13). Payload fields and rules are in [docs/interface.md](docs/interface.md#hooks).
+One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the confirmation (or before it, with `placement: before_confirm` in its config entry) and can veto (exit 11) or escalate (exit 13); `--dry-run --run-hooks` runs the `pre-` hooks without writing. Payload fields and rules are in [docs/interface.md](docs/interface.md#hooks).
 
 | Kind | Hooks |
 |---|---|
@@ -77,7 +77,7 @@ One `pre-` and one `post-` hook per kind of write; a `pre-` hook runs after the 
 
 - `TICKETCTL_TIMEOUT`, `TICKETCTL_DEFAULT_SITE` and `TICKETCTL_READ_ONLY` set the three top-level scalar config keys (`TICKETCTL_READ_ONLY=1` turns read-only mode on and nothing in the same process turns it off (an accident guard, not a security boundary), see [Read-only mode](docs/interface.md#read-only-mode)); nested keys cannot come from the environment.
 - The API token is read only from the variable named by `token_env` (and the email from `email_env` when used).
-- Hooks receive `TICKETCTL_HOOK`, `TICKETCTL_ID` and `TICKETCTL_OBJECT_TYPE`; they are hook variables, not config keys. `TICKETCTL_DEBUG` is a debug switch (a traceback for exit 1) and `TICKETCTL_LIVE` is the live-test switch.
+- Hooks receive `TICKETCTL_HOOK`, `TICKETCTL_ID` and `TICKETCTL_OBJECT_TYPE` (and `TICKETCTL_DRY_RUN=1` under `--dry-run --run-hooks`); they are hook variables, not config keys. `TICKETCTL_DEBUG` is a debug switch (a traceback for exit 1) and `TICKETCTL_LIVE` is the live-test switch.
 
 ## Exit codes
 

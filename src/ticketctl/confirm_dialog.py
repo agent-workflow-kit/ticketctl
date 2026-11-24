@@ -206,6 +206,7 @@ def compose(
     *,
     override: bool = False,
     hook_names: Sequence[str] = (),
+    early_hooks: bool = False,
 ) -> str:
     """The dialog text (no trailing newline); the prompt is written after it."""
     out: list[str] = []
@@ -252,7 +253,11 @@ def compose(
         )
     for code in plan.get("warnings") or []:
         out.append(f"warning: {_single(code, 60)}")
-    out.append("pre- hooks run after your answer and can still stop the write")
+    if early_hooks:
+        out.append("hooks placed before this question have run; other pre- hooks run after")
+        out.append("your answer and can still stop the write")
+    else:
+        out.append("pre- hooks run after your answer and can still stop the write")
     if override:
         out.append(OVERRIDE_LINE)
         names = list(dict.fromkeys(hook_names))

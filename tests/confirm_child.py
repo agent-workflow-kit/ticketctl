@@ -57,7 +57,9 @@ def main() -> int:
     shown = [ShownText("comment", cfg.get("text", "hello body"))]
     outcome: dict[str, object] = {}
     try:
-        accepted = confirm_tty.confirm(plan, shown, timeout_s=cfg.get("timeout", 5.0))
+        accepted = confirm_tty.confirm(
+            plan, shown, early_hooks=bool(cfg.get("early_hooks")), timeout_s=cfg.get("timeout", 5.0)
+        )
         outcome["result"] = "accepted" if accepted else "declined"
     except confirm_tty.ConfirmUnavailable as exc:
         outcome["result"] = "unavailable"

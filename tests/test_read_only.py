@@ -260,6 +260,23 @@ def test_dry_run_still_plans_and_sends_no_write(rig: Rig) -> None:
     assert rig.side_effects() == []
 
 
+def test_dry_run_with_run_hooks_passes_the_gate_and_a_plain_write_does_not(
+    rig: Rig, tmp_path: Path
+) -> None:
+    ran = tmp_path / "pre-ran"
+    rig.write_config(
+        True, hooks=f"hooks:\n  pre-comment:\n    - cmd: /bin/sh -c 'echo x > {ran}'\n"
+    )
+    code, plan = rig.doc("--dry-run", "--run-hooks", "comment", "DEMO-1", "--body", "hello")
+    assert code == 0 and plan["action"] == "comment" and plan["steps"]
+    assert ran.exists()  # the operator's own hook ran; read-only mode does not restrict it
+    assert [c for c in rig.fake.calls if c.method != "GET"] == []
+    assert rig.side_effects() == []
+    ran.unlink()
+    code, env = rig.doc("comment", "DEMO-1", "--body", "hello", "--dedupe-key", "k")
+    assert (code, env["error"]["code"]) == (20, "read_only") and not ran.exists()
+
+
 def test_dry_run_of_every_write_command_sends_no_write(rig: Rig) -> None:
     for argv in WRITE_CASES.values():
         code, doc = rig.doc("--dry-run", *argv)
