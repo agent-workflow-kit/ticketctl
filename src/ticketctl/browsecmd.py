@@ -519,12 +519,19 @@ def run_screen(browser: Browser, curses_module: Any = None) -> None:
     previous = None
     if quit_signal is not None:
         try:
-            previous = signal.signal(quit_signal, _interrupt)
+            previous = signal.getsignal(quit_signal)
+            if previous is signal.SIG_IGN:  # ignored at the start: stays ignored
+                quit_signal = None
+            else:
+                signal.signal(quit_signal, _interrupt)
         except ValueError:  # not the main thread: the handler cannot be set
             quit_signal = None
     try:
         curses.wrapper(main)
-    except curses.error:
+    except curses.error as error:
+        # a teardown error raised while an interrupt was in flight must not replace it
+        if isinstance(error.__context__, KeyboardInterrupt):
+            raise error.__context__ from None
         if not finished:
             raise
     finally:

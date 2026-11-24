@@ -1366,6 +1366,26 @@ def test_sigquit_is_handled_during_the_screen_and_the_old_handler_comes_back() -
         signal.signal(signal.SIGQUIT, old)
 
 
+def test_a_teardown_error_after_an_interrupt_keeps_the_interrupt() -> None:
+    b, _ = make([[ticket(1)]])
+    fake_curses = ScreenCurses(Interrupting([]), teardown_fails=True)
+    with pytest.raises(KeyboardInterrupt):
+        browsecmd.run_screen(b, fake_curses)
+    assert fake_curses.restored == 1
+
+
+def test_an_ignored_sigquit_stays_ignored_during_the_screen() -> None:
+    old = signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+    try:
+        b, _ = make([[ticket(1)]])
+        fake_curses = ScreenCurses(FakeWindow([ord("q")]))
+        browsecmd.run_screen(b, fake_curses)
+        assert fake_curses.quit_handler is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGQUIT) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGQUIT, old)
+
+
 @pytest.mark.parametrize("keys", [[], [ord("q")]])
 def test_a_teardown_error_after_the_loop_ended_is_a_clean_end(keys: list[int]) -> None:
     b, _ = make([[ticket(1)]])
