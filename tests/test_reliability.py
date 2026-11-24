@@ -9,6 +9,7 @@ Faults are the fake provider's (``Fault``); the retry sleeps are recorded, never
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import re
 from pathlib import Path
@@ -21,6 +22,7 @@ from tests.scripted_server import closed_port
 from tests.test_dedupe_flow import Virtual
 from ticketctl import createcmd, runtime
 from ticketctl.cli import main
+from ticketctl.gateway import Deadline
 from ticketctl.writeflow import Seams
 
 ENV_VAR = "TICKETCTL_TEST_RELIABILITY_ENV"
@@ -83,6 +85,15 @@ def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, fake: Fake
     # The create lag guard waits on a virtual clock (it moves the fake's clock too), never for real.
     monkeypatch.setattr(createcmd, "make_clock", out.virtual.clock)
     return out
+
+
+@pytest.fixture
+def sleep_budget(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> Cli:
+    """A --timeout budget that only the recorded retry sleeps spend, never real elapsed time."""
+    monkeypatch.setattr(
+        runtime, "Deadline", functools.partial(Deadline, clock=lambda: sum(cli.sleeps))
+    )
+    return cli
 
 
 def fail(fake: FakeProvider, method: str, path: str, status: int, **kw: Any) -> Fault:
@@ -893,11 +904,11 @@ COMMENTS = r"/issue/DEMO-1/comment$"
 
 @pytest.mark.parametrize("status", [503, 429])
 def test_a_status_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
-    cli: Cli, status: int
+    sleep_budget: Cli, status: int
 ) -> None:
-    # The second delay is 1.0 s and a budget of 1 s has been spent a little by then.
-    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
-    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
+    # The second delay is 1.0 s and the 1 s budget has spent 0.5 s (the first sleep) by then.
+    # The budget counts only the recorded sleeps, so real elapsed time cannot change the outcome.
+    cli = sleep_budget
     fail(cli.fake, "GET", COMMENTS, status)
     code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
@@ -906,10 +917,10 @@ def test_a_status_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
 
 
 def test_a_failure_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout(
-    cli: Cli,
+    sleep_budget: Cli,
 ) -> None:
-    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
-    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
+    # The budget counts only the recorded sleeps, so real elapsed time cannot change the outcome.
+    cli = sleep_budget
     cli.fake.inject(Fault("reset", method="GET", path=COMMENTS, times=None))
     code, err = cli.error("--timeout", "1s", "comments", "DEMO-1")
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
@@ -919,10 +930,10 @@ def test_a_failure_backoff_longer_than_the_remaining_time_ends_a_read_as_timeout
 
 @pytest.mark.parametrize("argv, method, path", WRITES)
 def test_a_429_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout_nothing_unknown(
-    cli: Cli, argv: tuple[str, ...], method: str, path: str
+    sleep_budget: Cli, argv: tuple[str, ...], method: str, path: str
 ) -> None:
-    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
-    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
+    # The budget counts only the recorded sleeps, so real elapsed time cannot change the outcome.
+    cli = sleep_budget
     code, plan = cli.error("--dry-run", *argv)
     fail(cli.fake, method, path, 429)
     code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
@@ -933,10 +944,10 @@ def test_a_429_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout_no
 
 @pytest.mark.parametrize("argv, method, path", WRITES)
 def test_a_connect_failure_backoff_longer_than_the_remaining_time_ends_a_write_as_timeout(
-    cli: Cli, closed_writes: None, argv: tuple[str, ...], method: str, path: str
+    sleep_budget: Cli, closed_writes: None, argv: tuple[str, ...], method: str, path: str
 ) -> None:
-    # Timing margin: the first 0.5 s backoff is taken only if under 0.5 s of the 1 s budget has
-    # elapsed (generous: 0.5 s of stall before the first retry would be needed to fail).
+    # The budget counts only the recorded sleeps, so real elapsed time cannot change the outcome.
+    cli = sleep_budget
     code, plan = cli.error("--dry-run", *argv)
     code, err = cli.error("--timeout", "1s", "--yes", "--expect-plan", plan["plan_sha256"], *argv)
     assert (code, err["code"], err["outcome_unknown"]) == (12, "timeout", False)
