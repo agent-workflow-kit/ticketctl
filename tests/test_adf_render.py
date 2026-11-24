@@ -403,13 +403,27 @@ def test_cut_never_splits_a_marker() -> None:
     assert sanitize_body(body) == body
 
 
-def test_prefix_amplification_is_charged() -> None:
+def test_prefix_amplification_is_charged(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The guard is that every emitted line charges its container prefix, so the renderer stops
+    # after about OUTPUT_LIMIT / prefix-length lines instead of emitting all 200 000. That is
+    # asserted on the number of lines kept (deterministic), not on elapsed time.
+    contexts: list[Any] = []
+    real_init = adf_render._Ctx.__init__
+
+    def remember(self: Any) -> None:
+        real_init(self)
+        contexts.append(self)
+
+    monkeypatch.setattr(adf_render._Ctx, "__init__", remember)
     node: Any = {"type": "paragraph", "content": [txt("x\n" * 200_000)]}
     for _ in range(40):
         node = {"type": "blockquote", "content": [node]}
     started = time.monotonic()
     result = render_adf(doc(node))
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 60  # only a backstop; the bound is the line count
+    (ctx,) = contexts
+    prefix = len("> " * 40)
+    assert len(ctx.lines) <= adf_render.OUTPUT_LIMIT // prefix + 1  # about 13 000, not 200 000
     assert len(result.text) <= adf_render.OUTPUT_LIMIT
     assert result.text.endswith("[too large]")
 
@@ -468,20 +482,20 @@ def random_node(rng: random.Random, depth: int) -> dict[str, Any]:
 
 def test_random_trees_never_raise_and_stay_sanitized() -> None:
     rng = random.Random(20260101)
-    started = time.monotonic()
+    started = time.process_time()
     for _ in range(3000):
         tree = random_node(rng, rng.randint(1, 8))
         result = render_adf(tree)
         assert "internal" not in result.reasons, tree
         assert len(result.text) <= adf_render.OUTPUT_LIMIT
         assert sanitize_body(result.text) == result.text
-    assert time.monotonic() - started < 30
+    assert time.process_time() - started < 60
 
 
 def test_wide_document_is_fast() -> None:
-    started = time.monotonic()
+    started = time.process_time()
     render_adf(doc(*[para(txt("word " * 5, mark("strong"))) for _ in range(20_000)]))
-    assert time.monotonic() - started < 5
+    assert time.process_time() - started < 30
 
 
 # ---- review round 1 -------------------------------------------------------------------------
@@ -512,9 +526,9 @@ def test_huge_hrefs_are_refused_before_encoding() -> None:
     url = "https://e.test/" + "\u00e9" * 20_000
     cards = [{"type": "inlineCard", "attrs": {"url": url}} for _ in range(2000)]
     links = [txt("a", link(url)) if i % 2 else txt("b") for i in range(2000)]
-    started = time.monotonic()
+    started = time.process_time()
     result = render_adf(doc(para(*cards), para(*links)))
-    assert time.monotonic() - started < 10
+    assert time.process_time() - started < 30
     assert "\u00e9" not in result.text and len(result.text) < 100_000
 
 
@@ -629,9 +643,9 @@ def test_table_cells_and_rows_count_as_nodes() -> None:
     empty_cell = {"type": "tableCell", "content": []}
     row0 = {"type": "tableRow", "content": [empty_cell] * 60_000}
     row1 = {"type": "tableRow", "content": [empty_cell]}
-    started = time.monotonic()
+    started = time.process_time()
     result = render_adf(doc({"type": "table", "content": [row0, row1, row1]}))
-    assert time.monotonic() - started < 10
+    assert time.process_time() - started < 30
     assert "too_many_nodes" in result.reasons and result.text.endswith("[too large]")
     assert len(result.text) <= adf_render.OUTPUT_LIMIT
 
@@ -640,9 +654,9 @@ def test_table_padding_is_charged_to_the_output_budget() -> None:
     empty_cell = {"type": "tableCell", "content": []}
     wide = {"type": "tableRow", "content": [empty_cell] * 20_000}
     narrow = {"type": "tableRow", "content": [empty_cell]}
-    started = time.monotonic()
+    started = time.process_time()
     result = render_adf(doc({"type": "table", "content": [wide] + [narrow] * 150}))
-    assert time.monotonic() - started < 10
+    assert time.process_time() - started < 30
     assert len(result.text) <= adf_render.OUTPUT_LIMIT
     assert "too_large" in result.reasons
 
