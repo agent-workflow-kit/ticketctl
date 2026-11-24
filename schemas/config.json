@@ -121,6 +121,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -191,6 +199,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -261,6 +277,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -331,6 +355,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -401,6 +433,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -471,6 +511,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -541,6 +589,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,
@@ -611,6 +667,14 @@
               },
               "async": {
                 "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
               }
             },
             "additionalProperties": false,

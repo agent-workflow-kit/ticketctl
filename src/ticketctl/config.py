@@ -438,6 +438,7 @@ class Hook(_Model):
     cmd: Annotated[str, StringConstraints(min_length=1, max_length=4096), AfterValidator(_no_nul)]
     timeout: HookTimeout = timedelta(seconds=30)
     async_: bool = Field(False, alias="async")
+    placement: Literal["before_confirm", "after_confirm"] = "after_confirm"
 
 
 class Config(_Model):
@@ -755,6 +756,10 @@ def _check(config: Config) -> None:
             if hook.async_ and hname.startswith("pre-"):
                 raise ConfigError(
                     "async is allowed only for post- hooks", key=f"hooks.{hname}[{i}].async"
+                )
+            if "placement" in hook.model_fields_set and hname.startswith("post-"):
+                raise ConfigError(
+                    "placement is allowed only for pre- hooks", key=f"hooks.{hname}[{i}].placement"
                 )
 
 

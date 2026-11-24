@@ -364,6 +364,16 @@ def rich_changed(current: object, rich: RichText) -> bool:
 class HookResult:
     decision_ids: list[str] = field(default_factory=list)
     escalated: list[str] = field(default_factory=list)  # hook names that exited 13
+    ran: bool = False  # at least one hook was run
+
+
+@dataclass
+class _Gate:
+    """What the hooks of one placement returned (the engine's view of a ``HookResult``)."""
+
+    decision_ids: list[str] = field(default_factory=list)
+    escalated: list[str] = field(default_factory=list)
+    ran: bool = False  # a hook of the early placement ran: the dialog says so
 
 
 @dataclass
@@ -393,6 +403,10 @@ class Hooks(Protocol):
         decision_ids: list[str],
         info: PostInfo,
     ) -> None: ...
+
+    # Optional: ``before_confirm(plan, planned, attempt_id, decision_ids) -> HookResult`` runs the
+    # ``pre-`` hooks placed before the confirmation (same contract as ``pre``). The engine runs
+    # nothing for an implementation without it.
 
 
 def _new_attempt_id() -> str:
@@ -711,6 +725,8 @@ class _Run:
         decision_ids, cut = _decision_list(g.decision_ids)
         self._note_truncated(cut)
         if g.dry_run:  # step 4
+            if g.run_hooks and planned.steps:  # --run-hooks: the hooks of steps 5b and 6 only
+                self._dry_run_hooks(ctx, plan, planned, decision_ids)
             return plan
         if not planned.steps:  # idempotency first: before expect-plan, prompt, hook, audit
             return self._unchanged(ctx, planned, decision_ids)
@@ -724,31 +740,17 @@ class _Run:
         # The prompt and the pre hooks are not provider work: the command deadline does not run
         # while they do (interface.md, Reliability).
         with self._deadline_paused():
-            self._confirm(plan, planned, decision_ids)  # step 5
-            try:
-                hook_result = self.hooks.pre(plan, planned, ctx.attempt_id, decision_ids)  # 6
-            except TicketctlError as err:
-                if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
-                    err.details = {
-                        "plan": plan,
-                        "decision_ids": decision_ids,
-                        **(err.details or {}),
-                    }
-                raise
-        decision_ids, cut = _decision_list(g.decision_ids, hook_result.decision_ids)
+            early = self._run_hooks(ctx, plan, planned, decision_ids, early=True)  # step 5a
+            decision_ids, cut = _decision_list(g.decision_ids, early.decision_ids)
+            self._note_truncated(cut)
+            self._escalation_gate(plan, decision_ids, early.escalated)  # before the dialog
+            self._confirm(plan, planned, decision_ids, early=bool(early.ran))  # step 5
+            hook_result = self._run_hooks(ctx, plan, planned, decision_ids, early=False)  # 6
+        decision_ids, cut = _decision_list(
+            g.decision_ids, early.decision_ids, hook_result.decision_ids
+        )
         self._note_truncated(cut)
-        if hook_result.escalated and not g.override_escalation:
-            names = list(dict.fromkeys(hook_result.escalated))
-            raise TicketctlError(
-                "escalated",
-                "a hook asked for review; confirm with --override-escalation=ticketctl",
-                details={
-                    "plan": plan,
-                    "decision_ids": decision_ids,
-                    "hook": names[0],
-                    "escalated_hooks": names,
-                },
-            )
+        self._escalation_gate(plan, decision_ids, hook_result.escalated)
 
         lock = self._lock(ctx, planned)
         taken = False
@@ -783,6 +785,60 @@ class _Run:
             raise outcome.error
         assert outcome.result is not None
         return outcome.result
+
+    # ------------------------------------------------------------------------------------
+    def _run_hooks(
+        self,
+        ctx: Context,
+        plan: dict[str, Any],
+        planned: Planned,
+        decision_ids: list[str],
+        *,
+        early: bool,
+    ) -> _Gate:
+        """The ``pre-`` hooks of one placement: ``early`` is before the confirmation. A veto
+        carries the plan, whichever placement and whether or not the run is a dry run."""
+        run = getattr(self.hooks, "before_confirm", None) if early else self.hooks.pre
+        if run is None:  # a Hooks implementation that predates the placement
+            return _Gate()
+        try:
+            result = run(plan, planned, ctx.attempt_id, decision_ids)
+        except TicketctlError as err:
+            if err.code == "vetoed":  # the gate's decision carries the plan the human accepted
+                err.details = {"plan": plan, "decision_ids": decision_ids, **(err.details or {})}
+            raise
+        return _Gate(result.decision_ids, result.escalated, ran=early and result.ran)
+
+    def _escalation_gate(
+        self, plan: dict[str, Any], decision_ids: list[str], escalated: list[str]
+    ) -> None:
+        if escalated and not self.g.override_escalation:
+            names = list(dict.fromkeys(escalated))
+            raise TicketctlError(
+                "escalated",
+                "a hook asked for review; confirm with --override-escalation=ticketctl",
+                details={
+                    "plan": plan,
+                    "decision_ids": decision_ids,
+                    "hook": names[0],
+                    "escalated_hooks": names,
+                },
+            )
+
+    def _dry_run_hooks(
+        self, ctx: Context, plan: dict[str, Any], planned: Planned, decision_ids: list[str]
+    ) -> None:
+        """``--dry-run --run-hooks``: the hooks a real run would run before its first write, in
+        the real order (before the dialog, then after it), with no dialog, lock, audit or
+        post hook. A veto or an escalation is the real run's refusal; the decision ids of a run
+        that passes are not returned (the plan has no place for them)."""
+        with self._deadline_paused():
+            early = self._run_hooks(ctx, plan, planned, decision_ids, early=True)
+            ids, _ = _decision_list(self.g.decision_ids, early.decision_ids)
+            self._escalation_gate(plan, ids, early.escalated)  # as before the dialog
+            late = self._run_hooks(ctx, plan, planned, ids, early=False)
+        ids, _ = _decision_list(self.g.decision_ids, early.decision_ids, late.decision_ids)
+        self._escalation_gate(plan, ids, [*early.escalated, *late.escalated])
 
     # ------------------------------------------------------------------------------------
     def _deadline_paused(self) -> AbstractContextManager[None]:
@@ -823,7 +879,9 @@ class _Run:
             warnings=[*planned.warnings, *self.extra_warnings],
         )
 
-    def _confirm(self, plan: dict[str, Any], planned: Planned, decision_ids: list[str]) -> None:
+    def _confirm(
+        self, plan: dict[str, Any], planned: Planned, decision_ids: list[str], *, early: bool
+    ) -> None:
         g = self.g
         interactive = (self.seams.interactive or (lambda: is_interactive(g)))()
         # An automatic actor is never asked, whatever the seam says: the human is the gate.
@@ -838,6 +896,7 @@ class _Run:
                         planned.shown,
                         override=bool(g.override_escalation),
                         hook_names=self._hook_names(),
+                        early_hooks=early,
                     )
                 except confirm_tty.ConfirmUnavailable:
                     raise self._confirmation_required(plan, decision_ids) from None

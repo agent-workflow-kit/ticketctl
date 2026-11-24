@@ -496,6 +496,19 @@ def test_verbose_with_quiet(capsys: pytest.CaptureFixture[str]) -> None:
     assert (body["code"], body["reason"]) == ("usage", "invalid_combination")
 
 
+def test_run_hooks_needs_a_dry_run(capsys: pytest.CaptureFixture[str]) -> None:
+    status, out, _ = run(capsys, "--json", "transition", "AB-1", "--to", "Done", "--run-hooks")
+    assert status == 2
+    body = _check_envelope(out)
+    assert (body["code"], body["reason"]) == ("usage", "invalid_combination")
+
+
+def test_run_hooks_is_refused_on_a_read(capsys: pytest.CaptureFixture[str]) -> None:
+    status, out, _ = run(capsys, "--json", "get", "AB-1", "--dry-run", "--run-hooks")
+    assert status == 2
+    assert _check_envelope(out)["reason"] == "invalid_argument"
+
+
 def test_two_stdin_sources(capsys: pytest.CaptureFixture[str]) -> None:
     status, out, _ = run(
         capsys, "--json", "create", "--title-file", "-", "--body-file", "-", "--type", "Task"

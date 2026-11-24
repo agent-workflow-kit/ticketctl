@@ -36,6 +36,7 @@ OVERRIDE_SCOPE = "ticketctl"
 WRITE_ONLY_FLAGS = (
     "--yes",
     "--dry-run",
+    "--run-hooks",
     "--expect-plan",
     "--actor",
     "--decision-id",
@@ -62,6 +63,7 @@ class Globals:
     quiet: bool = False
     timeout_s: float | None = None
     dry_run: bool = False
+    run_hooks: bool = False
     yes: bool = False
     expect_plan: str | None = None
     actor: str | None = None
@@ -151,6 +153,7 @@ def build_global_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--timeout", type=parse_duration, metavar="DURATION")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--run-hooks", action="store_true")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--expect-plan", type=_pattern(SHA256_RE, "sha256"), metavar="SHA256")
     p.add_argument("--actor", type=_pattern(ACTOR_RE, "actor"))
@@ -164,7 +167,8 @@ def build_global_parser() -> argparse.ArgumentParser:
 
 GLOBAL_HELP = (
     "global flags (accepted before or after the command): --json --config PATH --site NAME "
-    "--verbose --quiet --timeout DURATION --dry-run --yes --expect-plan SHA256 --actor ACTOR "
+    "--verbose --quiet --timeout DURATION --dry-run --run-hooks --yes --expect-plan SHA256 "
+    "--actor ACTOR "
     "--decision-id ID --override-escalation[=ticketctl] --hook NAME=COMMAND --version"
 )
 
@@ -189,7 +193,16 @@ def _json_with_value(tok: str) -> bool:
 # Global options by shape. A `--name=value` token is global only for a value option, and
 # an option value that merely looks like a flag (`--text "--yes=1 foo"`) is not one.
 _FLAG_OPTS = frozenset(
-    {"--version", "--json", "--verbose", "--quiet", "--dry-run", "--yes", "--override-escalation"}
+    {
+        "--version",
+        "--json",
+        "--verbose",
+        "--quiet",
+        "--dry-run",
+        "--run-hooks",
+        "--yes",
+        "--override-escalation",
+    }
 )
 _VALUE_OPTS = frozenset(
     {"--config", "--site", "--timeout", "--expect-plan", "--actor", "--decision-id", "--hook"}
@@ -264,6 +277,7 @@ def extract_globals(argv: Sequence[str]) -> tuple[Globals, list[str]]:
         quiet=ns.quiet,
         timeout_s=ns.timeout,
         dry_run=ns.dry_run,
+        run_hooks=ns.run_hooks,
         yes=ns.yes,
         expect_plan=ns.expect_plan,
         actor=ns.actor,
@@ -325,6 +339,8 @@ def check_globals(
             )
     if g.verbose and g.quiet:
         raise usage_error("invalid_combination", "--verbose and --quiet cannot be combined")
+    if g.run_hooks and not g.dry_run:
+        raise usage_error("invalid_combination", "--run-hooks needs --dry-run")
     if kind == "write" and resolve_actor:
         resolve_write_actor(g, me_name=me_name, stderr_tty=stderr_tty, tty_openable=tty_openable)
 

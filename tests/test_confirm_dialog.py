@@ -364,3 +364,11 @@ def test_a_shown_text_that_covers_a_change_is_shown_in_full() -> None:
     plan = plan_of(changes=[{"name": "description", "from": None, "to": text}])
     out = compose(plan, [ShownText("description", text, "body")])
     assert len([x for x in body_lines(out) if x.startswith("| row")]) == 50
+
+
+def test_the_dialog_says_when_hooks_ran_before_the_question() -> None:
+    plan = plan_of()
+    assert "pre- hooks run after your answer" in compose(plan, [ShownText("comment", "x")])
+    early = compose(plan, [ShownText("comment", "x")], early_hooks=True)
+    assert "hooks placed before this question have run" in early
+    assert "pre- hooks run after your answer" not in early

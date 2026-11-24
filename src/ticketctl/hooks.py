@@ -77,19 +77,26 @@ class Entry:
     timeout: float
     async_: bool
     source: str
+    placement: str = "after_confirm"  # pre- hooks: before_confirm or after_confirm
 
 
-def entries_for(rt: Runtime, phase: str, family: str) -> list[Entry]:
-    """The hooks of ``<phase>-<family>``: configured in list order, then ``--hook`` in order."""
+def entries_for(rt: Runtime, phase: str, family: str, placement: str | None = None) -> list[Entry]:
+    """The hooks of ``<phase>-<family>``: configured in list order, then ``--hook`` in order.
+
+    ``placement`` keeps only the ``pre-`` hooks placed there (``--hook`` ones are always
+    ``after_confirm``); ``None`` keeps all.
+    """
     name = f"{phase}-{family}"
     out = [
-        Entry(name, h.cmd, h.timeout.total_seconds(), h.async_, "config")
+        Entry(name, h.cmd, h.timeout.total_seconds(), h.async_, "config", h.placement)
         for h in rt.config.hooks.get(name, [])
     ]
     for spec in rt.g.hooks:
         flag_name, _, cmd = spec.partition("=")
         if flag_name == name:
             out.append(Entry(name, cmd, 30.0, False, "flag"))
+    if placement is not None:
+        out = [e for e in out if e.placement == placement]
     return out
 
 
@@ -113,6 +120,9 @@ def hook_env(rt: Runtime, name: str, object_id: str | None) -> dict[str, str]:
     env.update(
         {"TICKETCTL_HOOK": name, "TICKETCTL_ID": object_id or "", "TICKETCTL_OBJECT_TYPE": "ticket"}
     )
+    env.pop("TICKETCTL_DRY_RUN", None)  # only the tool says so, never an inherited value
+    if rt.g.dry_run:
+        env["TICKETCTL_DRY_RUN"] = "1"
     return env
 
 
@@ -420,8 +430,25 @@ class HookRunner:
     def pre(
         self, plan: dict[str, Any], planned: Planned, attempt_id: str, decision_ids: list[str]
     ) -> HookResult:
+        """The ``pre-`` hooks placed after the confirmation (the default placement)."""
+        return self._pre(plan, planned, attempt_id, decision_ids, "after_confirm")
+
+    def before_confirm(
+        self, plan: dict[str, Any], planned: Planned, attempt_id: str, decision_ids: list[str]
+    ) -> HookResult:
+        """The ``pre-`` hooks placed before the confirmation."""
+        return self._pre(plan, planned, attempt_id, decision_ids, "before_confirm")
+
+    def _pre(
+        self,
+        plan: dict[str, Any],
+        planned: Planned,
+        attempt_id: str,
+        decision_ids: list[str],
+        placement: str,
+    ) -> HookResult:
         family = hook_family(str(plan["action"]))
-        entries = entries_for(self.rt, "pre", family)
+        entries = entries_for(self.rt, "pre", family, placement)
         if entries or entries_for(self.rt, "post", family):  # any hook needs the shell, post too
             self._require_shell()
         if not entries:
@@ -441,7 +468,7 @@ class HookRunner:
                 raise self._veto(entry, run, self._merge(decision_ids, returned))
             if run.returncode == ESCALATE:
                 escalated.append(entry.name)
-        return HookResult(returned, escalated)
+        return HookResult(returned, escalated, ran=True)
 
     def _execute(self, entry: Entry, payload: dict[str, Any]) -> HookRun | None:
         """Run one hook to completion; None when it could not even be started."""
@@ -460,8 +487,7 @@ class HookRunner:
         except (OSError, ValueError):  # ValueError: Popen refuses e.g. an embedded NUL
             return None
 
-    @staticmethod
-    def _veto(entry: Entry, run: HookRun | None, decision_ids: list[str]) -> TicketctlError:
+    def _veto(self, entry: Entry, run: HookRun | None, decision_ids: list[str]) -> TicketctlError:
         if run is None:
             why = "could not be started"
         elif run.timed_out:
@@ -474,8 +500,9 @@ class HookRunner:
         stderr = stderr_text(run.stderr) if run is not None else ""
         if stderr:
             details["hook_stderr"] = stderr
+        what = "the plan (dry run)" if self.rt.g.dry_run else "the write"
         return TicketctlError(
-            "vetoed", f"hook {entry.name} vetoed the write: it {why}", details=details
+            "vetoed", f"hook {entry.name} vetoed {what}: it {why}", details=details
         )
 
     # -- post ---------------------------------------------------------------------------------
