@@ -1,0 +1,64 @@
+{
+  "error": {
+    "code": "rejected",
+    "details": {
+      "attempt_id": "att-00004",
+      "errorMessages": [
+        "Service Unavailable"
+      ],
+      "result": {
+        "action": "sprint_add",
+        "attempt_id": "att-00004",
+        "changed": false,
+        "complete": false,
+        "count": 2,
+        "counts": {
+          "failed": 1,
+          "not_run": 1,
+          "ok": 0,
+          "outcome_unknown": 0,
+          "unchanged": 0
+        },
+        "plan_sha256": "e37d32b33039054cd2a44aa5718730d8e926255bff1be01be81714aca8f36c47",
+        "site": "main",
+        "tickets": [
+          {
+            "error": {
+              "code": "rejected",
+              "details": {
+                "attempt_id": "att-00005",
+                "errorMessages": [
+                  "Service Unavailable"
+                ]
+              },
+              "key": null,
+              "message": "the provider rejected the request",
+              "outcome_unknown": false,
+              "reason": null,
+              "retry_after_s": null,
+              "retryable": false,
+              "site": "main"
+            },
+            "key": "DEMO-1",
+            "result": null,
+            "status": "failed"
+          },
+          {
+            "error": null,
+            "key": "DEMO-4",
+            "result": null,
+            "status": "not_run"
+          }
+        ],
+        "warnings": []
+      }
+    },
+    "key": "DEMO-1",
+    "message": "the provider rejected the request",
+    "outcome_unknown": false,
+    "reason": null,
+    "retry_after_s": null,
+    "retryable": false,
+    "site": "main"
+  }
+}

@@ -164,6 +164,30 @@ def test_a_repeated_key_is_refused_before_any_request(cli: Cli) -> None:
     assert cli.fake.calls == []
 
 
+def test_a_repeat_in_another_spelling_is_refused_before_any_request(cli: Cli) -> None:
+    code, env = cli.doc(*ADD, "DEMO-1", "demo-1", "--sprint", "2")
+    assert (code, env["error"]["reason"]) == (2, "invalid_argument")
+    url = f"{cli.fake.url}/browse/DEMO-1"
+    code, env = cli.doc(*ADD, "DEMO-1", url, "--sprint", "2")
+    assert (code, env["error"]["reason"]) == (2, "invalid_argument")
+    assert cli.fake.calls == []
+
+
+def test_a_unicode_line_separator_does_not_split_a_keys_file_line(cli: Cli, tmp_path: Path) -> None:
+    keys = tmp_path / "keys.txt"
+    keys.write_text("DEMO-1\u2028DEMO-4\n", encoding="utf-8")  # one line to a human
+    code, env = cli.doc("--dry-run", *ADD, "--keys-file", str(keys), "--sprint", "2")
+    assert (code, env["error"]["reason"]) == (22, "invalid_key")
+    assert cli.fake.calls == []
+
+
+def test_a_comment_line_holding_a_separator_stays_one_comment(cli: Cli, tmp_path: Path) -> None:
+    keys = tmp_path / "keys.txt"
+    keys.write_text("# note\u2028DEMO-4\r\nDEMO-1\rDEMO-5\n", encoding="utf-8")
+    plan = cli.plan(*ADD, "--keys-file", str(keys), "--sprint", "2")
+    assert [t["key"] for t in plan["tickets"]] == ["DEMO-1", "DEMO-5"]  # DEMO-4 stays a comment
+
+
 def test_a_bad_key_is_invalid_key_before_any_request(cli: Cli) -> None:
     code, env = cli.doc(*ADD, "DEMO-1", "not a key", "--sprint", "2")
     assert (code, env["error"]["reason"]) == (22, "invalid_key")
@@ -431,6 +455,8 @@ def test_a_remove_batch_moves_each_ticket_to_the_backlog(cli: Cli) -> None:
     assert code == 0 and result["action"] == "sprint_remove" and result["counts"]["ok"] == 2
     assert [c.path for c in cli.writes()] == ["/rest/agile/1.0/backlog/issue"] * 2
     assert cli.sprints_of("DEMO-2") == [] and cli.sprints_of("DEMO-4") == []
+    validator("cli/sprint-remove-many.json").validate(result)
+    assert_golden("cli", "sprint-remove-many", "ok", cli.norm(result))
 
 
 def test_each_ticket_has_its_own_audit_pair_and_the_batch_has_one(cli: Cli) -> None:
@@ -483,9 +509,10 @@ def test_the_first_failure_stops_the_batch_and_the_rest_are_not_run(cli: Cli) ->
     assert cli.sprints_of("DEMO-5") == []
     batch = records(cli, "bulk")
     assert [(r["result"], r["changed"], r.get("reason")) for r in batch] == [
-        ("attempted", None, None), ("partial", False, "rejected"),
+        ("attempted", None, None), ("partial", True, "rejected"),
     ]  # fmt: skip
     assert err["details"]["attempt_id"] == batch[0]["attempt_id"]
+    assert_golden("cli", "error", "bulk-partial", cli.norm(env))
 
 
 def test_a_first_ticket_failure_is_its_own_error_with_the_result(cli: Cli) -> None:
@@ -499,6 +526,10 @@ def test_a_first_ticket_failure_is_its_own_error_with_the_result(cli: Cli) -> No
     assert len(cli.writes()) == 1
     batch = records(cli, "bulk")
     assert [(r["result"], r["changed"]) for r in batch] == [("attempted", None), ("failed", False)]
+    assert (
+        env["error"]["details"]["attempt_id"] == batch[0]["attempt_id"]
+    )  # the batch's, not a ticket's
+    assert_golden("cli", "error", "bulk-first-ticket-failure", cli.norm(env))
 
 
 def test_an_unknown_outcome_is_reported_never_resent_and_stops_the_batch(cli: Cli) -> None:
@@ -752,3 +783,110 @@ def test_the_hook_digest_of_a_batch_record_is_the_sprint_familys(
     batch = records(cli, "bulk")[0]
     ticket = records(cli, "sprint_add")[0]
     assert batch["inputs"]["hooks_sha256"] == ticket["inputs"]["hooks_sha256"]
+
+
+def test_an_unexpected_exception_after_a_landed_write_is_outcome_unknown(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ticketctl import writeflow
+
+    real = writeflow._Run._post
+    calls: list[int] = []
+
+    def post(self: Any, *args: Any, **kw: Any) -> None:
+        calls.append(1)
+        if len(calls) == 2:  # DEMO-4's write has landed when this raises
+            raise RuntimeError("boom")
+        real(self, *args, **kw)
+
+    monkeypatch.setattr(writeflow._Run, "_post", post)
+    code, env = cli.apply(*ADD, "DEMO-1", "DEMO-4", "DEMO-5", "--sprint", "2")
+    assert (code, env["error"]["code"]) == (12, "partial")
+    assert env["error"]["outcome_unknown"] is True
+    result = env["error"]["details"]["result"]
+    assert [t["status"] for t in result["tickets"]] == ["ok", "outcome_unknown", "not_run"]
+    assert result["tickets"][1]["error"]["code"] == "outcome_unknown"
+    assert result["counts"]["failed"] == 0 and result["counts"]["ok"] == 1
+    assert post_keys(cli) == ["DEMO-1", "DEMO-4"]  # never resent, DEMO-5 never sent
+    batch = records(cli, "bulk")
+    assert [(r["result"], r["changed"]) for r in batch] == [("attempted", None), ("unknown", None)]
+    validator("cli/error.json").validate(env)
+
+
+def test_an_unexpected_exception_in_the_first_ticket_is_outcome_unknown(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ticketctl import writeflow
+
+    def post(self: Any, *args: Any, **kw: Any) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(writeflow._Run, "_post", post)
+    code, env = cli.apply(*ADD, "DEMO-1", "DEMO-4", "--sprint", "2")
+    assert (code, env["error"]["code"]) == (12, "outcome_unknown")
+    tickets = env["error"]["details"]["result"]["tickets"]
+    assert [t["status"] for t in tickets] == ["outcome_unknown", "not_run"]
+    assert [r["result"] for r in records(cli, "bulk")] == ["attempted", "unknown"]
+    assert len(cli.writes()) == 1
+
+
+def test_a_vetoed_first_ticket_carries_the_batch_attempt_id(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli.write_config("hooks:\n  pre-sprint:\n    - cmd: ignored\n")
+    log = HookLog(cli, monkeypatch)
+    log.verdict = lambda name, key: 1 if key == "DEMO-1" else 0
+    code, env = cli.apply(*ADD, "DEMO-1", "DEMO-4", "--sprint", "2")
+    assert (code, env["error"]["code"]) == (11, "vetoed")
+    batch = records(cli, "bulk")
+    assert [r["result"] for r in batch] == ["attempted", "failed"]
+    assert env["error"]["details"]["attempt_id"] == batch[0]["attempt_id"]
+    assert cli.writes() == []
+
+
+def test_a_ticket_that_changes_between_its_read_and_the_lock_stops_the_batch(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli.write_config("hooks:\n  pre-sprint:\n    - cmd: ignored\n")
+    log = HookLog(cli, monkeypatch)
+
+    def move(name: str, key: str | None) -> int:
+        if key == "DEMO-4":  # the pre hook runs after the ticket's step-3 read, before its lock
+            cli.fake.tickets["DEMO-4"].sprints = [3]
+        return 0
+
+    log.verdict = move
+    code, env = cli.apply(*ADD, "DEMO-1", "DEMO-4", "DEMO-5", "--sprint", "2")
+    assert (code, env["error"]["code"]) == (12, "partial")
+    tickets = env["error"]["details"]["result"]["tickets"]
+    assert [t["status"] for t in tickets] == ["ok", "failed", "not_run"]
+    assert tickets[1]["error"]["code"] == "stale_ticket"
+    assert "changed since the plan" in tickets[1]["error"]["message"]  # the lock-time compare
+    assert post_keys(cli) == ["DEMO-1"]
+
+
+def test_landed_is_true_for_ok_and_for_an_error_whose_own_result_changed() -> None:
+    err_changed = {"details": {"result": {"changed": True}}}
+    assert bulk._landed({"status": "ok", "error": None}) is True
+    assert bulk._landed({"status": "failed", "error": err_changed}) is True
+    assert (
+        bulk._landed({"status": "failed", "error": {"details": {"result": {"changed": False}}}})
+        is False
+    )
+    assert bulk._landed({"status": "failed", "error": {"details": None}}) is False
+    assert bulk._landed({"status": "outcome_unknown", "error": {"code": "x"}}) is False
+    assert bulk._landed({"status": "not_run", "error": None}) is False
+
+
+def test_the_dialog_keeps_the_target_visible_when_the_current_value_is_long() -> None:
+    ticket = {
+        "key": "DEMO-1",
+        "steps": [{"kind": "sprint_add", "sprint": "2"}],
+        "changes": [{"name": "sprints", "from": ["1: " + "f" * 300], "to": ["2: Sprint two"]}],
+        "warnings": [],
+    }
+    text = confirm_dialog.compose_batch(
+        {"action": "sprint_add", "site": "s", "actor": "a", "tickets": [ticket], "plan_sha256": "0"}
+    )
+    line = next(x for x in text.splitlines() if x.startswith("  change sprints"))
+    assert "2: Sprint two" in line and "more characters" in line and len(line) <= 200

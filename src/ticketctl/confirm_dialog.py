@@ -283,9 +283,20 @@ def _join(value: Any) -> str:
     return _brief(value)
 
 
+def _side(value: Any) -> str:
+    """One side of a batch change (``from`` or ``to``) cut to ``BRIEF_CHARS`` on its own, so a long
+    current value cannot push the target out of the line."""
+    text = _join(value)
+    if len(text) <= BRIEF_CHARS:
+        return text
+    at = _cut_point(text, BRIEF_CHARS)
+    return f"{text[:at]} [... {len(text) - at} more characters]"
+
+
 def _ticket_lines(index: int, count: int, ticket: dict[str, Any]) -> list[str]:
     """One ticket of a batch: its key, its steps, each change as ``current -> new`` and its
-    warnings, every line cut to 200 characters and the whole to 12 lines."""
+    warnings, every line cut to 200 characters (each side of a change to 80) and the whole to 12
+    lines."""
     head = f"ticket {index} of {count}: {_single(str(ticket.get('key')), 80)}"
     steps = ticket.get("steps") or []
     if not steps:
@@ -297,7 +308,7 @@ def _ticket_lines(index: int, count: int, ticket: dict[str, Any]) -> list[str]:
         )
         lines.append(f"  step: {step.get('kind')} {props}".rstrip())
     for change in ticket.get("changes") or []:
-        old, new = _join(change.get("from")), _join(change.get("to"))
+        old, new = _side(change.get("from")), _side(change.get("to"))
         lines.append(f"  change {change.get('name')}: {old} -> {new}")
     lines.extend(f"  warning: {code}" for code in ticket.get("warnings") or [])
     cut = [_single(line, BATCH_LINE_CHARS) for line in lines]

@@ -1,0 +1,69 @@
+{
+  "action": "sprint_remove",
+  "attempt_id": "att-00004",
+  "changed": true,
+  "complete": true,
+  "count": 2,
+  "counts": {
+    "failed": 0,
+    "not_run": 0,
+    "ok": 2,
+    "outcome_unknown": 0,
+    "unchanged": 0
+  },
+  "plan_sha256": "40c671b08021db4a3ad312242918aefed28647c4c97f4cc1def98adeb1c3c904",
+  "site": "main",
+  "tickets": [
+    {
+      "error": null,
+      "key": "DEMO-2",
+      "result": {
+        "action": "sprint_remove",
+        "already_posted": false,
+        "attempt_id": "att-00005",
+        "changed": true,
+        "comment_id": null,
+        "decision_ids": [],
+        "key": "DEMO-2",
+        "result": "ok",
+        "reused": false,
+        "site": "main",
+        "steps": [
+          {
+            "kind": "sprint_remove",
+            "status": "done"
+          }
+        ],
+        "url": "https://tracker.example.test/browse/DEMO-2",
+        "warnings": []
+      },
+      "status": "ok"
+    },
+    {
+      "error": null,
+      "key": "DEMO-4",
+      "result": {
+        "action": "sprint_remove",
+        "already_posted": false,
+        "attempt_id": "att-00006",
+        "changed": true,
+        "comment_id": null,
+        "decision_ids": [],
+        "key": "DEMO-4",
+        "result": "ok",
+        "reused": false,
+        "site": "main",
+        "steps": [
+          {
+            "kind": "sprint_remove",
+            "status": "done"
+          }
+        ],
+        "url": "https://tracker.example.test/browse/DEMO-4",
+        "warnings": []
+      },
+      "status": "ok"
+    }
+  ],
+  "warnings": []
+}

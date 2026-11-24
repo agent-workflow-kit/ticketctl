@@ -26,7 +26,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from . import confirm_dialog, confirm_tty, selection, writeflow
-from .errors import TicketctlError, from_exception, internal_error, read_only_error, usage_error
+from .errors import TicketctlError, from_exception, read_only_error, usage_error
 from .plan import canonical_bytes
 from .runtime import Runtime
 from .sanitize import read_input
@@ -62,7 +62,9 @@ def collect_refs(rt: Runtime, keys: Sequence[str], keys_file: str | None) -> lis
                 "invalid_combination", "give the keys as arguments or with --keys-file, not both"
             )
         text = read_input(keys_file, kind="text", body_chars=rt.config.limits.body_chars)
-        for line in text.splitlines():
+        # only a newline ends a line: a Unicode separator inside a line stays in it, so the line
+        # is judged as a whole (a key with a separator is ``invalid_key``, a comment stays one)
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
             line = line.strip()
             if line and not line.startswith("#"):
                 refs.append(line)
@@ -319,7 +321,7 @@ def execute_batch(
                     dataclasses.replace(rt, g=ticket_g), site, factory(key), own
                 )
             except Exception as exc:
-                err = from_exception(exc) or internal_error(exc)
+                err = from_exception(exc) or _unknown_after(exc)
                 status = "outcome_unknown" if err.outcome_unknown else "failed"
                 entries.append(_entry(key, status, None, err.body()))
                 stop, stop_key = err, key
@@ -340,7 +342,7 @@ def execute_batch(
         elif stop is not None and stop.outcome_unknown:
             written = log.outcome("unknown", None, stop.code)
         else:
-            written = log.outcome("partial" if landed else "failed", False, _code(stop))
+            written = log.outcome("partial" if landed else "failed", landed, _code(stop))
         if not written:
             warnings.append("audit_incomplete")
     result_doc = {
@@ -358,6 +360,17 @@ def execute_batch(
     if stop is None:
         return result_doc
     raise _incomplete(stop, stop_key, result_doc, landed, site, batch_id if log else None)
+
+
+def _unknown_after(exc: BaseException) -> TicketctlError:
+    """An exception that is not a ticketctl error, raised out of one ticket's run: the write may
+    have landed before it, so the ticket is ``outcome_unknown`` (never counted ``ok``, never resent)
+    and the message carries the class only, like ``internal_error``."""
+    return TicketctlError(
+        "outcome_unknown",
+        f"unexpected internal error ({type(exc).__name__}); the write of this ticket may have "
+        "landed, check the ticket before re-running",
+    )
 
 
 def _code(err: TicketctlError | None) -> str | None:
@@ -389,6 +402,8 @@ def _incomplete(
             outcome_unknown=stop.outcome_unknown,
         )
     stop.details = {**(stop.details or {}), "result": result_doc}
+    if batch_id is not None:  # the batch's id, not the stopping ticket's own
+        stop.details["attempt_id"] = batch_id
     stop.key = stop.key or key
     stop.site = stop.site or site
     return stop
