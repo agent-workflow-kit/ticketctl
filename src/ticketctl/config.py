@@ -69,6 +69,7 @@ HOOK_NAMES = tuple(
         "create",
         "update",
         "sprint",
+        "link",
         "comment-edit",
         "comment-delete",
     )

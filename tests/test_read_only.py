@@ -47,6 +47,7 @@ TOKEN_VAR = "TICKETCTL_TEST_RO_TOKEN"
 # One valid invocation per write command. A command registered as a write that is missing here
 # fails `test_every_registered_write_command_has_a_case`: add its case, and the tests below then
 # prove it is refused in read-only mode.
+LINK_ARGS = ["--type", "Blocks", "--direction", "outward", "--other", "DEMO-2"]
 WRITE_CASES: dict[tuple[str, ...], list[str]] = {
     ("transition",): ["transition", "DEMO-1", "--to", "Done"],
     ("comment",): ["comment", "DEMO-1", "--body", "hello"],
@@ -56,6 +57,28 @@ WRITE_CASES: dict[tuple[str, ...], list[str]] = {
     ("update",): ["update", "DEMO-1", "--title", "new"],
     ("sprint", "add"): ["sprint", "add", "DEMO-1", "--sprint", "1"],
     ("sprint", "remove"): ["sprint", "remove", "DEMO-1"],
+    ("link", "add"): [
+        "link",
+        "add",
+        "DEMO-1",
+        "--type",
+        "Blocks",
+        "--direction",
+        "outward",
+        "--other",
+        "DEMO-2",
+    ],
+    ("link", "remove"): [
+        "link",
+        "remove",
+        "DEMO-1",
+        "--type",
+        "Blocks",
+        "--direction",
+        "outward",
+        "--other",
+        "DEMO-2",
+    ],
 }
 
 

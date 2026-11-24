@@ -92,6 +92,7 @@ def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
 
 # --- the whole command surface parses -------------------------------------------------
 
+LINK = ["--type", "Blocks", "--direction", "outward", "--other", "AB-2"]
 SURFACE = [
     ["whoami"],
     ["get", "AB-1", "AB-2", "--fields", "a,b", "--comments", "3", "--include-adf"],
@@ -118,6 +119,8 @@ SURFACE = [
     ["update", "AB-1", "--title", "t"],
     ["sprint", "add", "AB-1", "--sprint", "open"],
     ["sprint", "remove", "AB-1"],
+    ["link", "add", "AB-1", *LINK],
+    ["link", "remove", "AB-1", *LINK],
 ]
 
 

@@ -487,6 +487,20 @@ ITEMS: tuple[Item, ...] = (
         "that count: a human runs comment-edit and comment-delete on a comment of their own "
         "test ticket and reads the result with comments",
     ),
+    Item(
+        "W22",
+        "#41",
+        "link add and link remove: inwardIssue of POST issueLink is the ticket that gets the "
+        "outward phrase (inwardIssue blocks outwardIssue), so --direction outward reads back as "
+        "outward on the ticket; the create answers 201 with an empty body; each ticket's "
+        "issuelinks carries the link with the same id; DELETE issueLink/{id} answers 204; a "
+        "duplicate link, and tickets that may not be linked, are refused or accepted as the "
+        "docs say",
+        HUMAN,
+        why="the write suite creates no links and cannot undo one on a ticket it did not make: a "
+        "human runs link add with --direction outward between two of their own test tickets, "
+        "reads both with get --fields links, then runs link remove",
+    ),
 )
 
 

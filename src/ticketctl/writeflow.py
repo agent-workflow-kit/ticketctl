@@ -488,6 +488,8 @@ def _config_file_hashes(rt: Runtime) -> list[str]:
 def hook_family(action: str) -> str:
     if action.startswith("sprint_"):
         return "sprint"
+    if action.startswith("link_"):
+        return "link"
     if action.startswith("comment_"):
         return action.replace("_", "-")  # comment_edit -> comment-edit: its own hook family
     return action

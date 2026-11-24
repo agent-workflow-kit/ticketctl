@@ -78,16 +78,17 @@ RESULTS = ("attempted", "ok", "failed", "partial", "unknown")
 ACTOR_SOURCES = ("flag", "tty", "default")
 STEP_KINDS = (
     "assign", "transition", "set_fields", "add_comment", "create", "sprint_add", "sprint_remove",
-    "edit_comment", "delete_comment",
+    "add_link", "remove_link", "edit_comment", "delete_comment",
 )  # fmt: skip
 ACTIONS = (
-    "transition", "comment", "create", "update", "sprint_add", "sprint_remove", "comment_edit",
-    "comment_delete",
+    "transition", "comment", "create", "update", "sprint_add", "sprint_remove", "link_add",
+    "link_remove", "comment_edit", "comment_delete",
 )  # fmt: skip
 HOOK_NAMES = (
     "pre-transition", "post-transition", "pre-comment", "post-comment", "pre-create",
-    "post-create", "pre-update", "post-update", "pre-sprint", "post-sprint", "pre-comment-edit",
-    "post-comment-edit", "pre-comment-delete", "post-comment-delete",
+    "post-create", "pre-update", "post-update", "pre-sprint", "post-sprint", "pre-link",
+    "post-link", "pre-comment-edit", "post-comment-edit", "pre-comment-delete",
+    "post-comment-delete",
 )  # fmt: skip
 ERROR_CODES = (
     "internal", "usage", "invalid_config", "not_found", "vetoed", "invalid_request",
