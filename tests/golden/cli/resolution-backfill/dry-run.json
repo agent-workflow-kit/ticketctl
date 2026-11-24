@@ -1,0 +1,23 @@
+{
+  "action": "resolution_backfill",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": null,
+      "name": "resolution",
+      "to": "Done"
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-7",
+  "plan_sha256": "4f7c335e4a027b67c6ab2d712aba55b7b1ba3741956f1eb41a5e674256e01ee5",
+  "site": "main",
+  "steps": [
+    {
+      "kind": "set_resolution",
+      "resolution": "Done"
+    }
+  ],
+  "warnings": []
+}

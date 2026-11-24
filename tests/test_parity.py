@@ -958,9 +958,15 @@ DOC_MUTATIONS = [
     ),
     (
         "plan_enums",
-        "`link_add`, `link_remove`, `comment_edit`, `comment_delete` and `attachment_add` (hooks",
-        "`link_add`, `comment_edit`, `comment_delete` and `attachment_add` (hooks",
+        "`link_add`, `link_remove`, `comment_edit`,",
+        "`link_add`, `comment_edit`,",
         "link_remove",
+    ),
+    (
+        "plan_enums",
+        "`attachment_add` and `resolution_backfill` (hooks use",
+        "`attachment_add` (hooks use",
+        "resolution_backfill",
     ),
     (
         "plan_enums",
@@ -970,9 +976,15 @@ DOC_MUTATIONS = [
     ),
     (
         "plan_enums",
-        "|add_link|remove_link|edit_comment|delete_comment|add_attachment, ...}",
-        "|add_link|edit_comment|delete_comment|add_attachment, ...}",
+        "|remove_link|edit_comment|delete_comment|",
+        "|edit_comment|delete_comment|",
         "remove_link",
+    ),
+    (
+        "plan_enums",
+        "|add_attachment|set_resolution, ...}",
+        "|add_attachment, ...}",
+        "set_resolution",
     ),
     (
         "hook_names",
@@ -981,6 +993,18 @@ DOC_MUTATIONS = [
         "post-sprint",
     ),
     ("hook_names", "`pre-link`, `post-link` (", "`pre-link` (", "post-link"),
+    (
+        "hook_names",
+        "`pre-resolution-backfill`, `post-resolution-backfill`",
+        "`pre-resolution-backfill`",
+        "post-resolution-backfill",
+    ),
+    (
+        "hook_names",
+        "`pre-resolution-backfill`, `post-resolution-backfill`",
+        "`post-resolution-backfill`",
+        "pre-resolution-backfill",
+    ),
     (
         "result_vocabularies",
         "| `attempted`, `ok`, `failed`, `partial`, `unknown` |",

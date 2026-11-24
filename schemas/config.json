@@ -796,6 +796,84 @@
               "cmd"
             ]
           }
+        },
+        "pre-resolution-backfill": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "const": false
+              },
+              "placement": {
+                "enum": [
+                  "before_confirm",
+                  "after_confirm"
+                ],
+                "default": "after_confirm",
+                "description": "before_confirm runs the hook before the confirmation dialog; after_confirm (the default) runs it after the answer. pre- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-resolution-backfill": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
         }
       },
       "additionalProperties": false,
@@ -1047,7 +1125,8 @@
             "default_resolution": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "description": "Resolution used for a done target, and by resolution-backfill when --resolution is absent."
             },
             "assign_on_start": {
               "enum": [

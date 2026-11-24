@@ -62,6 +62,7 @@ PLAN_KEYS: dict[str, tuple[str, ...]] = {
     "comment-edit": ("current_status", "comment_id"),
     "comment-delete": ("current_status", "comment_id"),
     "attachment-add": ("current_status",),
+    "resolution-backfill": ("current_status", "resolution"),
 }
 STATUS_CATEGORIES = ("new", "indeterminate", "done")
 SPRINT_STATES = ("future", "active", "closed")
@@ -299,7 +300,7 @@ def build_payload(
         elif name == "assign":
             plan_part[name] = _assign(facts.get(name), name)
         else:  # resolution
-            plan_part[name] = _name_or_null(facts.get(name), name, cap=128)
+            plan_part[name] = _name_or_null(facts.get(name), name, cap=256)
     payload: dict[str, Any] = {
         "tool": "ticketctl",
         "hook": hook,

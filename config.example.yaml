@@ -60,7 +60,7 @@ sites:
     queries:
       my_open: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
     transitions:
-      # Resolution used for a done target when --resolution is not given. Default: none.
+      # Resolution used for a done target (transition) and by resolution-backfill when --resolution is not given. Default: none.
       default_resolution: Done
       # `me` assigns me when an unassigned ticket moves to a target that is not done. Default: none.
       assign_on_start: me
@@ -101,7 +101,7 @@ limits:
   # Longest Retry-After honored; also bounded by the remaining command time. Default: 60s.
   retry_after_max: 60s
 
-# Hooks per kind of write: pre-/post- for transition, comment, create, update, sprint and link.
+# Hooks per kind of write: pre-/post- for transition, comment, create, update, sprint, link and resolution-backfill (also comment-edit, comment-delete and attachment-add).
 # Each is an ordered list of {cmd, timeout, async, placement}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only; placement (after_confirm by default, or before_confirm) is for pre- hooks only and runs the hook before the confirmation dialog instead of after the answer.
 # A hook runs as `/bin/sh -c <cmd>` with the payload on stdin; exit 13 escalates, any other non-zero exit or a timeout vetoes a pre- hook, and a post- hook failure is only a warning. An async hook is detached and has no timeout enforced.
 # Default: {}.

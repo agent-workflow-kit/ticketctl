@@ -519,6 +519,24 @@ ITEMS: tuple[Item, ...] = (
         "unchanged), then attachment-download of the printed id and compares the bytes, and "
         "tries a file just over the site's limit if it is below 10 MiB",
     ),
+    Item(
+        "W24",
+        "#48",
+        "resolution-backfill: the edit screen (editmeta) of a done ticket that has no resolution "
+        "lists `resolution` with the `set` operation (when it does not, ticketctl refuses with "
+        "not_editable and the site's screen or workflow has to change); the shape of its "
+        "`allowedValues` (entries with `name`); PUT /issue/{key} with fields.resolution "
+        "{name} answers 204 and the value is stored and readable on a done ticket; resolutiondate "
+        "follows or stays; the status does not change; a workflow with a post function that "
+        "clears or requires the resolution on that status refuses or overwrites the value (a "
+        "4xx ticketctl maps to `rejected`, or a value that reads back empty)",
+        HUMAN,
+        why="the write suite closes its tickets through the transition with a resolution and "
+        "never leaves a done ticket without one: a human closes one test ticket in the site's "
+        "workflow without a resolution (or finds one), runs resolution-backfill --dry-run, "
+        "applies it with --yes --expect-plan, reads the ticket with get, and runs it again "
+        "(the second run must be unchanged)",
+    ),
 )
 
 
