@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import email.parser
+import email.policy
 import http.client
 import json
 import re
@@ -84,6 +86,7 @@ ISSUE_TYPES = {
 
 NOT_SETTABLE = "Field '{name}' cannot be set. It is not on the appropriate screen, or unknown."
 COMMENT_BODY_LIMIT = 32768
+ATTACHMENT_LIMIT = 10 * 1024 * 1024  # the provider's default upload limit (the fake enforces it)
 PROPERTY_VALUE_LIMIT = 32768
 LABEL_LIMIT = 255
 EMBEDDED_COMMENTS = 20  # V-25
@@ -649,6 +652,8 @@ class Ticket:
     created: datetime = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
     updated: datetime = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
     comments: list[dict[str, Any]] = field(default_factory=list)
+    # {id, filename, size, mimeType, author, _created, _content}; ``attach`` adds one
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     sprints: list[int] = field(default_factory=list)
     links: list[dict[str, Any]] = field(default_factory=list)
     points: float | None = None
@@ -709,6 +714,7 @@ class FakeProvider:
         self.now = datetime(2026, 3, 4, 15, 0, tzinfo=UTC)
         self._next_id = 10000
         self._next_comment = 20000
+        self._next_attachment = 30000
         self._next_link = 30000
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -872,12 +878,36 @@ class FakeProvider:
             malformed = str(exc)
         body: Any
         try:
-            body = json.loads(req.body) if req.body else None
+            if (req.header("content-type") or "").lower().startswith("multipart/form-data"):
+                body = self._parse_multipart(req)
+            else:
+                body = json.loads(req.body) if req.body else None
         except (ValueError, RecursionError):  # bad JSON, a digit-limit number, nesting too deep
             body = ("invalid", req.body)
         return Call(
             req.method, path, query, body, req.headers, target=req.target, malformed=malformed
         )
+
+    @staticmethod
+    def _parse_multipart(req: Request) -> dict[str, Any]:
+        """``{"_multipart": [{name, filename, content_type, content}]}`` (bytes content)."""
+        head = f"Content-Type: {req.header('content-type')}\r\nMIME-Version: 1.0\r\n\r\n"
+        msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+            head.encode() + req.body
+        )
+        if not msg.is_multipart():
+            raise ValueError("not a multipart body")
+        parts = []
+        for part in msg.iter_parts():
+            parts.append(
+                {
+                    "name": part.get_param("name", header="content-disposition"),
+                    "filename": part.get_filename(),
+                    "content_type": part.get_content_type(),
+                    "content": part.get_payload(decode=True) or b"",
+                }
+            )
+        return {"_multipart": parts}
 
     def _behavior(self, conn: Conn) -> None:
         req = conn.request
@@ -984,9 +1014,12 @@ class FakeProvider:
         headers = dict(out.headers)
         body = out.body
         try:
-            if isinstance(body, str):
+            if isinstance(body, bytes):
+                headers.setdefault("Content-Type", "application/octet-stream")
+                data: bytes = body
+            elif isinstance(body, str):
                 headers.setdefault("Content-Type", "text/plain;charset=UTF-8")
-                data: bytes = body.encode()
+                data = body.encode()
             elif body is None:
                 data = b""
             else:
@@ -1093,6 +1126,9 @@ class FakeProvider:
         r("GET", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
         r("PUT", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
         r("DELETE", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
+        r("POST", api + f"/issue/{key}/attachments", self._add_attachment)
+        r("GET", api + r"/attachment/content/([^/]+)", self._attachment_content)
+        r("GET", api + r"/attachment/([^/]+)", self._attachment_meta)
         r("GET", api + f"/issue/{key}/changelog", self._changelog)
         r("GET", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
         r("PUT", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
@@ -1215,7 +1251,7 @@ class FakeProvider:
                 "maxResults": EMBEDDED_COMMENTS,
                 "startAt": 0,
             },
-            "attachment": [],
+            "attachment": [self._attachment_obj(a) for a in t.attachments],
             F_POINTS: t.points,
             F_ESTIMATE: None,
             F_SPRINT: [self._sprint_obj(s) for s in t.sprints] or None,
@@ -2119,6 +2155,64 @@ class FakeProvider:
         t.updated = self.now
         return Out(201, self._comment_obj(comment, props=False), applied=True)
 
+    def _attachment_obj(self, a: dict[str, Any]) -> dict[str, Any]:
+        out = {k: v for k, v in a.items() if not k.startswith("_")}
+        out["created"] = self.stamp(a["_created"])
+        out["self"] = f"{self.url}/rest/api/3/attachment/{a['id']}"
+        # An absolute URL that ticketctl must never follow (the interface says so).
+        out["content"] = f"{self.url}/rest/api/3/attachment/content/{a['id']}"
+        return out
+
+    def attach(self, key: str, filename: str, content: bytes, *, author: str = ME_ACCOUNT) -> str:
+        """Add an attachment to ``key`` directly (no request); returns its id."""
+        t = self._ticket(key)
+        aid = str(self._next_attachment)
+        self._next_attachment += 1
+        t.attachments.append(
+            {
+                "id": aid,
+                "filename": filename,
+                "size": len(content),
+                "mimeType": "application/octet-stream",
+                "author": self._user(author),
+                "_created": self.now,
+                "_content": content,
+            }
+        )
+        return aid
+
+    def _add_attachment(self, call: Call, key: str) -> Out:
+        t = self._ticket(key)
+        if (call.headers.get("x-atlassian-token") or [""])[0] != "no-check":
+            raise ProviderError(403, text="XSRF check failed")  # the real provider's refusal
+        body = call.body
+        parts = body.get("_multipart") if isinstance(body, dict) else None
+        files = [p for p in parts or [] if p["name"] == "file" and p["filename"] is not None]
+        if len(files) != 1 or len(parts or []) != 1:
+            raise ProviderError(400, ["Exactly one file part named file is required."])
+        file = files[0]
+        if len(file["content"]) > ATTACHMENT_LIMIT:
+            raise ProviderError(413, text="The attachment is too large.")
+        self.attach(key, file["filename"], file["content"])
+        t.updated = self.now
+        return Out(200, [self._attachment_obj(t.attachments[-1])], applied=True)
+
+    def _find_attachment(self, aid: str) -> dict[str, Any]:
+        for t in self.tickets.values():
+            for a in t.attachments:
+                if a["id"] == aid:
+                    return a
+        raise ProviderError(404, ["The attachment does not exist or you have no permission."])
+
+    def _attachment_meta(self, call: Call, aid: str) -> Out:
+        return Out(200, self._attachment_obj(self._find_attachment(aid)))
+
+    def _attachment_content(self, call: Call, aid: str) -> Out:
+        a = self._find_attachment(aid)
+        if call.one("redirect") != "false":  # the real endpoint answers 303 to a media host
+            return Out(303, None, {"Location": "https://media.example.test/blob/" + aid})
+        return Out(200, a["_content"])
+
     LINK_TYPES = (
         {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
         {"id": "10001", "name": "Relates", "inward": "relates to", "outward": "relates to"},
@@ -2455,4 +2549,11 @@ verification issues):
 - the issue ``self`` links, the ``expand`` string and the default priority list order
 - an empty-text or oversized ADF description on create or edit
 - Basic auth with a wrong email but a valid token
+- attachments: that the upload is ``POST /issue/{key}/attachments`` with one ``file`` part and
+  the header ``X-Atlassian-Token: no-check`` (403 without it), answering a list with one
+  attachment object; that ``GET /attachment/content/{id}?redirect=false`` answers the bytes
+  while the plain endpoint answers a 303 to a media host; the 413 of an oversized upload; how a
+  file name with a non-ASCII character is stored; the object keys (id, filename, size, mimeType,
+  author, created, self, content); that an uploaded file is listed under ``fields.attachment``
+  at once
 """

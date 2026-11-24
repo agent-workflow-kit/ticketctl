@@ -65,7 +65,7 @@ from .attribution import Format, Kind, RichText
 from .dedupe import bucket_lock
 from .errors import TicketctlError, from_exception, read_only_error, usage_error
 from .flags import Globals
-from .gateway import Deadline, Gateway, Response, Target
+from .gateway import Deadline, Gateway, Response, Target, Upload
 from .plan import Planned, Step, build_plan, canonical_bytes
 from .runtime import Runtime, for_site, open_gateway
 from .sanitize import GRAMMARS, add_secrets, ensure_no_secret, sanitize_field
@@ -88,6 +88,7 @@ class StepResult:
     provider_ids: list[str] = field(default_factory=list)
     key: str | None = None  # the created ticket's key
     comment_id: str | None = None
+    attachment_id: str | None = None
 
 
 def check_outbound(body: object, *, body_chars: int) -> None:
@@ -145,10 +146,17 @@ class WriteGateway:
         query: str = "",
         body: object | None = None,
         write: bool | None = None,
+        upload: Upload | None = None,
+        binary: bool = False,
     ) -> Response:
         check_outbound(body, body_chars=self._body_chars)
+        extra: dict[str, Any] = {}  # only what is set, so a fake gateway needs no new parameter
+        if upload is not None:
+            extra["upload"] = upload
+        if binary:
+            extra["binary"] = True
         return self._gw.request(
-            method, path, template=template, query=query, body=body, write=write
+            method, path, template=template, query=query, body=body, write=write, **extra
         )
 
 
@@ -449,6 +457,7 @@ def result_object(
     attempt_id: str | None,
     decision_ids: list[str],
     warnings: list[str],
+    attachment_id: str | None = None,
 ) -> dict[str, Any]:
     # Never raise after a write landed: a key or comment id outside its grammar is dropped (a
     # landed create whose key is lost prints a null key and url).
@@ -456,7 +465,7 @@ def result_object(
         key = None
     if comment_id is not None and not GRAMMARS["provider_id"].matches(comment_id):
         comment_id = None
-    return {
+    out: dict[str, Any] = {
         "action": ctx.action,
         "site": ctx.site,
         "key": key,
@@ -471,6 +480,9 @@ def result_object(
         "decision_ids": decision_ids,
         "warnings": list(dict.fromkeys(warnings)),
     }
+    if attachment_id is not None and GRAMMARS["provider_id"].matches(attachment_id):
+        out["attachment_id"] = attachment_id  # only `attachment-add` has it: other shapes stay
+    return out
 
 
 # --------------------------------------------------------------------------------------------
@@ -490,7 +502,7 @@ def hook_family(action: str) -> str:
         return "sprint"
     if action.startswith("link_"):
         return "link"
-    if action.startswith("comment_"):
+    if action.startswith(("comment_", "attachment_")):
         return action.replace("_", "-")  # comment_edit -> comment-edit: its own hook family
     return action
 
@@ -821,6 +833,7 @@ class _Run:
             attempt_id=None,
             decision_ids=decision_ids,
             warnings=[*planned.warnings, *self.extra_warnings],
+            attachment_id=planned.attachment_id,
         )
 
     def _confirm(self, plan: dict[str, Any], planned: Planned, decision_ids: list[str]) -> None:
@@ -938,6 +951,7 @@ class _Run:
         st: _SendState,
     ) -> _Outcome:
         comment_id: str | None = None
+        attachment_id: str | None = None
         # the error, whether the outcome is unknown, whether the audit refused the send
         failure: tuple[TicketctlError, bool, bool] | None = None
         steps = planned.steps
@@ -988,6 +1002,7 @@ class _Run:
             provider_ids.extend(ids)
             st.created_key = st.created_key or key
             comment_id = comment_id or res.comment_id
+            attachment_id = attachment_id or res.attachment_id
             done.append({"kind": step.kind, "status": "done"})
             self._outcome(
                 log, number, step, "ok", changed=True, reason=None, provider_ids=ids,
@@ -1009,6 +1024,7 @@ class _Run:
             result = result_object(
                 ctx, planned, result="ok", steps=done, key=key, comment_id=comment_id,
                 attempt_id=ctx.attempt_id, decision_ids=decision_ids, warnings=warnings,
+                attachment_id=attachment_id,
             )  # fmt: skip
             return _Outcome(result, None, self._interrupt_info(planned, done, provider_ids, st))
 
@@ -1023,6 +1039,7 @@ class _Run:
         partial = result_object(
             ctx, planned, result="partial", steps=done, key=key, comment_id=comment_id,
             attempt_id=ctx.attempt_id, decision_ids=decision_ids, warnings=warnings,
+            attachment_id=attachment_id,
         )  # fmt: skip
         failed_kind = next(s["kind"] for s in done if s["status"] == "failed")
         envelope = TicketctlError(

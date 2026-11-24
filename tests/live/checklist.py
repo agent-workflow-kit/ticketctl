@@ -501,6 +501,24 @@ ITEMS: tuple[Item, ...] = (
         "human runs link add with --direction outward between two of their own test tickets, "
         "reads both with get --fields links, then runs link remove",
     ),
+    Item(
+        "W23",
+        "#42",
+        "attachment-add and attachment-download: POST /issue/{key}/attachments with one `file` "
+        "part and X-Atlassian-Token: no-check is accepted and answers a list with the new "
+        "attachment (id, filename, size); a name with a non-ASCII character is stored as sent; a "
+        "second upload of the same name is kept as a second attachment (the content check "
+        "relies on that and on the issue read listing the first one at once); the issue read "
+        "lists `attachment` with id, filename, size and mimeType; GET "
+        "/attachment/content/{id}?redirect=false answers the bytes themselves, with no redirect, "
+        "and a length equal to the listed size; the provider's own size limit and the answer "
+        "when it is exceeded (a 4xx ticketctl maps to `rejected`)",
+        HUMAN,
+        why="an upload cannot be deleted by ticketctl and the write suite creates no "
+        "attachments: a human runs attachment-add twice on a test ticket (the second run must be "
+        "unchanged), then attachment-download of the printed id and compares the bytes, and "
+        "tries a file just over the site's limit if it is below 10 MiB",
+    ),
 )
 
 
