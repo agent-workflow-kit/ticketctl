@@ -194,7 +194,7 @@ def doc_hook_names(md: str) -> list[str]:
         (line for line in dp.section(md, "Hooks").splitlines() if line.strip()),
         "",
     )
-    return dp.names(first, r"(?:pre|post)-[a-z]+")
+    return dp.names(first, r"(?:pre|post)-[a-z]+(?:-[a-z]+)*")
 
 
 def check_hook_names(r: Repo) -> None:
@@ -208,7 +208,9 @@ def check_hook_names(r: Repo) -> None:
     kind_table = dp.table(
         dp.section(r.readme, "Hooks"), "Kind", "Hooks", where="README section Hooks"
     )
-    readme_hooks = [n for row in kind_table.rows for n in dp.names(row[1], r"(?:pre|post)-[a-z]+")]
+    readme_hooks = [
+        n for row in kind_table.rows for n in dp.names(row[1], r"(?:pre|post)-[a-z]+(?:-[a-z]+)*")
+    ]
     dp.assert_same("interface hooks", doc, "README hooks table", readme_hooks)
     for hook in doc:  # each hook schema names itself
         payload = r.schema(f"hooks/{hook}.json")
@@ -948,8 +950,8 @@ DOC_MUTATIONS = [
     ("plan_enums", "{kind: assign|transition|", "{kind: assign|", "transition"),
     (
         "plan_enums",
-        "`sprint_add` and `sprint_remove` (hooks use",
-        "`sprint_remove` (hooks use",
+        "`sprint_add`, `sprint_remove`, `comment_edit`",
+        "`sprint_remove`, `comment_edit`",
         "sprint_add",
     ),
     ("hook_names", "`pre-sprint`, `post-sprint`. Reads", "`pre-sprint`. Reads", "post-sprint"),

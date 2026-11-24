@@ -1086,6 +1086,9 @@ class FakeProvider:
         r("POST", api + f"/issue/{key}/transitions", self._transition)
         r("GET", api + f"/issue/{key}/comment", self._comments)
         r("POST", api + f"/issue/{key}/comment", self._add_comment)
+        r("GET", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
+        r("PUT", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
+        r("DELETE", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
         r("GET", api + f"/issue/{key}/changelog", self._changelog)
         r("GET", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
         r("PUT", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
@@ -2111,6 +2114,33 @@ class FakeProvider:
         t.comments.append(comment)
         t.updated = self.now
         return Out(201, self._comment_obj(comment, props=False), applied=True)
+
+    def _one_comment(self, call: Call, key: str, cid: str) -> Out:
+        """Read, update or delete one comment; only the author may change it (403 otherwise)."""
+        t = self._ticket(key)
+        comment = next((c for c in t.comments if c["id"] == cid), None)
+        if comment is None:
+            raise ProviderError(404, ["Comment does not exist or you do not have permission."])
+        if call.method == "GET":
+            props = "properties" in (call.one("expand") or "")
+            return Out(200, self._comment_obj(comment, props=props))
+        if comment["author"]["accountId"] != ME_ACCOUNT:
+            raise ProviderError(403, ["You do not have permission to change this comment."])
+        if call.method == "DELETE":
+            t.comments.remove(comment)
+            t.updated = self.now
+            return Out(204, None, applied=True)
+        body = self._need_body(call)
+        doc = body.get("body")
+        if not (isinstance(doc, dict) and doc.get("type") == "doc" and _adf_shape_ok(doc)):
+            raise ProviderError(400, ["Comment body is not valid!"])
+        props = self._parse_props(body.get("properties"))
+        comment["body"] = doc
+        comment["_updated"] = self.now
+        comment["updateAuthor"] = self._user(ME_ACCOUNT)
+        comment["properties"] = {**(comment.get("properties") or {}), **props}
+        t.updated = self.now
+        return Out(200, self._comment_obj(comment, props=False), applied=True)
 
     @staticmethod
     def _check_property(key: Any, value: Any) -> None:

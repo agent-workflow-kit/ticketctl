@@ -57,6 +57,8 @@ PLAN_KEYS: dict[str, tuple[str, ...]] = {
     "comment": ("current_status", "dedupe_key"),
     "create": ("fields_changed", "dedupe_key"),
     "sprint": ("current_status",),
+    "comment-edit": ("current_status", "comment_id"),
+    "comment-delete": ("current_status", "comment_id"),
 }
 STATUS_CATEGORIES = ("new", "indeterminate", "done")
 SPRINT_STATES = ("future", "active", "closed")
@@ -255,6 +257,11 @@ def build_payload(
             plan_part[name] = _status(facts.get(name), name)
         elif name == "fields_changed":
             plan_part[name] = _fields_changed(facts, plan)
+        elif name == "comment_id":
+            cid = facts.get("comment_id")
+            if not GRAMMARS["provider_id"].matches(cid):
+                raise _incomplete("comment_id")
+            plan_part[name] = cid
         elif name == "dedupe_key":
             plan_part[name] = plan.get("dedupe_key")
         elif name == "assign":

@@ -182,43 +182,12 @@ class CommentAction:
 
     # -- helpers -----------------------------------------------------------------------------
     def _read_ticket(self, ctx: Context) -> dict[str, Any]:
-        response = ctx.gw.request(
-            "GET",
-            f"/rest/api/3/issue/{segment('ticket_key', self.key)}",
-            template=ISSUE_TEMPLATE,
-            query=query({"fields": "status,issuetype,project,priority,assignee"}),
-        )
-        if not 200 <= response.status < 300:
-            raise object_error(response.status, "ticket")
-        data = response.data
-        fields = data.get("fields") if isinstance(data, dict) else None
-        if not isinstance(fields, dict):
-            raise TicketctlError("provider_changed", "the provider answered no ticket fields")
-        return fields
+        return read_ticket(ctx, self.key)
 
     def _hook_facts(
         self, ctx: Context, fields: dict[str, Any], status: dict[str, Any], category: str | None
     ) -> dict[str, Any]:
-        project = _obj(fields.get("project")).get("key")
-        itype = _obj(fields.get("issuetype"))
-        assignee = _obj(fields.get("assignee")).get("accountId")
-        priority = _obj(fields.get("priority")).get("name")
-        facts: dict[str, Any] = {
-            "ticket": {
-                "type": _name(itype.get("name")),
-                "subtask": itype.get("subtask") is True,
-                "status": _name(status.get("name")),
-                "priority": _name(priority),
-                "assignee_account_id": assignee
-                if GRAMMARS["account_id"].matches(assignee)
-                else None,
-                "assignee_is_me": assignee == ctx.me.account_id,
-            },
-            "current_status": {"name": _name(status.get("name")), "category": category},
-        }
-        if GRAMMARS["project_key"].matches(project):
-            facts["project"] = project
-        return facts
+        return hook_facts(ctx, fields, status, category)
 
     def _add_step(self, ctx: Context, rich: attribution.RichText, info: dict[str, Any]) -> Step:
         meta = attribution.comment_meta(ctx.actor, rich, dedupe_key=self.dedupe_key)
@@ -243,6 +212,46 @@ class CommentAction:
         return Step(
             "add_comment", send, {"body_sha256": info["sha256"], "body_bytes": info["bytes"]}
         )
+
+
+def read_ticket(ctx: Context, key: str) -> dict[str, Any]:
+    """The ticket's facts for the plan and the hooks (also used by comment edit and delete)."""
+    response = ctx.gw.request(
+        "GET",
+        f"/rest/api/3/issue/{segment('ticket_key', key)}",
+        template=ISSUE_TEMPLATE,
+        query=query({"fields": "status,issuetype,project,priority,assignee"}),
+    )
+    if not 200 <= response.status < 300:
+        raise object_error(response.status, "ticket")
+    data = response.data
+    fields = data.get("fields") if isinstance(data, dict) else None
+    if not isinstance(fields, dict):
+        raise TicketctlError("provider_changed", "the provider answered no ticket fields")
+    return fields
+
+
+def hook_facts(
+    ctx: Context, fields: dict[str, Any], status: dict[str, Any], category: str | None
+) -> dict[str, Any]:
+    project = _obj(fields.get("project")).get("key")
+    itype = _obj(fields.get("issuetype"))
+    assignee = _obj(fields.get("assignee")).get("accountId")
+    priority = _obj(fields.get("priority")).get("name")
+    facts: dict[str, Any] = {
+        "ticket": {
+            "type": _name(itype.get("name")),
+            "subtask": itype.get("subtask") is True,
+            "status": _name(status.get("name")),
+            "priority": _name(priority),
+            "assignee_account_id": assignee if GRAMMARS["account_id"].matches(assignee) else None,
+            "assignee_is_me": assignee == ctx.me.account_id,
+        },
+        "current_status": {"name": _name(status.get("name")), "category": category},
+    }
+    if GRAMMARS["project_key"].matches(project):
+        facts["project"] = project
+    return facts
 
 
 def _texts(doc: object) -> list[str]:

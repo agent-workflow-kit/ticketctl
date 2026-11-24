@@ -2,8 +2,8 @@
 
 READ THIS BEFORE RUNNING. The suite creates up to three tickets in the project named by
 ``TICKETCTL_LIVE_PROJECT`` and posts one comment on one of them; ``TICKETCTL_LIVE_MAX_TICKETS``
-(1, 2 or 3) lowers that cap and ``TICKETCTL_LIVE_COMMENT_TEXT`` sets the comment text. A comment cannot be deleted; a
-created ticket can only be closed. The suite refuses to run without ``TICKETCTL_LIVE=1`` and
+(1, 2 or 3) lowers that cap and ``TICKETCTL_LIVE_COMMENT_TEXT`` sets the comment text. The suite never edits or deletes a
+comment (comment-delete is a human probe, W21); a created ticket can only be closed. The suite refuses to run without ``TICKETCTL_LIVE=1`` and
 ``TICKETCTL_LIVE_WRITE=1`` and a named test project. Every ticket it created is closed as done with
 the won't-do resolution by the module fixture's ``finally`` (``conftest.write_world``), also when a
 test fails, the request cap aborts the run or the run is interrupted. It never touches a ticket it

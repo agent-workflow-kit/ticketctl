@@ -120,7 +120,7 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         raise usage_error("stdin_conflict", "at most one `-` source (stdin) per command")
     if spec.path == ("transition",):
         _exactly_one(ns, "to", "transition_id", "--to and --transition-id")
-    elif spec.path == ("comment",):
+    elif spec.path in (("comment",), ("comment-edit",)):
         _exactly_one(ns, "body", "body_file", "--body and --body-file")
         if ns.format == "adf" and ns.body_file is None:
             raise usage_error("invalid_combination", "--format adf needs --body-file")

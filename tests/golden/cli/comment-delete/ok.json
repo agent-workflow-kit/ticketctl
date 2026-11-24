@@ -1,0 +1,20 @@
+{
+  "action": "comment_delete",
+  "already_posted": false,
+  "attempt_id": "0123456789abcdef",
+  "changed": true,
+  "comment_id": "20000",
+  "decision_ids": [],
+  "key": "DEMO-2",
+  "result": "ok",
+  "reused": false,
+  "site": "main",
+  "steps": [
+    {
+      "kind": "delete_comment",
+      "status": "done"
+    }
+  ],
+  "url": "https://tracker.example.test/browse/DEMO-2",
+  "warnings": []
+}

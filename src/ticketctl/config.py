@@ -63,7 +63,15 @@ LOGICAL_FIELDS = (
 )
 HOOK_NAMES = tuple(
     f"{when}-{kind}"
-    for kind in ("transition", "comment", "create", "update", "sprint")
+    for kind in (
+        "transition",
+        "comment",
+        "create",
+        "update",
+        "sprint",
+        "comment-edit",
+        "comment-delete",
+    )
     for when in ("pre", "post")
 )
 

@@ -17,6 +17,7 @@ from typing import Any
 from . import (
     changelogcmd,
     commentcmd,
+    commentedit,
     commentscmd,
     createcmd,
     exportcmd,
@@ -201,6 +202,23 @@ def _comment(p: argparse.ArgumentParser) -> None:
     _add(p, "--dedupe-key", type=dedupe_key_arg)
 
 
+def _comment_id(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "comment_id", metavar="ID", type=numeric_id_arg, help="the comment's numeric id")
+
+
+def _comment_edit(p: argparse.ArgumentParser) -> None:
+    _comment_id(p)
+    _add(
+        p,
+        "--body",
+        help="the new comment text (Markdown); a body starting with '-' needs --body=TEXT "
+        "or --body-file",
+    )
+    _add(p, "--body-file")
+    _add(p, "--format", choices=["markdown", "adf"])
+
+
 def _create(p: argparse.ArgumentParser) -> None:
     _add(p, "--project")
     _add(p, "--type")
@@ -366,6 +384,22 @@ def _specs() -> list[CommandSpec]:
         ),
         CommandSpec(
             ("comment",), w, "post a comment", commentcmd.comment, _comment, writeflow.human
+        ),
+        CommandSpec(
+            ("comment-edit",),
+            w,
+            "replace the body of a comment ticketctl posted",
+            commentedit.comment_edit,
+            _comment_edit,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("comment-delete",),
+            w,
+            "delete a comment ticketctl posted",
+            commentedit.comment_delete,
+            _comment_id,
+            writeflow.human,
         ),
         CommandSpec(("create",), w, "create a ticket", createcmd.create, _create, writeflow.human),
         CommandSpec(

@@ -25,7 +25,7 @@ Both drive the `ticketctl` command line as a subprocess, like a real consumer, a
 
 The write suite changes a real site.
 
-- A comment cannot be deleted. The suite posts exactly one, on one of its own test tickets, and refuses a second one on any ticket. Its text is `TICKETCTL_LIVE_COMMENT_TEXT`, by default a neutral note (see "The comment" below).
+- The suite never deletes or edits a comment (the `comment-edit` and `comment-delete` commands are a human probe, W21 below). The suite posts exactly one, on one of its own test tickets, and refuses a second one on any ticket. Its text is `TICKETCTL_LIVE_COMMENT_TEXT`, by default a neutral note (see "The comment" below).
 - A ticket cannot be deleted either, only closed. The suite creates at most three (one or two with `TICKETCTL_LIVE_MAX_TICKETS`), titled `ticketctl live test <run id> ...`, and closes each as done with a "won't do" resolution in a `finally` (the module fixture `write_world`), also when a test fails, the request cap stops the run or you interrupt it. A ticket the closer could not close is printed at the end ("TEST TICKETS LEFT OPEN") so you can close it by hand.
 - It writes only tickets it created (the key a create returned, and after a create whose answer was lost, the tickets that carry this run's title marker).
 - Sprint tests move one of its own tickets into a future sprint of the board you name and back to the backlog. Use a board and sprints you may disturb.
@@ -127,7 +127,7 @@ The suite posts at most one comment per ticket, on its own ticket, and the runne
 
 The text says Won't Do. If you change `TICKETCTL_LIVE_RESOLUTION`, set `TICKETCTL_LIVE_COMMENT_TEXT` to match.
 
-For an automated actor (a non-TTY run, which is what the suite is) ticketctl adds the attribution paragraph of your config template before the comment text. Check your attribution template before a billed run: the paragraph is posted with the comment and cannot be deleted.
+For an automated actor (a non-TTY run, which is what the suite is) ticketctl adds the attribution paragraph of your config template before the comment text. Check your attribution template before a billed run: the paragraph is posted with the comment, and the live suite never edits or deletes a comment (`comment-delete` is a human probe, W21).
 
 Set `TICKETCTL_LIVE_COMMENT_TEXT` to change it. The text goes to `ticketctl comment --body-file` through a temporary file (no shell is involved, and a text that starts with a dash is safe), with `--dedupe-key`: the same comment is the dedupe-key probe. The suite then repeats the same command as a dry run and expects no steps (the comment is found by its key, not posted again), and lists the ticket's own comments. The text is never written to the findings file (only its length). When the suite finishes, it reads each commented ticket back and asserts it holds exactly one comment.
 
@@ -206,7 +206,7 @@ The table maps every item of the checklist in issue #3 and of the review notes o
 | W08 | #66 | Payload shapes (option, priority, user, null clears), the datetime format, ADF accepted in description and the transition comment, editmeta and createmeta keyed by field id | `test_update_title_labels_order`, `test_transition_with_assign` (indirect: only the fields the suite sets are exercised; the rest needs site-specific fields) | none |
 | W09 | #23, #72 | PUT on the assignee, POST on transitions, POST on comment: request and response shapes accepted; the 4xx body shapes | `test_transition_with_assign`, `test_comment_with_key` (indirect: the write succeeding proves the shape; a refusal needs a deliberately bad write) | none |
 | W10 | #33, #63, #3 | A keyed comment: ticketctl.meta accepted as a property in the comment create request; the comment list is read-your-writes; expand=properties returns the own comment's property | `test_comment_with_key` | none |
-| W11 | #63, #3 | Comment property size and key limits, the text limit of descriptions and rich-text custom fields, an empty text node, a total text limit across ADF nodes, a 300 KB body | needs a human decision or another environment: needs oversized writes; a comment cannot be deleted, so this is a human decision (a description on a test ticket is the safer place) | none |
+| W11 | #63, #3 | Comment property size and key limits, the text limit of descriptions and rich-text custom fields, an empty text node, a total text limit across ADF nodes, a 300 KB body | needs a human decision or another environment: needs oversized writes; the live suite never deletes a comment, so this is a human decision (a description on a test ticket is the safer place) | none |
 | W12 | #34 | Adding a ticket that is already in an open or future sprint to a second one moves it (plan assumes a move, warning sprint_moved) rather than appending | `test_sprint_add_move_and_remove` | a board with two open or future sprints |
 | W13 | #34 | sprint remove sends the ticket to the backlog: with several open sprints | `test_sprint_add_move_and_remove` | a board with two open or future sprints |
 | W14 | #3, #34 | Closed-sprint membership under the backlog call, and moving a ticket out of a closed sprint | needs a human decision or another environment: needs a ticket whose only sprint entries are closed; a sprint cannot be closed and reopened by the suite: a human sets one up and runs sprint remove on it | none |
@@ -216,6 +216,7 @@ The table maps every item of the checklist in issue #3 and of the review notes o
 | W18 | #10 | The 400 body of an unknown transition id and of a missing resolution, the ADF-required 400 for a plain string, the label, summary, parent and notifyUsers texts | needs a human decision or another environment: ticketctl validates these first, so the provider is never asked: needs raw requests | none |
 | W19 | #3 | Whether a done transition from a non-assigned sub-task needs a parent; the transition order (assign then done) | `test_transition_with_assign` (indirect: the suite closes tickets with the normal flow; a sub-task needs a parent ticket) | none |
 | W20 | #38 | The closer: every created ticket ends done with the won't-do resolution | `test_every_created_ticket_is_closed` | none |
+| W21 | #43 | comment-edit and comment-delete: the single-comment read embeds properties under expand=properties; PUT of a comment accepts body and properties and rewrites the ticketctl.meta property; PUT without visibility on a restricted comment, and whether an internal-only comment reads as jsdPublic false (ticketctl refuses both, so only a raw request shows what the provider does); DELETE removes the comment; a non-author PUT or DELETE is refused | needs a human decision or another environment: the write suite posts exactly one comment per test ticket and a delete would break that count: a human runs comment-edit and comment-delete on a comment of their own test ticket and reads the result with comments | none |
 <!-- checklist:end -->
 
 ## Probes that depend on the site
