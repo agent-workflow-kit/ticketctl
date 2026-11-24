@@ -73,6 +73,7 @@ HOOK_NAMES = tuple(
         "comment-edit",
         "comment-delete",
         "attachment-add",
+        "resolution-backfill",
     )
     for when in ("pre", "post")
 )

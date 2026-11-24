@@ -1,0 +1,20 @@
+{
+  "action": "resolution_backfill",
+  "already_posted": false,
+  "attempt_id": "0123456789abcdef",
+  "changed": true,
+  "comment_id": null,
+  "decision_ids": [],
+  "key": "DEMO-7",
+  "result": "ok",
+  "reused": false,
+  "site": "main",
+  "steps": [
+    {
+      "kind": "set_resolution",
+      "status": "done"
+    }
+  ],
+  "url": "https://tracker.example.test/browse/DEMO-7",
+  "warnings": []
+}

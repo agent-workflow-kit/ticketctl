@@ -28,6 +28,7 @@ from . import (
     getcmd,
     handlers,
     linkcmd,
+    resolutioncmd,
     searchcmd,
     sprintcmd,
     sprintscmd,
@@ -245,6 +246,16 @@ def _attachment_download(p: argparse.ArgumentParser) -> None:
     _key(p)
     _add(p, "attachment_id", metavar="ID", type=numeric_id_arg, help="the attachment's numeric id")
     _add(p, "--to", metavar="PATH", help="the new file to write (an existing path is refused)")
+
+
+def _resolution_backfill(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(
+        p,
+        "--resolution",
+        type=resolutioncmd.resolution_arg,
+        help="the resolution to set (default: the site's transitions.default_resolution)",
+    )
 
 
 def _create(p: argparse.ArgumentParser) -> None:
@@ -487,6 +498,14 @@ def _specs() -> list[CommandSpec]:
             "attach a file to a ticket",
             attachmentcmd.attachment_add,
             _attachment_add,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("resolution-backfill",),
+            w,
+            "set the resolution of a done ticket that has none",
+            resolutioncmd.resolution_backfill,
+            _resolution_backfill,
             writeflow.human,
         ),
         CommandSpec(("create",), w, "create a ticket", createcmd.create, _create, writeflow.human),

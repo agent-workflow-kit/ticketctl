@@ -526,7 +526,7 @@ def hook_family(action: str) -> str:
         return "sprint"
     if action.startswith("link_"):
         return "link"
-    if action.startswith(("comment_", "attachment_")):
+    if action.startswith(("comment_", "attachment_", "resolution_")):
         return action.replace("_", "-")  # comment_edit -> comment-edit: its own hook family
     return action
 

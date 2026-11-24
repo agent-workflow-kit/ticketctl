@@ -60,6 +60,7 @@ WRITE_CASES: dict[tuple[str, ...], list[str]] = {
     ("sprint", "remove"): ["sprint", "remove", "DEMO-1"],
     ("sprint", "add-many"): ["sprint", "add-many", "DEMO-1", "DEMO-2", "--sprint", "1"],
     ("sprint", "remove-many"): ["sprint", "remove-many", "DEMO-1", "DEMO-2"],
+    ("resolution-backfill",): ["resolution-backfill", "DEMO-1", "--resolution", "Done"],
     ("link", "add"): [
         "link",
         "add",

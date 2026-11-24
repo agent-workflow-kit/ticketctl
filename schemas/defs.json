@@ -118,7 +118,8 @@
         "link_remove",
         "comment_edit",
         "comment_delete",
-        "attachment_add"
+        "attachment_add",
+        "resolution_backfill"
       ]
     },
     "step_kind": {
@@ -134,7 +135,8 @@
         "remove_link",
         "edit_comment",
         "delete_comment",
-        "add_attachment"
+        "add_attachment",
+        "set_resolution"
       ]
     },
     "hook_name": {
@@ -156,7 +158,9 @@
         "pre-comment-delete",
         "post-comment-delete",
         "pre-attachment-add",
-        "post-attachment-add"
+        "post-attachment-add",
+        "pre-resolution-backfill",
+        "post-resolution-backfill"
       ]
     },
     "error_code": {
@@ -663,6 +667,12 @@
         "file_bytes": {
           "type": "integer",
           "minimum": 0
+        },
+        "resolution": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "set_resolution: the canonical resolution name."
         }
       },
       "additionalProperties": false,

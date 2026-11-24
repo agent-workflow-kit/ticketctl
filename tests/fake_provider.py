@@ -141,6 +141,11 @@ class Quirks:
     # V-4: a read with all fields (or no ``fields``) carries this many extra field keys with
     # non-null values (23 real fields plus 532 filler keys make the verified 555 keys, about 31 KB).
     all_fields_filler: int = 532
+    # UNVERIFIED (W24): the edit screen lists ``resolution``. Off (the default) it is absent from
+    # editmeta and a write of it is a 400, as in a workflow that keeps it off the screen.
+    resolution_on_edit_screen: bool = False
+    # With the screen on: editmeta lists ``allowedValues`` (UNVERIFIED shape). Off: it does not.
+    resolution_allowed_values: bool = True
     # V-18: ``notifyUsers=false`` is a 403 for a non-admin.
     notify_users_false_forbidden: bool = True
     # V-1: the credentials the fake accepts (email, token); None accepts any Basic header.
@@ -1697,7 +1702,17 @@ class FakeProvider:
 
         ns = "com.atlassian.jira.plugin.system.customfieldtypes"
         # V-24: ``labels`` is writable but absent from the edit metadata.
+        screen: dict[str, dict[str, Any]] = {}
+        if self.quirks.resolution_on_edit_screen:
+            screen["resolution"] = meta(
+                "Resolution", {"type": "resolution", "system": "resolution"}
+            )
+            if self.quirks.resolution_allowed_values:
+                screen["resolution"]["allowedValues"] = [
+                    {"id": str(100 + i), "name": n} for i, n in enumerate(RESOLUTIONS)
+                ]
         return {
+            **screen,
             "summary": meta("Summary", {"type": "string", "system": "summary"}, True),
             "description": meta("Description", {"type": "string", "system": "description"}),
             "priority": meta("Priority", {"type": "priority", "system": "priority"}),
@@ -1748,6 +1763,11 @@ class FakeProvider:
                 continue  # V-28: silently ignored in a create body
             elif name == "reporter" and creating:
                 changes["reporter"] = self._account(value)
+            elif name == "resolution" and not creating and name in editable:
+                chosen = value.get("name") if isinstance(value, dict) else None
+                if chosen not in RESOLUTIONS:
+                    raise ProviderError(400, errors={"resolution": "Resolution is not valid."})
+                changes["resolution"] = chosen
             elif name in editable or (creating and name in {"summary"}):
                 changes[name] = value
             else:
@@ -2552,6 +2572,10 @@ verification issues):
   that ``values`` are oldest first, the item keys (field, fieldtype, fieldId, from, fromString,
   to, toString) and which of them a system field, a sprint, a label list and a custom field fill
   (ids in ``from``/``to``, text in the ``*String`` keys), and a hidden ticket's 404
+- resolution-backfill (W24): that the edit screen of a done ticket lists ``resolution`` with the
+  ``set`` operation (the ``resolution_on_edit_screen`` quirk, off by default), the shape of its
+  ``allowedValues``, that ``PUT fields.resolution`` answers 204 and is stored on a done ticket,
+  and the 400 body of a refused value
 - the agile responses (board, sprint) and the closed-sprint add error
 - the issue ``self`` links, the ``expand`` string and the default priority list order
 - an empty-text or oversized ADF description on create or edit
