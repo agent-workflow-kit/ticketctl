@@ -57,11 +57,16 @@ PLAN_KEYS: dict[str, tuple[str, ...]] = {
     "comment": ("current_status", "dedupe_key"),
     "create": ("fields_changed", "dedupe_key"),
     "sprint": ("current_status",),
+    "link": ("current_status",),
+    "comment-edit": ("current_status", "comment_id"),
+    "comment-delete": ("current_status", "comment_id"),
+    "attachment-add": ("current_status",),
 }
 STATUS_CATEGORIES = ("new", "indeterminate", "done")
 SPRINT_STATES = ("future", "active", "closed")
 MAX_FIELDS_CHANGED = 200
 MAX_SPRINTS = 200
+MAX_LINKS = 200
 
 
 @dataclass(frozen=True)
@@ -205,6 +210,24 @@ def _sprints(value: object) -> list[dict[str, Any]]:
     return out
 
 
+def _links(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value or len(value) > MAX_LINKS:
+        raise _incomplete("links")
+    out = []
+    for item in value:
+        if (
+            not isinstance(item, Mapping)
+            or not isinstance(item.get("type"), str)
+            or not item["type"]
+            or len(item["type"]) > NAME_CAP
+            or item.get("direction") not in ("inward", "outward")
+            or not GRAMMARS["ticket_key"].matches(item.get("key"))
+        ):
+            raise _incomplete("links")
+        out.append({"type": item["type"], "direction": item["direction"], "key": item["key"]})
+    return out
+
+
 def _fields_changed(facts: Mapping[str, Any], plan: Mapping[str, Any]) -> list[str]:
     raw = facts.get("fields_changed")
     if raw is None:
@@ -255,6 +278,11 @@ def build_payload(
             plan_part[name] = _status(facts.get(name), name)
         elif name == "fields_changed":
             plan_part[name] = _fields_changed(facts, plan)
+        elif name == "comment_id":
+            cid = facts.get("comment_id")
+            if not GRAMMARS["provider_id"].matches(cid):
+                raise _incomplete("comment_id")
+            plan_part[name] = cid
         elif name == "dedupe_key":
             plan_part[name] = plan.get("dedupe_key")
         elif name == "assign":
@@ -280,6 +308,8 @@ def build_payload(
         payload["ticket"] = _ticket(facts.get("ticket"))
     if family == "sprint":
         payload["sprints"] = _sprints(facts.get("sprints"))
+    if family == "link":
+        payload["links"] = _links(facts.get("links"))
     if phase == "post":
         assert info is not None
         error = None

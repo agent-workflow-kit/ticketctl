@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/changelog.json",
+  "title": "changelog --json",
+  "description": "The change history of one ticket in the requested order.",
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "../defs.json#/$defs/key"
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "../defs.json#/$defs/changelog_entry"
+      }
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "incomplete": {
+      "$ref": "../defs.json#/$defs/incomplete"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "key",
+    "site",
+    "items",
+    "total",
+    "truncated",
+    "incomplete"
+  ]
+}

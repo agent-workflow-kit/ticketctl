@@ -1,0 +1,23 @@
+{
+  "action": "comment_delete",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": "Drafted with AI assistance and posted via ticketctl.\n\nto be removed zq7x-edit-marker-4f9c2e",
+      "name": "comment",
+      "to": null
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "0a8cbc8d5a2aa81f919a4fadbc9cf799cd45b8c469cdeca132034efbf22ebd45",
+  "site": "main",
+  "steps": [
+    {
+      "comment_id": "20000",
+      "kind": "delete_comment"
+    }
+  ],
+  "warnings": []
+}

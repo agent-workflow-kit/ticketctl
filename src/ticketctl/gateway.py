@@ -35,6 +35,7 @@ import json
 import os
 import random
 import re
+import secrets
 import selectors
 import signal
 import socket
@@ -65,6 +66,16 @@ RETRY_AFTER_CLAMP = 2**31
 USER_AGENT = f"ticketctl/{__version__}"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
+READ_ONLY_CODE = "read_only"
+READ_ONLY_MESSAGE = "read-only mode is on: write commands are refused and no write request is sent"
+# Read-only mode: the only non-GET requests that stay allowed are the reads that need a POST.
+READ_ONLY_POSTS = frozenset(
+    {
+        "/rest/api/3/search/jql",
+        "/rest/api/3/search/approximate-count",
+        "/rest/api/3/jql/parse",
+    }
+)
 _READ_RETRY_STATUSES = frozenset({502, 503, 504})
 _RATE_HEADERS = ("retry-after", "x-ratelimit-limit", "x-ratelimit-remaining")
 
@@ -668,6 +679,68 @@ class Response:
     text: str
     rate_limit: dict[str, int] | None
     retries: int
+    raw: bytes = b""  # the body of a 2xx answer to a ``binary`` request, else empty
+
+
+_UPLOAD_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
+_UPLOAD_TYPE = re.compile(r"[a-z][a-z0-9.+-]{0,63}/[a-z0-9][a-z0-9.+-]{0,63}")
+UPLOAD_BAD_NAME = re.compile(r'[\x00-\x1f\x7f"\\/]')
+MAX_UPLOAD_NAME = 255
+
+
+@dataclass(frozen=True)
+class Upload:
+    """One file for a ``multipart/form-data`` request (the attachment upload).
+
+    The gateway builds the body: ``filename`` is the part's file name (1 to 255 characters, no
+    control character, quote, backslash or slash: it is written between quotes into the part
+    header), ``content`` the raw bytes. The request carries ``X-Atlassian-Token: no-check``, which
+    the provider requires on a multipart write.
+    """
+
+    filename: str
+    content: bytes
+    field: str = "file"
+    content_type: str = "application/octet-stream"
+
+
+def _multipart(upload: Upload) -> tuple[bytes, str]:
+    """The body and the ``Content-Type`` header value of ``upload``."""
+    name = upload.filename
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name) <= MAX_UPLOAD_NAME
+        or UPLOAD_BAD_NAME.search(name)
+        or name in {".", ".."}
+        or not _UPLOAD_FIELD.fullmatch(upload.field)
+        or not _UPLOAD_TYPE.fullmatch(upload.content_type)
+        or not isinstance(upload.content, bytes)
+    ):
+        raise _internal("the upload is not a clean file part")
+    try:
+        encoded_name = name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _internal("the upload file name is not text") from None
+    for _ in range(8):
+        boundary = "ticketctl-" + secrets.token_hex(16)
+        marker = b"--" + boundary.encode("ascii")
+        if marker not in upload.content:
+            break
+    else:
+        raise _internal("no boundary that is absent from the upload could be found")
+    head = (
+        marker
+        + b'\r\nContent-Disposition: form-data; name="'
+        + upload.field.encode("ascii")
+        + b'"; filename="'
+        + encoded_name
+        + b'"\r\nContent-Type: '
+        + upload.content_type.encode("ascii")
+        + b"\r\n\r\n"
+    )
+    return head + upload.content + b"\r\n" + marker + b"--\r\n", (
+        f"multipart/form-data; boundary={boundary}"
+    )
 
 
 class Requester(Protocol):
@@ -686,6 +759,8 @@ class Requester(Protocol):
         query: str = "",
         body: object | None = None,
         write: bool | None = None,
+        upload: Upload | None = None,
+        binary: bool = False,
     ) -> Response: ...
 
 
@@ -706,6 +781,7 @@ class Gateway:
         log_sink: Callable[[dict[str, Any]], None] | None = None,
         verbose: Callable[[str], None] | None = None,
         config_sha256: str = "0" * 64,
+        read_only: bool = False,
         sleep: Callable[[float], None] = time.sleep,
         rng: Callable[[], float] = random.random,
     ) -> None:
@@ -716,6 +792,7 @@ class Gateway:
         self._log_sink = log_sink
         self._verbose = verbose
         self._config_sha256 = config_sha256
+        self._read_only = read_only
         self._sleep = sleep
         self._rng = rng
         # Pacing state is shared by the threads of a multi-key command; every access holds the
@@ -736,15 +813,27 @@ class Gateway:
         query: str = "",
         body: object | None = None,
         write: bool | None = None,
+        upload: Upload | None = None,
+        binary: bool = False,
     ) -> Response:
         """Send one request with the retry table applied; raise ``GatewayError`` on failure.
 
         ``path`` and ``query`` come from ``sanitize.segment`` and ``sanitize.query``. ``write``
         defaults to "every method but GET"; a read that needs a POST (search, parse, count) passes
-        ``write=False``.
+        ``write=False``. ``upload`` (a POST, never with ``body``) sends one file as
+        ``multipart/form-data``; ``binary`` makes a 2xx answer's body the raw ``Response.raw``
+        bytes (no UTF-8 decoding, no JSON) and asks for any media type.
         """
         if method not in _METHODS:
             raise _internal("unsupported method")
+        if (
+            self._read_only
+            and method != "GET"
+            and not (method == "POST" and path in READ_ONLY_POSTS)
+        ):
+            # Judged on the method and the path, never on the caller's `write` argument, so a
+            # command that skipped its own check still cannot write. Nothing is sent or logged.
+            raise GatewayError(READ_ONLY_CODE, READ_ONLY_MESSAGE, exit_code=20)
         if (
             not _PATH.fullmatch(path)
             or _PATH_FORBIDDEN.search(path)
@@ -758,30 +847,38 @@ class Gateway:
         if len(template) > 256 or not _TEMPLATE.fullmatch(template):
             raise _internal("the log path template is invalid")
         is_write = method != "GET" if write is None else write
+        if upload is not None and (body is not None or method != "POST"):
+            raise _internal("an upload is a POST with no JSON body")
+        content_type = "application/json"
         try:
-            payload = (
-                None
-                if body is None
-                else json.dumps(
-                    body, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-                ).encode()
-            )
+            if upload is not None:
+                payload, content_type = _multipart(upload)
+            else:
+                payload = (
+                    None
+                    if body is None
+                    else json.dumps(
+                        body, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+                    ).encode()
+                )
         except (TypeError, ValueError, RecursionError):
             raise _internal("the request body cannot be encoded as JSON") from None
         target = self.target
         headers = {
             "Authorization": "Basic " + _basic(target),
             "User-Agent": USER_AGENT,
-            "Accept": "application/json",
+            "Accept": "*/*" if binary else "application/json",
             "Connection": "close",
         }
         if payload is not None:
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type
+        if upload is not None:
+            headers["X-Atlassian-Token"] = "no-check"
         if payload is not None or method in {"POST", "PUT"}:
             headers["Content-Length"] = str(len(payload or b""))
         url_path = target.base_path + path + (f"?{query}" if query else "")
         proxy = select_proxy(self._env, target.scheme, target.host, target.port)
-        call = _Call(method, template, is_write)
+        call = _Call(method, template, is_write, binary=binary)
         started = time.monotonic()
         try:
             return self._run(call, proxy, url_path, payload, headers)
@@ -1020,6 +1117,8 @@ class Gateway:
         status = attempt.status or 0
         raw = attempt.payload
         ok = 200 <= status < 300
+        if ok and call.binary:
+            return Response(status, None, "", call.rate_limit, call.retries, raw=raw)
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -1093,6 +1192,7 @@ class _Call:
     status: int | None = None
     rate_limit: dict[str, int] | None = None
     remaining: int | None = None
+    binary: bool = False
 
     def note_rate(self, headers: Mapping[str, str | None]) -> None:
         text = (headers.get("x-ratelimit-remaining") or "").strip()

@@ -1,0 +1,25 @@
+{
+  "action": "comment_edit",
+  "actor": "auto:unknown",
+  "changes": [
+    {
+      "from": "Drafted with AI assistance and posted via ticketctl.\n\nold text zq7x-edit-marker-4f9c2e",
+      "name": "comment",
+      "to": "Drafted with AI assistance and posted via ticketctl.\n\nnew text"
+    }
+  ],
+  "dedupe_key": null,
+  "dedupe_match": null,
+  "key": "DEMO-2",
+  "plan_sha256": "52b3c91bbe41322d3fbbfd69293e5bec31c69061449d8cde6dfb57d970480b6e",
+  "site": "main",
+  "steps": [
+    {
+      "body_bytes": 216,
+      "body_sha256": "d443c1849e7ddf361ed8d6f70277abb22b21ed30b81fec14629776820b5a3d79",
+      "comment_id": "20000",
+      "kind": "edit_comment"
+    }
+  ],
+  "warnings": []
+}

@@ -70,7 +70,7 @@
     "numeric_id": {
       "type": "string",
       "pattern": "^[0-9]{1,18}$",
-      "description": "Transition, sprint and board ids."
+      "description": "Transition, sprint, board and attachment ids."
     },
     "warning_code": {
       "enum": [
@@ -113,7 +113,12 @@
         "create",
         "update",
         "sprint_add",
-        "sprint_remove"
+        "sprint_remove",
+        "link_add",
+        "link_remove",
+        "comment_edit",
+        "comment_delete",
+        "attachment_add"
       ]
     },
     "step_kind": {
@@ -124,7 +129,12 @@
         "add_comment",
         "create",
         "sprint_add",
-        "sprint_remove"
+        "sprint_remove",
+        "add_link",
+        "remove_link",
+        "edit_comment",
+        "delete_comment",
+        "add_attachment"
       ]
     },
     "hook_name": {
@@ -138,7 +148,15 @@
         "pre-update",
         "post-update",
         "pre-sprint",
-        "post-sprint"
+        "post-sprint",
+        "pre-link",
+        "post-link",
+        "pre-comment-edit",
+        "post-comment-edit",
+        "pre-comment-delete",
+        "post-comment-delete",
+        "pre-attachment-add",
+        "post-attachment-add"
       ]
     },
     "error_code": {
@@ -168,11 +186,15 @@
         "sprint_closed",
         "already_exists",
         "declined",
+        "read_only",
         "ambiguous_site",
         "ambiguous_field",
         "ambiguous_transition",
         "ambiguous_board",
-        "ambiguous_sprint"
+        "ambiguous_sprint",
+        "not_ticketctl_comment",
+        "restricted_comment",
+        "human_comment"
       ]
     },
     "error_reason": {
@@ -209,6 +231,10 @@
         "sprint_closed",
         "already_exists",
         "declined",
+        "read_only",
+        "not_ticketctl_comment",
+        "restricted_comment",
+        "human_comment",
         "locked",
         "audit_failed",
         "hooks_unavailable"
@@ -221,7 +247,7 @@
         "pattern": "^[a-z][a-z0-9_.]{0,63}$"
       },
       "uniqueItems": true,
-      "description": "Parts cut off or unavailable: links, comments, attachments, links.unreadable, <part>.truncated, <part>.invalid_id, fields.<name>."
+      "description": "Parts cut off or unavailable: links, comments, attachments, links.unreadable, <part>.truncated, <part>.invalid_id, fields.<name>, and for the changelog: changelog, changelog.invalid_id, changelog.truncated."
     },
     "status": {
       "type": "object",
@@ -607,6 +633,36 @@
         "type": {
           "type": "string",
           "maxLength": 256
+        },
+        "link_type": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "add_link and remove_link: the link type's name."
+        },
+        "direction": {
+          "enum": [
+            "inward",
+            "outward"
+          ],
+          "description": "add_link and remove_link: relative to the ticket, as in the ticket object's links."
+        },
+        "other": {
+          "$ref": "#/$defs/key",
+          "description": "add_link and remove_link: the ticket at the other end."
+        },
+        "link_id": {
+          "$ref": "#/$defs/provider_id",
+          "description": "remove_link: the provider's id of the link."
+        },
+        "comment_id": {
+          "$ref": "#/$defs/provider_id"
+        },
+        "file_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "file_bytes": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
@@ -800,6 +856,10 @@
             }
           ]
         },
+        "attachment_id": {
+          "$ref": "#/$defs/numeric_id",
+          "description": "attachment-add only: the id of the attachment that was uploaded, or, for an unchanged result, the identical one that already exists. Absent for every other command."
+        },
         "attempt_id": {
           "oneOf": [
             {
@@ -833,7 +893,7 @@
         "decision_ids",
         "warnings"
       ],
-      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. key and url are null only when a create landed and the provider's answer held no valid key. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back."
+      "description": "The outcome of a write. On exit 0 result is ok or unchanged; partial appears only inside details.result of an exit 12 envelope with code partial. A step code is the error code of a failed step. key and url are null only when a create landed and the provider's answer held no valid key. A no-op carries steps [], the existing comment_id (already_posted) or the existing key (reused). Nothing is rolled back. attachment_id is present only for attachment-add."
     },
     "error_body": {
       "type": "object",
@@ -1190,6 +1250,90 @@
             "properties": {
               "code": {
                 "enum": [
+                  "read_only"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "read_only"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "not_ticketctl_comment"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "not_ticketctl_comment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "restricted_comment"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "restricted_comment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "human_comment"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "human_comment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "enum": [
                   "usage",
                   "invalid_config",
                   "invalid_request",
@@ -1200,7 +1344,11 @@
                   "no_such_transition",
                   "sprint_closed",
                   "already_exists",
-                  "declined"
+                  "declined",
+                  "read_only",
+                  "not_ticketctl_comment",
+                  "restricted_comment",
+                  "human_comment"
                 ]
               }
             },
@@ -1745,6 +1893,120 @@
         "site"
       ],
       "description": "The ticket object. get and search print it; only the requested --fields (and key and site) are present, so every other property is optional."
+    },
+    "changelog_value": {
+      "description": "One side of a changed field: null (no value), text, a list of labels, an account (assignee, reporter) or a list of sprints. The kind follows the field, never the content.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 1000000,
+          "x-untrusted": true
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "x-untrusted": true
+          },
+          "maxItems": 1000
+        },
+        {
+          "$ref": "#/$defs/account"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 256,
+                    "x-untrusted": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "maxItems": 1000
+        }
+      ]
+    },
+    "changelog_item": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "x-untrusted": true,
+          "description": "The logical or extra field name when the site maps the field, else the provider's display name; never a custom field id."
+        },
+        "from": {
+          "$ref": "#/$defs/changelog_value"
+        },
+        "to": {
+          "$ref": "#/$defs/changelog_value"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "from",
+        "to"
+      ]
+    },
+    "changelog_entry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/provider_id"
+        },
+        "author": {
+          "$ref": "#/$defs/account"
+        },
+        "created": {
+          "$ref": "#/$defs/ts"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/changelog_item"
+          },
+          "maxItems": 200
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "author",
+        "created",
+        "items"
+      ]
     }
   }
 }

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ticketctl/cli/attachment-download.json",
+  "title": "attachment-download --json",
+  "description": "Exit 0 only: the attachment was saved to a new file. A failure prints the error envelope.",
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "../defs.json#/$defs/key"
+    },
+    "site": {
+      "$ref": "../defs.json#/$defs/site_name"
+    },
+    "id": {
+      "$ref": "../defs.json#/$defs/numeric_id"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 1100,
+      "x-untrusted": true,
+      "description": "The provider's file name, sanitized. It is never used to build the path."
+    },
+    "mime": {
+      "type": "string",
+      "maxLength": 300,
+      "x-untrusted": true
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10485760,
+      "description": "Bytes written; equal to the size the provider lists."
+    },
+    "sha256": {
+      "$ref": "../defs.json#/$defs/sha256",
+      "description": "Of the bytes written."
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 4096,
+      "description": "The --to argument as given."
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "key",
+    "site",
+    "id",
+    "name",
+    "mime",
+    "size",
+    "sha256",
+    "path"
+  ]
+}

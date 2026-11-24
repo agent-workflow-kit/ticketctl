@@ -1,8 +1,8 @@
 # Example config for ticketctl.
 # Location: ~/.config/ticketctl/config.yaml (drop-ins: ~/.config/ticketctl/config.d/*.yaml; --config overrides).
 # Every key is shown with its default or a neutral example value. Schema: schemas/config.json.
-# Only the top-level scalars timeout and default_site accept TICKETCTL_<KEY> from the environment
-# (TICKETCTL_TIMEOUT, TICKETCTL_DEFAULT_SITE); nested keys cannot be set from the environment.
+# Only the top-level scalars timeout, default_site and read_only accept TICKETCTL_<KEY> from the environment
+# (TICKETCTL_TIMEOUT, TICKETCTL_DEFAULT_SITE, TICKETCTL_READ_ONLY); nested keys cannot be set from the environment.
 # Durations everywhere (config, flags, hook timeouts): an integer with a unit (ms, s, m, h, d), or a bare
 # integer meaning seconds. 0 is allowed only for cache_ttl (no cache) and retry_after_max (never wait).
 # Caps: timeout and the per-site connect and read timeouts at most 24h; cache_ttl and retry_after_max at most 365d.
@@ -90,6 +90,10 @@ attribution:
   enabled: true
   template: Drafted with AI assistance and posted via ticketctl.
 
+# Read-only mode: refuse every write command (an accident guard, not a security boundary; see the
+# interface's Read-only mode). TICKETCTL_READ_ONLY=1 also turns it on; nothing turns it off once on.
+read_only: false
+
 limits:
   # Body size cap in characters of the final document's text (maximum 32767; verified for a single text
   # node, the total across nodes is assumed). Default: 30000.
@@ -97,7 +101,7 @@ limits:
   # Longest Retry-After honored; also bounded by the remaining command time. Default: 60s.
   retry_after_max: 60s
 
-# Hooks per kind of write: pre-/post- for transition, comment, create, update and sprint.
+# Hooks per kind of write: pre-/post- for transition, comment, create, update, sprint and link.
 # Each is an ordered list of {cmd, timeout, async}; timeout is whole seconds from 1 to 600 (default 30 s); async is for post- hooks only.
 # A hook runs as `/bin/sh -c <cmd>` with the payload on stdin; exit 13 escalates, any other non-zero exit or a timeout vetoes a pre- hook, and a post- hook failure is only a warning. An async hook is detached and has no timeout enforced.
 # Default: {}.

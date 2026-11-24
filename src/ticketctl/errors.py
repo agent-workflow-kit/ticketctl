@@ -103,7 +103,16 @@ CODES: dict[str, CodeSpec] = {
     "escalated": _spec(13),
     **{
         c: _spec(20, c, reason_required=True, reason_is_code=True)
-        for c in (*_EXIT_20, "sprint_closed", "already_exists", "declined")
+        for c in (
+            *_EXIT_20,
+            "sprint_closed",
+            "already_exists",
+            "declined",
+            "read_only",
+            "not_ticketctl_comment",
+            "restricted_comment",
+            "human_comment",
+        )
     },
     "ambiguous_site": _spec(21),
     "ambiguous_field": _spec(21),
@@ -242,6 +251,15 @@ class TicketctlError(Exception):
 def usage_error(reason: str, message: str, **kw: Any) -> TicketctlError:
     """Exit 2 `usage`."""
     return TicketctlError("usage", message, reason=reason, **kw)
+
+
+def read_only_error() -> TicketctlError:
+    """Exit 20 `read_only`: the mode is on and the command would write."""
+    return TicketctlError(
+        "read_only",
+        "read-only mode is on (config read_only or TICKETCTL_READ_ONLY): write commands are "
+        "refused; --dry-run still prints the plan",
+    )
 
 
 def internal_error(exc: BaseException) -> TicketctlError:

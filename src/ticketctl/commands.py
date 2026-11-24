@@ -15,13 +15,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import (
+    attachmentcmd,
+    changelogcmd,
     commentcmd,
+    commentedit,
     commentscmd,
     createcmd,
     exportcmd,
     fieldscmd,
     getcmd,
     handlers,
+    linkcmd,
     searchcmd,
     sprintcmd,
     sprintscmd,
@@ -126,6 +130,14 @@ def _comments(p: argparse.ArgumentParser) -> None:
     _add(p, "--own", action="store_true")
 
 
+def _changelog(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "--limit", type=count_arg, metavar="N")
+    _add(p, "--since")
+    _add(p, "--field", action="append", metavar="NAME")
+    _add(p, "--newest-first", action="store_true")
+
+
 def _sprints_list(p: argparse.ArgumentParser) -> None:
     _add(p, "--state", choices=["future", "active", "closed"])
     _add(p, "--board")
@@ -136,6 +148,11 @@ def _sprints_list(p: argparse.ArgumentParser) -> None:
 def _sprints_show(p: argparse.ArgumentParser) -> None:
     _add(p, "id", metavar="ID", type=numeric_id_arg)
     _add(p, "--project", help="selects the site; a sprint is read by id, no board is needed")
+
+
+def _fields_types(p: argparse.ArgumentParser) -> None:
+    _add(p, "--project", help="default: the site's only project")
+    _add(p, "--type", help="list only this type, with its required fields")
 
 
 def _sprints_resolve(p: argparse.ArgumentParser) -> None:
@@ -187,6 +204,34 @@ def _comment(p: argparse.ArgumentParser) -> None:
     _add(p, "--dedupe-key", type=dedupe_key_arg)
 
 
+def _comment_id(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "comment_id", metavar="ID", type=numeric_id_arg, help="the comment's numeric id")
+
+
+def _comment_edit(p: argparse.ArgumentParser) -> None:
+    _comment_id(p)
+    _add(
+        p,
+        "--body",
+        help="the new comment text (Markdown); a body starting with '-' needs --body=TEXT "
+        "or --body-file",
+    )
+    _add(p, "--body-file")
+    _add(p, "--format", choices=["markdown", "adf"])
+
+
+def _attachment_add(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "--file", metavar="PATH", help="the file to attach (a regular file, at most 10 MiB)")
+
+
+def _attachment_download(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "attachment_id", metavar="ID", type=numeric_id_arg, help="the attachment's numeric id")
+    _add(p, "--to", metavar="PATH", help="the new file to write (an existing path is refused)")
+
+
 def _create(p: argparse.ArgumentParser) -> None:
     _add(p, "--project")
     _add(p, "--type")
@@ -222,6 +267,21 @@ def _sprint_remove(p: argparse.ArgumentParser) -> None:
     _add(p, "--board")
 
 
+def _link(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "--type", required=True, type=transitioncmd.name_arg, help="the link type's name")
+    _add(
+        p,
+        "--direction",
+        required=True,
+        type=linkcmd.direction_arg,
+        metavar="inward|outward",
+        help="relative to KEY, as in the ticket object's links: outward means KEY is the source "
+        "(KEY blocks OTHER), inward that KEY is the target (KEY is blocked by OTHER)",
+    )
+    _add(p, "--other", required=True, metavar="KEY", help="the ticket at the other end")
+
+
 def _specs() -> list[CommandSpec]:
     r, w = READ, WRITE
     return [
@@ -249,6 +309,14 @@ def _specs() -> list[CommandSpec]:
             commentscmd.comments,
             _comments,
             commentscmd.human_comments,
+        ),
+        CommandSpec(
+            ("changelog",),
+            r,
+            "list the change history",
+            changelogcmd.changelog,
+            _changelog,
+            changelogcmd.human_changelog,
         ),
         CommandSpec(
             ("transitions",),
@@ -307,6 +375,14 @@ def _specs() -> list[CommandSpec]:
             fieldscmd.human_fields_refresh,
         ),
         CommandSpec(
+            ("fields", "types"),
+            r,
+            "list the creatable issue types of a project",
+            fieldscmd.fields_types,
+            _fields_types,
+            fieldscmd.human_fields_types,
+        ),
+        CommandSpec(
             ("sites",), r, "list configured sites", handlers.sites, _none, handlers.human_sites
         ),
         CommandSpec(
@@ -327,6 +403,14 @@ def _specs() -> list[CommandSpec]:
         ),
         CommandSpec(("export",), r, "print audit records", exportcmd.export, _export),
         CommandSpec(
+            ("attachment-download",),
+            r,
+            "save an attachment of a ticket to a new file",
+            attachmentcmd.attachment_download,
+            _attachment_download,
+            attachmentcmd.human_download,
+        ),
+        CommandSpec(
             ("transition",),
             w,
             "transition a ticket",
@@ -336,6 +420,30 @@ def _specs() -> list[CommandSpec]:
         ),
         CommandSpec(
             ("comment",), w, "post a comment", commentcmd.comment, _comment, writeflow.human
+        ),
+        CommandSpec(
+            ("comment-edit",),
+            w,
+            "replace the body of a comment ticketctl posted",
+            commentedit.comment_edit,
+            _comment_edit,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("comment-delete",),
+            w,
+            "delete a comment ticketctl posted",
+            commentedit.comment_delete,
+            _comment_id,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("attachment-add",),
+            w,
+            "attach a file to a ticket",
+            attachmentcmd.attachment_add,
+            _attachment_add,
+            writeflow.human,
         ),
         CommandSpec(("create",), w, "create a ticket", createcmd.create, _create, writeflow.human),
         CommandSpec(
@@ -360,6 +468,17 @@ def _specs() -> list[CommandSpec]:
             "move a ticket to the backlog",
             sprintcmd.sprint_remove,
             _sprint_remove,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("link", "add"), w, "link two tickets", linkcmd.link_add, _link, writeflow.human
+        ),
+        CommandSpec(
+            ("link", "remove"),
+            w,
+            "remove a link between two tickets",
+            linkcmd.link_remove,
+            _link,
             writeflow.human,
         ),
     ]

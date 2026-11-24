@@ -9,8 +9,15 @@ import sys
 from typing import Any
 
 from . import createcmd, searchcmd, setspec, updatecmd
-from .commands import REGISTRY, CommandSpec
-from .errors import TicketctlError, clean_message, from_exception, internal_error, usage_error
+from .commands import REGISTRY, WRITE, CommandSpec
+from .errors import (
+    TicketctlError,
+    clean_message,
+    from_exception,
+    internal_error,
+    read_only_error,
+    usage_error,
+)
 from .flags import (
     GLOBAL_HELP,
     PROG,
@@ -113,10 +120,14 @@ def check_command(g: Globals, spec: CommandSpec, ns: argparse.Namespace) -> None
         raise usage_error("stdin_conflict", "at most one `-` source (stdin) per command")
     if spec.path == ("transition",):
         _exactly_one(ns, "to", "transition_id", "--to and --transition-id")
-    elif spec.path == ("comment",):
+    elif spec.path in (("comment",), ("comment-edit",)):
         _exactly_one(ns, "body", "body_file", "--body and --body-file")
         if ns.format == "adf" and ns.body_file is None:
             raise usage_error("invalid_combination", "--format adf needs --body-file")
+    elif spec.path == ("attachment-add",) and ns.file is None:
+        raise usage_error("missing_option", "attachment-add needs --file")
+    elif spec.path == ("attachment-download",) and ns.to is None:
+        raise usage_error("missing_option", "attachment-download needs --to")
     elif spec.path == ("sites", "resolve"):
         _one_of_key_or_project(ns)
     elif spec.path == ("search",):
@@ -158,6 +169,13 @@ def run(argv: list[str]) -> int:
         raise usage_error("invalid_argument", clean_message(str(e))) from None
     spec = REGISTRY[_command_path(ns)]
     check_command(g, spec, ns)
+    if (
+        spec.kind == WRITE
+        and not g.dry_run
+        and load_runtime(g, show_warnings=False).config.read_only
+    ):
+        # Every registered write is refused here, whatever its handler does (read-only mode).
+        raise read_only_error()
     result = spec.handler(g, ns)
     if result is not None:
         if g.json:

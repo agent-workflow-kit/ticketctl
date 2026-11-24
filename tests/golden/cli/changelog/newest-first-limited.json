@@ -1,0 +1,49 @@
+{
+  "incomplete": [],
+  "items": [
+    {
+      "author": {
+        "account_id": null,
+        "display_name": "unknown user"
+      },
+      "created": "2026-03-01T15:40:00Z",
+      "id": "9005",
+      "items": [
+        {
+          "field": "Flavor",
+          "from": "mild",
+          "to": "hot"
+        }
+      ]
+    },
+    {
+      "author": {
+        "account_id": "acct-0001",
+        "display_name": "Fake Me"
+      },
+      "created": "2026-03-01T15:30:00Z",
+      "id": "9004",
+      "items": [
+        {
+          "field": "resolution",
+          "from": null,
+          "to": "Done"
+        },
+        {
+          "field": "priority",
+          "from": "Medium",
+          "to": "High"
+        },
+        {
+          "field": "title",
+          "from": "Old title",
+          "to": "New title"
+        }
+      ]
+    }
+  ],
+  "key": "DEMO-2",
+  "site": "main",
+  "total": 5,
+  "truncated": true
+}

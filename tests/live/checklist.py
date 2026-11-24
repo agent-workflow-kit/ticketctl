@@ -396,7 +396,7 @@ ITEMS: tuple[Item, ...] = (
         "and rich-text custom fields, an empty text node, a total text limit across ADF nodes, "
         "a 300 KB body",
         HUMAN,
-        why="needs oversized writes; a comment cannot be deleted, so this is a human decision "
+        why="needs oversized writes; the live suite never deletes a comment, so this is a human decision "
         "(a description on a test ticket is the safer place)",
     ),
     Item(
@@ -472,6 +472,52 @@ ITEMS: tuple[Item, ...] = (
         "The closer: every created ticket ends done with the won't-do resolution",
         PROBED,
         ("test_every_created_ticket_is_closed",),
+    ),
+    Item(
+        "W21",
+        "#43",
+        "comment-edit and comment-delete: the single-comment read embeds properties under "
+        "expand=properties; PUT of a comment accepts body and properties and rewrites the "
+        "ticketctl.meta property; PUT without visibility on a restricted comment, and whether an "
+        "internal-only comment reads as jsdPublic false (ticketctl refuses both, so only a raw "
+        "request shows what the provider does); DELETE removes the "
+        "comment; a non-author PUT or DELETE is refused",
+        HUMAN,
+        why="the write suite posts exactly one comment per test ticket and a delete would break "
+        "that count: a human runs comment-edit and comment-delete on a comment of their own "
+        "test ticket and reads the result with comments",
+    ),
+    Item(
+        "W22",
+        "#41",
+        "link add and link remove: inwardIssue of POST issueLink is the ticket that gets the "
+        "outward phrase (inwardIssue blocks outwardIssue), so --direction outward reads back as "
+        "outward on the ticket; the create answers 201 with an empty body; each ticket's "
+        "issuelinks carries the link with the same id; DELETE issueLink/{id} answers 204; a "
+        "duplicate link, and tickets that may not be linked, are refused or accepted as the "
+        "docs say",
+        HUMAN,
+        why="the write suite creates no links and cannot undo one on a ticket it did not make: a "
+        "human runs link add with --direction outward between two of their own test tickets, "
+        "reads both with get --fields links, then runs link remove",
+    ),
+    Item(
+        "W23",
+        "#42",
+        "attachment-add and attachment-download: POST /issue/{key}/attachments with one `file` "
+        "part and X-Atlassian-Token: no-check is accepted and answers a list with the new "
+        "attachment (id, filename, size); a name with a non-ASCII character is stored as sent; a "
+        "second upload of the same name is kept as a second attachment (the content check "
+        "relies on that and on the issue read listing the first one at once); the issue read "
+        "lists `attachment` with id, filename, size and mimeType; GET "
+        "/attachment/content/{id}?redirect=false answers the bytes themselves, with no redirect, "
+        "and a length equal to the listed size; the provider's own size limit and the answer "
+        "when it is exceeded (a 4xx ticketctl maps to `rejected`)",
+        HUMAN,
+        why="an upload cannot be deleted by ticketctl and the write suite creates no "
+        "attachments: a human runs attachment-add twice on a test ticket (the second run must be "
+        "unchanged), then attachment-download of the printed id and compares the bytes, and "
+        "tries a file just over the site's limit if it is below 10 MiB",
     ),
 )
 

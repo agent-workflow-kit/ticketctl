@@ -69,6 +69,11 @@
       },
       "additionalProperties": false
     },
+    "read_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Refuse every write command (exit 20 read_only). An accident guard, not a security boundary. Also TICKETCTL_READ_ONLY=1; the environment can turn it on, never off."
+    },
     "limits": {
       "type": "object",
       "properties": {
@@ -405,6 +410,286 @@
           }
         },
         "post-sprint": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-link": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-link": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-comment-edit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-comment-edit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-comment-delete": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-comment-delete": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "pre-attachment-add": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-attachment-add": {
           "type": "array",
           "items": {
             "type": "object",

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import email.parser
+import email.policy
 import http.client
 import json
 import re
@@ -84,6 +86,7 @@ ISSUE_TYPES = {
 
 NOT_SETTABLE = "Field '{name}' cannot be set. It is not on the appropriate screen, or unknown."
 COMMENT_BODY_LIMIT = 32768
+ATTACHMENT_LIMIT = 10 * 1024 * 1024  # the provider's default upload limit (the fake enforces it)
 PROPERTY_VALUE_LIMIT = 32768
 LABEL_LIMIT = 255
 EMBEDDED_COMMENTS = 20  # V-25
@@ -649,6 +652,8 @@ class Ticket:
     created: datetime = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
     updated: datetime = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
     comments: list[dict[str, Any]] = field(default_factory=list)
+    # {id, filename, size, mimeType, author, _created, _content}; ``attach`` adds one
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     sprints: list[int] = field(default_factory=list)
     links: list[dict[str, Any]] = field(default_factory=list)
     points: float | None = None
@@ -656,6 +661,8 @@ class Ticket:
     due: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)  # values of the EXTRA_FLOATS fields
     properties: dict[str, Any] = field(default_factory=dict)  # issue properties
+    # raw changelog entries, oldest first: {id, author, _created, items}; see ``add_history``
+    history: list[dict[str, Any]] = field(default_factory=list)
 
 
 SPRINTS: dict[int, dict[str, Any]] = {
@@ -707,6 +714,8 @@ class FakeProvider:
         self.now = datetime(2026, 3, 4, 15, 0, tzinfo=UTC)
         self._next_id = 10000
         self._next_comment = 20000
+        self._next_attachment = 30000
+        self._next_link = 30000
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._served = 0
@@ -869,12 +878,36 @@ class FakeProvider:
             malformed = str(exc)
         body: Any
         try:
-            body = json.loads(req.body) if req.body else None
+            if (req.header("content-type") or "").lower().startswith("multipart/form-data"):
+                body = self._parse_multipart(req)
+            else:
+                body = json.loads(req.body) if req.body else None
         except (ValueError, RecursionError):  # bad JSON, a digit-limit number, nesting too deep
             body = ("invalid", req.body)
         return Call(
             req.method, path, query, body, req.headers, target=req.target, malformed=malformed
         )
+
+    @staticmethod
+    def _parse_multipart(req: Request) -> dict[str, Any]:
+        """``{"_multipart": [{name, filename, content_type, content}]}`` (bytes content)."""
+        head = f"Content-Type: {req.header('content-type')}\r\nMIME-Version: 1.0\r\n\r\n"
+        msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+            head.encode() + req.body
+        )
+        if not msg.is_multipart():
+            raise ValueError("not a multipart body")
+        parts = []
+        for part in msg.iter_parts():
+            parts.append(
+                {
+                    "name": part.get_param("name", header="content-disposition"),
+                    "filename": part.get_filename(),
+                    "content_type": part.get_content_type(),
+                    "content": part.get_payload(decode=True) or b"",
+                }
+            )
+        return {"_multipart": parts}
 
     def _behavior(self, conn: Conn) -> None:
         req = conn.request
@@ -981,9 +1014,12 @@ class FakeProvider:
         headers = dict(out.headers)
         body = out.body
         try:
-            if isinstance(body, str):
+            if isinstance(body, bytes):
+                headers.setdefault("Content-Type", "application/octet-stream")
+                data: bytes = body
+            elif isinstance(body, str):
                 headers.setdefault("Content-Type", "text/plain;charset=UTF-8")
-                data: bytes = body.encode()
+                data = body.encode()
             elif body is None:
                 data = b""
             else:
@@ -1084,6 +1120,16 @@ class FakeProvider:
         r("POST", api + f"/issue/{key}/transitions", self._transition)
         r("GET", api + f"/issue/{key}/comment", self._comments)
         r("POST", api + f"/issue/{key}/comment", self._add_comment)
+        r("GET", api + "/issueLinkType", self._link_types)
+        r("POST", api + "/issueLink", self._add_link)
+        r("DELETE", api + r"/issueLink/([^/]+)", self._delete_link)
+        r("GET", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
+        r("PUT", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
+        r("DELETE", api + f"/issue/{key}/comment/([^/]+)", self._one_comment)
+        r("POST", api + f"/issue/{key}/attachments", self._add_attachment)
+        r("GET", api + r"/attachment/content/([^/]+)", self._attachment_content)
+        r("GET", api + r"/attachment/([^/]+)", self._attachment_meta)
+        r("GET", api + f"/issue/{key}/changelog", self._changelog)
         r("GET", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
         r("PUT", api + f"/issue/{key}/properties/([^/]+)", self._issue_property)
         comment_props = api + f"/issue/{key}/comment/([^/]+)/properties/([^/]+)"
@@ -1205,7 +1251,7 @@ class FakeProvider:
                 "maxResults": EMBEDDED_COMMENTS,
                 "startAt": 0,
             },
-            "attachment": [],
+            "attachment": [self._attachment_obj(a) for a in t.attachments],
             F_POINTS: t.points,
             F_ESTIMATE: None,
             F_SPRINT: [self._sprint_obj(s) for s in t.sprints] or None,
@@ -2012,6 +2058,75 @@ class FakeProvider:
             },
         )
 
+    # -- changelog -------------------------------------------------------------------------------
+    def add_history(
+        self,
+        key: str,
+        *items: dict[str, Any],
+        when: datetime | None = None,
+        author: str | None = ME_ACCOUNT,
+        entry_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one changelog entry (the ``items`` are raw, as the provider sends them)."""
+        with self._lock:
+            ticket = self.tickets[key]
+            eid = entry_id if entry_id is not None else str(30000 + len(ticket.history))
+            entry = {
+                "id": eid,
+                "author": self._user(author),
+                "_created": when if when is not None else self.now + timedelta(seconds=1),
+                "items": list(items),
+            }
+            ticket.history.append(entry)
+            return entry
+
+    @staticmethod
+    def history_item(
+        field_name: str,
+        old: str | None,
+        new: str | None,
+        *,
+        field_id: str | None = None,
+        old_id: str | None = None,
+        new_id: str | None = None,
+        custom: bool = False,
+    ) -> dict[str, Any]:
+        """A raw item in the real shape: ``from``/``to`` hold ids, ``*String`` keys hold text."""
+        item: dict[str, Any] = {
+            "field": field_name,
+            "fieldtype": "custom" if custom else "jira",
+            "from": old_id,
+            "fromString": old,
+            "to": new_id,
+            "toString": new,
+        }
+        if field_id is not None:
+            item["fieldId"] = field_id
+        return item
+
+    def _changelog(self, call: Call, key: str) -> Out:
+        t = self._ticket(key)
+        start = self._int_param(call, "startAt", 0)
+        limit = min(self._int_param(call, "maxResults", 100), 100)
+        entries = list(t.history)
+        chunk = entries[start : start + limit]
+        values = []
+        for e in chunk:
+            out = {k: v for k, v in e.items() if k != "_created"}
+            out["created"] = self.stamp(e["_created"])
+            values.append(out)
+        return Out(
+            200,
+            {
+                "self": f"{self.url}/rest/api/3/issue/{t.id}/changelog",
+                "startAt": start,
+                "maxResults": limit,
+                "total": len(entries),
+                "isLast": start + limit >= len(entries),
+                "values": values,
+            },
+        )
+
     def _add_comment(self, call: Call, key: str) -> Out:
         t = self._ticket(key)
         body = self._need_body(call)
@@ -2039,6 +2154,150 @@ class FakeProvider:
         t.comments.append(comment)
         t.updated = self.now
         return Out(201, self._comment_obj(comment, props=False), applied=True)
+
+    def _attachment_obj(self, a: dict[str, Any]) -> dict[str, Any]:
+        out = {k: v for k, v in a.items() if not k.startswith("_")}
+        out["created"] = self.stamp(a["_created"])
+        out["self"] = f"{self.url}/rest/api/3/attachment/{a['id']}"
+        # An absolute URL that ticketctl must never follow (the interface says so).
+        out["content"] = f"{self.url}/rest/api/3/attachment/content/{a['id']}"
+        return out
+
+    def attach(self, key: str, filename: str, content: bytes, *, author: str = ME_ACCOUNT) -> str:
+        """Add an attachment to ``key`` directly (no request); returns its id."""
+        t = self._ticket(key)
+        aid = str(self._next_attachment)
+        self._next_attachment += 1
+        t.attachments.append(
+            {
+                "id": aid,
+                "filename": filename,
+                "size": len(content),
+                "mimeType": "application/octet-stream",
+                "author": self._user(author),
+                "_created": self.now,
+                "_content": content,
+            }
+        )
+        return aid
+
+    def _add_attachment(self, call: Call, key: str) -> Out:
+        t = self._ticket(key)
+        if (call.headers.get("x-atlassian-token") or [""])[0] != "no-check":
+            raise ProviderError(403, text="XSRF check failed")  # the real provider's refusal
+        body = call.body
+        parts = body.get("_multipart") if isinstance(body, dict) else None
+        files = [p for p in parts or [] if p["name"] == "file" and p["filename"] is not None]
+        if len(files) != 1 or len(parts or []) != 1:
+            raise ProviderError(400, ["Exactly one file part named file is required."])
+        file = files[0]
+        if len(file["content"]) > ATTACHMENT_LIMIT:
+            raise ProviderError(413, text="The attachment is too large.")
+        self.attach(key, file["filename"], file["content"])
+        t.updated = self.now
+        return Out(200, [self._attachment_obj(t.attachments[-1])], applied=True)
+
+    def _find_attachment(self, aid: str) -> dict[str, Any]:
+        for t in self.tickets.values():
+            for a in t.attachments:
+                if a["id"] == aid:
+                    return a
+        raise ProviderError(404, ["The attachment does not exist or you have no permission."])
+
+    def _attachment_meta(self, call: Call, aid: str) -> Out:
+        return Out(200, self._attachment_obj(self._find_attachment(aid)))
+
+    def _attachment_content(self, call: Call, aid: str) -> Out:
+        a = self._find_attachment(aid)
+        if call.one("redirect") != "false":  # the real endpoint answers 303 to a media host
+            return Out(303, None, {"Location": "https://media.example.test/blob/" + aid})
+        return Out(200, a["_content"])
+
+    LINK_TYPES = (
+        {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+        {"id": "10001", "name": "Relates", "inward": "relates to", "outward": "relates to"},
+    )
+
+    def _link_types(self, call: Call) -> Out:
+        return Out(200, {"issueLinkTypes": [dict(t) for t in self.LINK_TYPES]})
+
+    def _link_side(self, t: Ticket) -> dict[str, Any]:
+        return {
+            "key": t.key,
+            "id": str(t.id),
+            "fields": {"summary": t.summary, "status": self._status_obj(t.status)},
+        }
+
+    def _add_link(self, call: Call) -> Out:
+        """``POST issueLink``: 201 with an empty body; both tickets gain the link, one id."""
+        body = self._need_body(call)
+        kind = body.get("type")
+        known = next(
+            (
+                x
+                for x in self.LINK_TYPES
+                if isinstance(kind, dict) and x["name"] == kind.get("name")
+            ),
+            None,
+        )
+        sides = {}
+        for name in ("inwardIssue", "outwardIssue"):
+            side = body.get(name)
+            if not isinstance(side, dict) or not isinstance(side.get("key"), str):
+                raise ProviderError(400, ["The issue link request is invalid."])
+            sides[name] = self._ticket(side["key"])
+        if known is None:
+            raise ProviderError(404, ["No issue link type with name found."])
+        if sides["inwardIssue"] is sides["outwardIssue"]:
+            raise ProviderError(400, ["Can not link an issue to itself."])
+        lid = str(self._next_link)
+        self._next_link += 1
+        kind_obj = {k: known[k] for k in ("id", "name", "inward", "outward")}
+        sides["outwardIssue"].links.append(
+            {"id": lid, "type": kind_obj, "inwardIssue": self._link_side(sides["inwardIssue"])}
+        )
+        sides["inwardIssue"].links.append(
+            {"id": lid, "type": kind_obj, "outwardIssue": self._link_side(sides["outwardIssue"])}
+        )
+        for t in sides.values():
+            t.updated = self.now
+        return Out(201, None, applied=True)
+
+    def _delete_link(self, call: Call, lid: str) -> Out:
+        found = [t for t in self.tickets.values() if any(x.get("id") == lid for x in t.links)]
+        if not found:
+            raise ProviderError(404, ["No issue link with id found."])
+        for t in found:
+            t.links[:] = [x for x in t.links if x.get("id") != lid]
+            t.updated = self.now
+        return Out(204, None, applied=True)
+
+    def _one_comment(self, call: Call, key: str, cid: str) -> Out:
+        """Read, update or delete one comment; only the author may change it (403 otherwise)."""
+        t = self._ticket(key)
+        comment = next((c for c in t.comments if c["id"] == cid), None)
+        if comment is None:
+            raise ProviderError(404, ["Comment does not exist or you do not have permission."])
+        if call.method == "GET":
+            props = "properties" in (call.one("expand") or "")
+            return Out(200, self._comment_obj(comment, props=props))
+        if comment["author"]["accountId"] != ME_ACCOUNT:
+            raise ProviderError(403, ["You do not have permission to change this comment."])
+        if call.method == "DELETE":
+            t.comments.remove(comment)
+            t.updated = self.now
+            return Out(204, None, applied=True)
+        body = self._need_body(call)
+        doc = body.get("body")
+        if not (isinstance(doc, dict) and doc.get("type") == "doc" and _adf_shape_ok(doc)):
+            raise ProviderError(400, ["Comment body is not valid!"])
+        props = self._parse_props(body.get("properties"))
+        comment["body"] = doc
+        comment["_updated"] = self.now
+        comment["updateAuthor"] = self._user(ME_ACCOUNT)
+        comment["properties"] = {**(comment.get("properties") or {}), **props}
+        t.updated = self.now
+        return Out(200, self._comment_obj(comment, props=False), applied=True)
 
     @staticmethod
     def _check_property(key: Any, value: Any) -> None:
@@ -2281,8 +2540,20 @@ verification issues):
 - the 400 and 403 body texts for labels, summary, parent, notifyUsers, comment limits and
   properties (V-18, V-21, V-29 give statuses and key names only)
 - the comment list shape (startAt, maxResults, total) and ``expand=properties`` entries
+- the changelog endpoint (``GET /issue/{key}/changelog``): that it pages by ``startAt`` and
+  ``maxResults`` (capped at 100 here) in the shape {startAt, maxResults, total, isLast, values},
+  that ``values`` are oldest first, the item keys (field, fieldtype, fieldId, from, fromString,
+  to, toString) and which of them a system field, a sprint, a label list and a custom field fill
+  (ids in ``from``/``to``, text in the ``*String`` keys), and a hidden ticket's 404
 - the agile responses (board, sprint) and the closed-sprint add error
 - the issue ``self`` links, the ``expand`` string and the default priority list order
 - an empty-text or oversized ADF description on create or edit
 - Basic auth with a wrong email but a valid token
+- attachments: that the upload is ``POST /issue/{key}/attachments`` with one ``file`` part and
+  the header ``X-Atlassian-Token: no-check`` (403 without it), answering a list with one
+  attachment object; that ``GET /attachment/content/{id}?redirect=false`` answers the bytes
+  while the plain endpoint answers a 303 to a media host; the 413 of an oversized upload; how a
+  file name with a non-ASCII character is stored; the object keys (id, filename, size, mimeType,
+  author, created, self, content); that an uploaded file is listed under ``fields.attachment``
+  at once
 """

@@ -92,11 +92,13 @@ def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
 
 # --- the whole command surface parses -------------------------------------------------
 
+LINK = ["--type", "Blocks", "--direction", "outward", "--other", "AB-2"]
 SURFACE = [
     ["whoami"],
     ["get", "AB-1", "AB-2", "--fields", "a,b", "--comments", "3", "--include-adf"],
     ["search", "--project", "AB", "--status", "Open", "--limit", "5", "--count"],
     ["comments", "AB-1", "--limit", "5", "--newest-first"],
+    ["changelog", "AB-1", "--limit", "5", "--since", "1d", "--field", "status", "--newest-first"],
     ["transitions", "AB-1"],
     ["sprints", "list", "--state", "active"],
     ["sprints", "show", "12"],
@@ -104,16 +106,23 @@ SURFACE = [
     ["fields", "list"],
     ["fields", "check"],
     ["fields", "refresh"],
+    ["fields", "types", "--project", "AB"],
     ["sites"],
     ["sites", "resolve", "AB-1"],
     ["validate", "--probe"],
     ["export", "--after-seq", "3"],
     ["transition", "AB-1", "--to", "Done"],
     ["comment", "AB-1", "--body", "hi"],
+    ["comment-edit", "AB-1", "7", "--body", "hi"],
+    ["comment-delete", "AB-1", "7"],
+    ["attachment-add", "AB-1", "--file", "f.bin"],
+    ["attachment-download", "AB-1", "7", "--to", "out.bin"],
     ["create", "--project", "AB", "--type", "Task", "--title", "t"],
     ["update", "AB-1", "--title", "t"],
     ["sprint", "add", "AB-1", "--sprint", "open"],
     ["sprint", "remove", "AB-1"],
+    ["link", "add", "AB-1", *LINK],
+    ["link", "remove", "AB-1", *LINK],
 ]
 
 
@@ -230,6 +239,10 @@ HANDLER_ROWS = [
     ("sprint_closed", None, 20),
     ("already_exists", None, 20),
     ("declined", None, 20),
+    ("read_only", None, 20),
+    ("not_ticketctl_comment", None, 20),
+    ("restricted_comment", None, 20),
+    ("human_comment", None, 20),
     ("ambiguous_site", None, 21),
     ("ambiguous_field", None, 21),
     ("ambiguous_transition", None, 21),

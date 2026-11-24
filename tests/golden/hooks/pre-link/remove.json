@@ -1,0 +1,38 @@
+{
+  "tool": "ticketctl",
+  "hook": "pre-link",
+  "object_type": "ticket",
+  "object_id": "DEMO-2",
+  "site": "main",
+  "project": "DEMO",
+  "actor": "auto:unknown",
+  "attempt_id": "0123456789abcdef",
+  "decision_ids": [],
+  "plan": {
+    "action": "link_remove",
+    "steps": [
+      "remove_link"
+    ],
+    "plan_sha256": "ee7002f939fb5c70f95acb8f8d3fad08f6714adb4a24ac267cb5b355b957bc30",
+    "current_status": {
+      "name": "In Progress",
+      "category": "indeterminate"
+    }
+  },
+  "body": [],
+  "ticket": {
+    "type": "Task",
+    "subtask": false,
+    "status": "In Progress",
+    "priority": "Medium",
+    "assignee_account_id": "acct-0001",
+    "assignee_is_me": true
+  },
+  "links": [
+    {
+      "type": "Blocks",
+      "direction": "outward",
+      "key": "DEMO-3"
+    }
+  ]
+}
