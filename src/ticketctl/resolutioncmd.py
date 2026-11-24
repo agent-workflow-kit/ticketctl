@@ -162,7 +162,8 @@ class ResolutionBackfillAction:
             )
         )
         listed = next((m for m in meta if m.field.id == "resolution"), None)
-        if listed is None or (listed.operations is not None and "set" not in listed.operations):
+        # An entry that does not say its operations is not trusted: only an explicit "set" counts.
+        if listed is None or listed.operations is None or "set" not in listed.operations:
             raise TicketctlError(
                 "invalid_request",
                 "the resolution cannot be set on this ticket (its edit screen does not list it)",

@@ -14,6 +14,7 @@ L1 (primitive). Works fully standalone.
 
 - Reads tickets as a provider-neutral object (status with category, estimate, sprints, parent, links, a computed `blocked` flag, Markdown text) and searches them with named queries, structured filters or a raw JQL query that stands alone, validating every query first so a typo is an error rather than an empty list.
 - Writes (`transition`, `comment`, `comment-edit`, `comment-delete`, `attachment-add`, `create`, `update`, `sprint add|remove`, `link add|remove`, `resolution-backfill`; `link remove` deletes any link of the named type, direction and ticket, whoever made it) share one flow: an idempotency check first, a plan with a hash, `--dry-run`, one confirmation (a decline is exit 20), per-kind hooks, a lock and stale-ticket check and an audit record pair. There is no pending-confirmation store: a non-interactive write without `--yes` exits 13 and the calling tool records the pending confirmation.
+- `resolution-backfill` refuses with `not_editable` on sites whose edit screen omits Resolution; this is unverified live (W24).
 - Text goes in as Markdown from a file or stdin and is converted to Atlassian's rich-text format; no wiki markup, mention or card is ever created from text.
 - Field mappings (story points, acceptance criteria, sprint and so on), named queries and organization rules are config, never code.
 - Stateless: a small cache, `audit.jsonl` and `log.jsonl`.

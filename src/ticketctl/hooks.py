@@ -300,7 +300,7 @@ def build_payload(
         elif name == "assign":
             plan_part[name] = _assign(facts.get(name), name)
         else:  # resolution
-            plan_part[name] = _name_or_null(facts.get(name), name, cap=128)
+            plan_part[name] = _name_or_null(facts.get(name), name, cap=256)
     payload: dict[str, Any] = {
         "tool": "ticketctl",
         "hook": hook,

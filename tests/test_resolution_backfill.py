@@ -9,10 +9,12 @@ from typing import Any
 
 import pytest
 
+from tests import fake_provider
 from tests.fake_provider import SITE_TOKEN, FakeProvider, Fault, Quirks
 from tests.golden import assert_golden, validator
 from tests.test_comment import ATTEMPT, SITE_ENV_VAR, Cli
 from ticketctl import hooks, resolutioncmd
+from ticketctl.fieldmap import MAX_CANDIDATES
 from ticketctl.gateway import HookRun
 from ticketctl.writeflow import Seams
 
@@ -191,14 +193,28 @@ def test_a_ticket_that_is_not_done_is_a_precondition_failure(cli: Cli, status: s
     assert not any(c.path.endswith("/editmeta") for c in cli.fake.calls)
 
 
-def test_a_status_change_since_the_plan_is_stale(cli: Cli) -> None:
+def test_a_move_to_another_done_status_since_the_plan_is_stale(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(fake_provider.STATUSES, "Closed", ("13", "done"))
+    _, plan = cli.doc("--dry-run", "resolution-backfill", KEY, "--resolution", "Done")
+    cli.fake.tickets[KEY].status = "Closed"  # still done, but another status
+    code, env = cli.doc(
+        "--yes", "--expect-plan", plan["plan_sha256"], "resolution-backfill", KEY,
+        "--resolution", "Done",
+    )  # fmt: skip
+    assert (code, env["error"]["code"]) == (20, "stale_ticket"), env
+    assert cli.writes() == [] and stored(cli) is None
+
+
+def test_a_ticket_reopened_since_the_plan_is_a_precondition_failure(cli: Cli) -> None:
     _, plan = cli.doc("--dry-run", "resolution-backfill", KEY, "--resolution", "Done")
     cli.fake.tickets[KEY].status = "Backlog"  # reopened between plan and apply
     code, env = cli.doc(
         "--yes", "--expect-plan", plan["plan_sha256"], "resolution-backfill", KEY,
         "--resolution", "Done",
     )  # fmt: skip
-    assert code == 20 and env["error"]["code"] in ("stale_ticket", "precondition_failed")
+    assert (code, env["error"]["code"]) == (20, "precondition_failed"), env
     assert cli.writes() == [] and stored(cli) is None
 
 
@@ -250,6 +266,52 @@ def test_without_listed_allowed_values_the_providers_resolution_list_decides(cli
     assert code == 0 and stored(cli) == "Duplicate", result
 
 
+def test_an_edit_screen_entry_without_an_operations_key_is_not_editable(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = cli.fake._editable_fields
+
+    def silent_screen() -> dict[str, dict[str, Any]]:
+        fields = original()
+        del fields["resolution"]["operations"]
+        return fields
+
+    monkeypatch.setattr(cli.fake, "_editable_fields", silent_screen)
+    code, env = cli.doc("--dry-run", "resolution-backfill", KEY, "--resolution", "Done")
+    assert (code, env["error"]["reason"]) == (22, "not_editable")
+    assert cli.writes() == []
+
+
+def test_an_empty_allowed_values_list_counts_as_not_listed(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = cli.fake._editable_fields
+
+    def empty_list() -> dict[str, dict[str, Any]]:
+        fields = original()
+        fields["resolution"]["allowedValues"] = []
+        return fields
+
+    monkeypatch.setattr(cli.fake, "_editable_fields", empty_list)
+    code, result = backfill(cli, "--resolution", "duplicate")
+    assert code == 0 and stored(cli) == "Duplicate", result
+    assert any(c.path.endswith("/resolution") for c in cli.fake.calls)
+
+
+def test_a_not_done_ticket_without_a_name_is_a_precondition_failure_first(cli: Cli) -> None:
+    cli.fake.tickets[KEY].status = "Backlog"
+    code, env = cli.doc("--dry-run", "resolution-backfill", KEY)
+    assert (code, env["error"]["code"]) == (20, "precondition_failed"), env
+
+
+def test_the_candidate_list_is_capped(cli: Cli) -> None:
+    cli.fake.quirks.resolution_allowed_values = False
+    cli.fake.resolution_list_body = [{"id": str(i), "name": f"R{i:03}"} for i in range(80)]
+    code, env = cli.doc("--dry-run", "resolution-backfill", KEY, "--resolution", "Nope")
+    assert (code, env["error"]["reason"]) == (22, "invalid_value")
+    assert len(env["error"]["details"]["candidates"]) == MAX_CANDIDATES
+
+
 def test_two_names_that_differ_only_in_case_are_ambiguous(cli: Cli) -> None:
     cli.fake.quirks.resolution_allowed_values = False
     cli.fake.resolution_list_body = [{"id": "1", "name": "Fixed"}, {"id": "2", "name": "FIXED"}]
@@ -265,10 +327,25 @@ def test_a_malformed_name_is_refused_before_any_request(cli: Cli, bad: str) -> N
     assert not any(c.path.startswith("/rest/api/3/issue/") for c in cli.fake.calls)
 
 
-def test_a_malformed_site_default_is_invalid_value(cli: Cli) -> None:
+def test_a_too_long_site_default_is_a_config_error_before_any_request(cli: Cli) -> None:
     with_default(cli, "'" + "x" * 257 + "'")
     code, env = cli.doc("--dry-run", "resolution-backfill", KEY)
-    assert code in (2, 22), env  # the config grammar or the command refuses it
+    assert (code, env["error"]["code"]) == (2, "invalid_config"), env
+    assert cli.writes() == [] and cli.fake.calls == []
+
+
+@pytest.mark.parametrize("name", ["Done\u200b", "Do\u200bne"])
+def test_a_site_default_that_changes_when_sanitized_is_invalid_value_before_editmeta(
+    cli: Cli, name: str
+) -> None:
+    with_default(cli, f'"{name}"')
+    code, env = cli.doc("--dry-run", "resolution-backfill", KEY)
+    assert (code, env["error"]["code"], env["error"]["reason"]) == (
+        22,
+        "invalid_request",
+        "invalid_value",
+    ), env
+    assert not any(c.path.endswith("/editmeta") for c in cli.fake.calls)
     assert cli.writes() == []
 
 
@@ -420,6 +497,30 @@ def test_the_hooks_carry_the_resolution_and_no_ticket_text(
     assert json.loads(seen[0][1])["plan"]["steps"] == ["set_resolution"]
     for name, raw in seen:
         assert_golden("hooks", name, "ok", cli.norm(json.loads(raw)))
+
+
+def test_a_long_allowed_name_reaches_the_hook_payload_whole(
+    cli: Cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = "R" * 200
+    monkeypatch.setattr(fake_provider, "RESOLUTIONS", [*fake_provider.RESOLUTIONS, name])
+    cli.config.write_text(
+        cli.config.read_text() + "hooks:\n  pre-resolution-backfill:\n    - cmd: ignored\n"
+    )
+    seen: list[bytes] = []
+
+    def fake_run(argv: list[str], *, stdin: bytes, **kw: Any) -> HookRun:
+        seen.append(stdin)
+        return HookRun(1, 0, b"", b"", False, False, False)
+
+    monkeypatch.setattr(hooks, "run_hook", fake_run)
+    code, result = backfill(cli, "--resolution", name)
+    assert code == 0, result
+    (raw,) = seen
+    payload = json.loads(raw)
+    validator("hooks/pre-resolution-backfill.json").validate(payload)
+    assert payload["plan"]["resolution"] == name
+    assert cli.writes()[0].body["fields"]["resolution"] == {"name": name}
 
 
 def test_an_unchanged_run_runs_no_hook(cli: Cli, monkeypatch: pytest.MonkeyPatch) -> None:

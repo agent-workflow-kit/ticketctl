@@ -60,7 +60,7 @@
         "resolution": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 128,
+          "maxLength": 256,
           "description": "The resolution name the plan sets (workflow configuration, not ticket text)."
         }
       },

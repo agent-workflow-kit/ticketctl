@@ -60,7 +60,7 @@ sites:
     queries:
       my_open: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
     transitions:
-      # Resolution used for a done target when --resolution is not given. Default: none.
+      # Resolution used for a done target (transition) and by resolution-backfill when --resolution is not given. Default: none.
       default_resolution: Done
       # `me` assigns me when an unassigned ticket moves to a target that is not done. Default: none.
       assign_on_start: me

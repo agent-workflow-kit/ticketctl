@@ -38,7 +38,7 @@
   "hooks/post-comment.json": "6db945b93f5696e8c10a134b4bd35e72fd8af7f8a60047e3726dc3e0e7eb66c5",
   "hooks/post-create.json": "db2c27669afb4157acf85406dba02046ccd2a9b321db4d7bb937847e2890a48d",
   "hooks/post-link.json": "f680be92021a3db02530b497aa2c5430ac578c9e1c9895058f3f603e184f57b2",
-  "hooks/post-resolution-backfill.json": "636fa3d89580ebb4980a823f87b4f066624e7bd23b9737c4d34a4a98052b06b2",
+  "hooks/post-resolution-backfill.json": "f78d1e11a3e7a64272b6258fd7ee985beb84a2e28c8e1575ea73335bc0e4b3d0",
   "hooks/post-sprint.json": "4696118a3aaf037c07e43d41fee1771dc56db333c76856a70c91233782ca22ff",
   "hooks/post-transition.json": "c14ee31d07878c077c444b942a679db1882d121ae9e7fe5ba0127844a3253e70",
   "hooks/post-update.json": "afb7f5525f243e09fffde2aca1b608c3dd3c98521bcc987b5a30da0a1cff720c",
@@ -48,7 +48,7 @@
   "hooks/pre-comment.json": "a3253843907a98ad09a5cdc73a2d27989bb3da9db38df16f31c188c937ab73af",
   "hooks/pre-create.json": "425727f933b7cdbec45b7708d9a1f778f81b6335e746f7632939229977e96fc2",
   "hooks/pre-link.json": "83e0cb7dc45cc333b7a519225b7eb8a54a393548d592ade2309026b6ebc973ba",
-  "hooks/pre-resolution-backfill.json": "e7ced6d8aecb2207ce54228f8b1c577c1e6c2c46edb06f553414b1b3af2c4ebb",
+  "hooks/pre-resolution-backfill.json": "f19d854868836365b44e72458d98b6061fc64adda6582274b1fb9a68ace6ca1c",
   "hooks/pre-sprint.json": "be27bc529be5fcefdba0f8cbab4f0f7746760b1049c741c780f83befbb50c8a8",
   "hooks/pre-transition.json": "4ea18a91f07bf907eeb3aef1821430cc284f540b44d953ed218f14f505f411c6",
   "hooks/pre-update.json": "d6915a35835ad98cd6f352a18df3dac2a0e6fa168c6ddbafab60664953c57e57"

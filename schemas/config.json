@@ -1125,7 +1125,8 @@
             "default_resolution": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 256
+              "maxLength": 256,
+              "description": "Resolution used for a done target, and by resolution-backfill when --resolution is absent."
             },
             "assign_on_start": {
               "enum": [
