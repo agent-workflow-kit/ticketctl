@@ -23,7 +23,7 @@ L1 (primitive). Works fully standalone.
 Finalized in [docs/interface.md](docs/interface.md#commands).
 
 ```text
-ticketctl whoami | get KEY... | search | comments KEY | changelog KEY | transitions KEY | sprints | sprints resolve open|next | fields | sites | validate
+ticketctl whoami | get KEY... | search | browse | comments KEY | changelog KEY | transitions KEY | sprints | sprints resolve open|next | fields | sites | validate
 ticketctl transition KEY --to STATUS | comment KEY --body-file F | comment-edit KEY ID --body-file F | comment-delete KEY ID | attachment-add KEY --file F | create --title T --body-file F | update KEY --set k=v
 ticketctl sprint add KEY --sprint open|next|ID | sprint remove KEY
 ticketctl link add KEY --type NAME --direction inward|outward --other KEY | link remove KEY (same options)

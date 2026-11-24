@@ -16,6 +16,7 @@ from typing import Any
 
 from . import (
     attachmentcmd,
+    browsecmd,
     changelogcmd,
     commentcmd,
     commentedit,
@@ -89,7 +90,8 @@ def _get(p: argparse.ArgumentParser) -> None:
     _add(p, "--include-adf", action="store_true", help="also print the description as ADF")
 
 
-def _search(p: argparse.ArgumentParser) -> None:
+def _search_filters(p: argparse.ArgumentParser) -> None:
+    """The query form, the filters, `--order-by` and `--limit`: shared by `search` and `browse`."""
     for flag in ("--query", "--jql-file", "--jql", "--text", "--text-file"):
         _add(p, flag)
     for flag in (
@@ -113,9 +115,21 @@ def _search(p: argparse.ArgumentParser) -> None:
     _add(p, "--created-since")
     _add(p, "--order-by")
     _add(p, "--limit", type=count_arg, metavar="N")
+
+
+def _search(p: argparse.ArgumentParser) -> None:
+    _search_filters(p)
     _add(p, "--fields")
     _add(p, "--count", action="store_true")
     _add(p, "--cursor")
+
+
+def _browse(p: argparse.ArgumentParser) -> None:
+    p.description = (
+        "Browse the tickets of a search in a read-only full-screen view. The query and the "
+        "filters are those of `search`; --limit is the size of a page."
+    )
+    _search_filters(p)
 
 
 def _key(p: argparse.ArgumentParser) -> None:
@@ -301,6 +315,13 @@ def _specs() -> list[CommandSpec]:
             searchcmd.search,
             _search,
             searchcmd.human_search,
+        ),
+        CommandSpec(
+            ("browse",),
+            r,
+            "browse a search in a read-only terminal view",
+            browsecmd.browse,
+            _browse,
         ),
         CommandSpec(
             ("comments",),
