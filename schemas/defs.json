@@ -70,7 +70,7 @@
     "numeric_id": {
       "type": "string",
       "pattern": "^[0-9]{1,18}$",
-      "description": "Transition, sprint and board ids."
+      "description": "Transition, sprint, board and attachment ids."
     },
     "warning_code": {
       "enum": [

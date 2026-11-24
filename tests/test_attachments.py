@@ -1,4 +1,4 @@
-"""``attachment-add`` and ``attachment-download`` end to end against the fake provider (issue #42)."""
+"""``attachment-add`` and ``attachment-download`` against the fake provider (issue #42)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from ticketctl.writeflow import Seams
 
 KEY = "DEMO-2"
 OTHER = "DEMO-1"
-BINARY = b"%PDF-1.7\r\n\x00\xff\xfe\r\n--not-a-boundary\r\n" + bytes(range(256))
+BINARY = b"BIN-DATA\r\n\x00\xff\xfe\r\n--not-a-boundary\r\n" + bytes(range(256))
 MARK = "zq7x-attach-marker-4f9c2e"  # must never reach a hook payload
 
 
