@@ -1,4 +1,6 @@
 {
+  "cli/attachment-add.json": "8e6e0f531f273ff4c96bad48bb0f62d764cadabb6b8d517ac3041d5f255a3efb",
+  "cli/attachment-download.json": "331b381d8f36fb6cb5f5f6c967e1fc9775a209362af2cd554b67aaa6b0929ad9",
   "cli/changelog.json": "3329ab41a59b25d25817118c83a8d6cd5085a3c6721aba89fe6cff4166aee559",
   "cli/comment-delete.json": "919213a457dd52f860023f830df884bd312d9f88cfcacfa10e50993065796c1a",
   "cli/comment-edit.json": "994db454c3ffc884486fb0790f54367f162429a66c514b3ac44233fee70b031b",
@@ -27,6 +29,7 @@
   "cli/update.json": "3ec7238d8ddaa59a16966dc5f551d8fd3220f542a2749647562b19cc405a27f2",
   "cli/validate.json": "d600895876bf02facc7cfc0deb33a0dc77929e3a3ea029aeea6220e00e9b3607",
   "cli/whoami.json": "a7ea0970d422e7befb62c77824b1cfe8169deb953a00d8d6c94d15d96ff8466e",
+  "hooks/post-attachment-add.json": "40f22a8f14b630333200e2259e525484d337c32f9a5bc5f35b247ce960d6f35b",
   "hooks/post-comment-delete.json": "e5e4b9c1e027cd75eb704b1dc80b76c2ef02bdd635f44c5a5387edb557c29aea",
   "hooks/post-comment-edit.json": "6fbfb6f063d523873c4a3adc4296b54be5b24b47bf972ed53071deb73e8cb44e",
   "hooks/post-comment.json": "cd6f26c5095e5733b44d63094b530e2e09593c0fc2d0641d5b61bc342f30a912",
@@ -34,6 +37,7 @@
   "hooks/post-sprint.json": "08584d61f1f608b358d61d46f4d77ad6e1612e6f6e3cc169fb0907b0b1e5b8d3",
   "hooks/post-transition.json": "bd817f10caa0f2ed1bc6c35ec67e1ea3c7ac5520e0a0194b57d04b2387f4e1a9",
   "hooks/post-update.json": "49b33f9bd82b9c078be90351701c9bf47b20ddb5f062d77012c015602b48e379",
+  "hooks/pre-attachment-add.json": "14d45884dcbc7e32011554da2904fcff44c194e52d0db60fb6b402ca3c8a52eb",
   "hooks/pre-comment-delete.json": "77701a3fee5cd006870c35b84880375845d81b0774b704ba8a8c94e4bfc478a4",
   "hooks/pre-comment-edit.json": "9dd560777441b6be5b86ce2d3c13a449fbe81a394dd8e59a83c2435e201d89fa",
   "hooks/pre-comment.json": "3c87eaa613c8a362570216f86ed50b94c67d4a9ad0c6d17ea8b0dc24559f5850",

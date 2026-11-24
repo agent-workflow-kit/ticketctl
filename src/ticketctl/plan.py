@@ -32,11 +32,11 @@ if TYPE_CHECKING:
 HASH_VERSION = 1
 ACTIONS = (
     "transition", "comment", "create", "update", "sprint_add", "sprint_remove", "comment_edit",
-    "comment_delete",
+    "comment_delete", "attachment_add",
 )  # fmt: skip
 STEP_KINDS = (
     "assign", "transition", "set_fields", "add_comment", "create", "sprint_add", "sprint_remove",
-    "edit_comment", "delete_comment",
+    "edit_comment", "delete_comment", "add_attachment",
 )  # fmt: skip
 WARNINGS = (
     "closed_ticket", "assign_added", "other_sprints_dropped", "sprint_moved", "body_near_limit",
@@ -53,6 +53,7 @@ STEP_PROPS: dict[str, frozenset[str]] = {
     "sprint_remove": frozenset({"sprint"}),
     "edit_comment": frozenset({"comment_id", "body_sha256", "body_bytes"}),
     "delete_comment": frozenset({"comment_id"}),
+    "add_attachment": frozenset({"file_sha256", "file_bytes"}),
 }
 
 
@@ -135,6 +136,7 @@ class Planned:
     already_posted: bool = False
     reused: bool = False
     comment_id: str | None = None
+    attachment_id: str | None = None  # the existing attachment of an `unchanged` attachment-add
     existing_key: str | None = None
     shown: list[ShownText] = field(default_factory=list)  # outbound text no change entry carries
     hook: dict[str, Any] = field(default_factory=dict)

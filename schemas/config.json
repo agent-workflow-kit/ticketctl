@@ -584,6 +584,76 @@
               "cmd"
             ]
           }
+        },
+        "pre-attachment-add": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "const": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
+        },
+        "post-attachment-add": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "timeout": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600
+                  },
+                  {
+                    "$ref": "#/$defs/duration_string"
+                  }
+                ],
+                "default": 30,
+                "description": "A duration (a bare integer means seconds), 1 to 600 s. Default 30 s."
+              },
+              "async": {
+                "type": "boolean",
+                "default": false,
+                "description": "post- hooks only."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "cmd"
+            ]
+          }
         }
       },
       "additionalProperties": false,

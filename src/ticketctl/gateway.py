@@ -684,7 +684,7 @@ class Response:
 
 _UPLOAD_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
 _UPLOAD_TYPE = re.compile(r"[a-z][a-z0-9.+-]{0,63}/[a-z0-9][a-z0-9.+-]{0,63}")
-_UPLOAD_BAD_NAME = re.compile(r'[\x00-\x1f\x7f"\\/]')
+UPLOAD_BAD_NAME = re.compile(r'[\x00-\x1f\x7f"\\/]')
 MAX_UPLOAD_NAME = 255
 
 
@@ -710,7 +710,7 @@ def _multipart(upload: Upload) -> tuple[bytes, str]:
     if (
         not isinstance(name, str)
         or not 1 <= len(name) <= MAX_UPLOAD_NAME
-        or _UPLOAD_BAD_NAME.search(name)
+        or UPLOAD_BAD_NAME.search(name)
         or name in {".", ".."}
         or not _UPLOAD_FIELD.fullmatch(upload.field)
         or not _UPLOAD_TYPE.fullmatch(upload.content_type)
@@ -730,11 +730,11 @@ def _multipart(upload: Upload) -> tuple[bytes, str]:
         raise _internal("no boundary that is absent from the upload could be found")
     head = (
         marker
-        + b"\r\nContent-Disposition: form-data; name=\""
+        + b'\r\nContent-Disposition: form-data; name="'
         + upload.field.encode("ascii")
-        + b"\"; filename=\""
+        + b'"; filename="'
         + encoded_name
-        + b"\"\r\nContent-Type: "
+        + b'"\r\nContent-Type: '
         + upload.content_type.encode("ascii")
         + b"\r\n\r\n"
     )

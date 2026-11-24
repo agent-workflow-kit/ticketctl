@@ -214,13 +214,21 @@ class CommentAction:
         )
 
 
-def read_ticket(ctx: Context, key: str) -> dict[str, Any]:
-    """The ticket's facts for the plan and the hooks (also used by comment edit and delete)."""
+def read_ticket(ctx: Context, key: str, *, extra_fields: str = "") -> dict[str, Any]:
+    """The ticket's facts for the plan and the hooks (also used by comment edit and delete).
+
+    ``extra_fields`` is one more provider field name to read in the same call (``attachment``).
+    """
     response = ctx.gw.request(
         "GET",
         f"/rest/api/3/issue/{segment('ticket_key', key)}",
         template=ISSUE_TEMPLATE,
-        query=query({"fields": "status,issuetype,project,priority,assignee"}),
+        query=query(
+            {
+                "fields": "status,issuetype,project,priority,assignee"
+                + (f",{extra_fields}" if extra_fields else "")
+            }
+        ),
     )
     if not 200 <= response.status < 300:
         raise object_error(response.status, "ticket")

@@ -6,14 +6,34 @@ Loopback scripted servers only (``tests/scripted_server.py``); nothing reaches a
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
-from tests.scripted_server import json_reply, reply
-from tests.test_gateway import B64, make_rig, serve, servers  # noqa: F401 - the fixtures
+from tests.scripted_server import ScriptedServer, json_reply, reply
+from tests.test_gateway import B64, make_rig
 from ticketctl import gateway
 from ticketctl.gateway import GatewayError, Upload
+
+
+@pytest.fixture
+def servers() -> Iterator[list[ScriptedServer]]:
+    started: list[ScriptedServer] = []
+    yield started
+    for server in started:
+        server.close()
+
+
+@pytest.fixture
+def serve(servers: list[ScriptedServer]):
+    def make(script: Any) -> ScriptedServer:
+        server = ScriptedServer(script).start()
+        servers.append(server)
+        return server
+
+    return make
+
 
 PATH = "/rest/api/3/issue/DEMO-1/attachments"
 TEMPLATE = "/rest/api/3/issue/{key}/attachments"
@@ -94,7 +114,7 @@ def test_a_name_that_could_break_the_part_is_refused_before_any_request(serve, n
     assert server.requests == []
 
 
-@pytest.mark.parametrize("field_name", ["", "fi\"le", "a b", "x" * 40])
+@pytest.mark.parametrize("field_name", ["", 'fi"le', "a b", "x" * 40])
 def test_the_form_field_and_content_type_are_closed_grammars(serve, field_name: str) -> None:
     server = serve(json_reply("[]"))
     with pytest.raises(GatewayError):
@@ -179,9 +199,7 @@ def test_a_binary_read_that_is_a_redirect_is_not_followed(serve) -> None:
 def test_a_binary_read_error_keeps_the_normal_error_parsing(serve) -> None:
     server = serve(json_reply('{"errorMessages": ["nope"]}', status=404))
     rig = upload_rig(server.url)
-    res = rig.gw.request(
-        "GET", "/rest/api/3/attachment/content/1", template="/x/{id}", binary=True
-    )
+    res = rig.gw.request("GET", "/rest/api/3/attachment/content/1", template="/x/{id}", binary=True)
     assert res.status == 404 and res.raw == b"" and res.data == {"errorMessages": ["nope"]}
 
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import (
+    attachmentcmd,
     changelogcmd,
     commentcmd,
     commentedit,
@@ -219,6 +220,17 @@ def _comment_edit(p: argparse.ArgumentParser) -> None:
     _add(p, "--format", choices=["markdown", "adf"])
 
 
+def _attachment_add(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "--file", metavar="PATH", help="the file to attach (a regular file, at most 10 MiB)")
+
+
+def _attachment_download(p: argparse.ArgumentParser) -> None:
+    _key(p)
+    _add(p, "attachment_id", metavar="ID", type=numeric_id_arg, help="the attachment's numeric id")
+    _add(p, "--to", metavar="PATH", help="the new file to write (an existing path is refused)")
+
+
 def _create(p: argparse.ArgumentParser) -> None:
     _add(p, "--project")
     _add(p, "--type")
@@ -375,6 +387,14 @@ def _specs() -> list[CommandSpec]:
         ),
         CommandSpec(("export",), r, "print audit records", exportcmd.export, _export),
         CommandSpec(
+            ("attachment-download",),
+            r,
+            "save an attachment of a ticket to a new file",
+            attachmentcmd.attachment_download,
+            _attachment_download,
+            attachmentcmd.human_download,
+        ),
+        CommandSpec(
             ("transition",),
             w,
             "transition a ticket",
@@ -399,6 +419,14 @@ def _specs() -> list[CommandSpec]:
             "delete a comment ticketctl posted",
             commentedit.comment_delete,
             _comment_id,
+            writeflow.human,
+        ),
+        CommandSpec(
+            ("attachment-add",),
+            w,
+            "attach a file to a ticket",
+            attachmentcmd.attachment_add,
+            _attachment_add,
             writeflow.human,
         ),
         CommandSpec(("create",), w, "create a ticket", createcmd.create, _create, writeflow.human),
